@@ -1879,7 +1879,14 @@ if ( globalTweakers.numFoodTypes === 2 )
 	//--------------------------------
 	this.setFoodBitEnergy = function(e)
 	{
-	    //console.log( "setFoodBitEnergy: " + e );	
+	    //console.log( "setFoodBitEnergy: " + e );
+
+	    //-------------------------------------------------------------------------
+	    // Coerce to a number: UI range sliders pass their value as a string, and
+	    // storing it unparsed makes food energy a string, so a swimbot eating it
+	    // does "_energy += energy" as string concatenation instead of addition.
+	    //-------------------------------------------------------------------------
+	    e = Number( e );
 
         assert( e >= MIN_FOOD_BIT_ENERGY, "GenePool: setFoodBitEnergy: e >= MIN_FOOD_BIT_ENERGY" );
         assert( e <= MAX_FOOD_BIT_ENERGY, "GenePool: setFoodBitEnergy: e <= MAX_FOOD_BIT_ENERGY" );
