@@ -2169,13 +2169,21 @@ if ( globalTweakers.numFoodTypes === 2 )
             (
                 id,
                 data.swimbotArray[s].age,
-                swimbotPosition, 
-                data.swimbotArray[s].angle, 
-                data.swimbotArray[s].energy, 
+                swimbotPosition,
+                data.swimbotArray[s].angle,
+                data.swimbotArray[s].energy,
                 loadedGenotype,
-                _embryology 
-            );		
-            
+                _embryology
+            );
+
+            //------------------------------------------------------------------------------------
+            // restore cumulative scores -- create() zeroes them, so without this a save/load
+            // wipes each swimbot's offspring / food-eaten tally. (?? 0 keeps pre-fix save files
+            // that lack these fields loading cleanly.)
+            //------------------------------------------------------------------------------------
+            _swimbots[ id ].setNumOffspring    ( data.swimbotArray[s].numOffspring     ?? 0 );
+            _swimbots[ id ].setNumFoodBitsEaten( data.swimbotArray[s].numFoodBitsEaten ?? 0 );
+
             //------------------------------------------------------------------------------------
             // add the new swimbot to the family tree
             //------------------------------------------------------------------------------------
@@ -3367,13 +3375,15 @@ if ( globalTweakers.numFoodTypes === 2 )
 	    //-------------------------
         function SwimbotData()
         {
-            this.x      = ZERO;
-            this.y      = ZERO;
-            this.angle  = ZERO;
-            this.energy = ZERO;
-            this.age    = 0;
-            this.id     = 0;
-            this.genes  = new Array();
+            this.x                = ZERO;
+            this.y                = ZERO;
+            this.angle            = ZERO;
+            this.energy           = ZERO;
+            this.age              = 0;
+            this.id               = 0;
+            this.genes            = new Array();
+            this.numOffspring     = 0; // cumulative score; restored on load so save/load doesn't zero it
+            this.numFoodBitsEaten = 0;
         }
         
 	    let swimbotDataArray = new Array();
@@ -3391,6 +3401,8 @@ if ( globalTweakers.numFoodTypes === 2 )
                 swimbotDataArray[ numSwimbots ].age     = _swimbots[s].getAge();
                 swimbotDataArray[ numSwimbots ].energy  = _swimbots[s].getEnergy();
                 swimbotDataArray[ numSwimbots ].genes   = this.getSwimbotGenes(s);
+                swimbotDataArray[ numSwimbots ].numOffspring     = _swimbots[s].getNumOffspring();
+                swimbotDataArray[ numSwimbots ].numFoodBitsEaten = _swimbots[s].getNumFoodBitsEaten();
 
 
 

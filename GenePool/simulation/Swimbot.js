@@ -1283,6 +1283,9 @@ let partAccelerationY = -strokeForceY;
 	this.getChosenFoodBitIndex          = function() { return _chosenFoodBitIndex;                          }
 	this.getNumOffspring                = function() { return _numOffspring;                                }
 	this.getNumFoodBitsEaten            = function() { return _numFoodBitsEaten;                            }
+	// setters so a loaded pool can restore cumulative scores (create() zeroes them); see setPoolData.
+	this.setNumOffspring                = function(n) { _numOffspring = n;                                  }
+	this.setNumFoodBitsEaten            = function(n) { _numFoodBitsEaten = n;                              }
     this.getBrainState                  = function() { return _brain.getState();                            }
     this.getGenotype                    = function() { return _genotype;                                    }
 	this.getSelectRadius                = function() { return _selectRadius;                                }
