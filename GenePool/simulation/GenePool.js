@@ -1162,7 +1162,21 @@ if ( mode === SimulationStartMode.SPECIES )
             
             
                 _swimbots[s].update();
-                
+
+                //-----------------------------------------------------------------
+                // H-a: update() can kill this swimbot (old age in updateBodyParts, or
+                // starvation in updatePhysics). A dead swimbot must NOT then sense, eat,
+                // or reproduce on this same tick -- doing so spends a mate's energy, adds
+                // a family-tree birth with a dead parent, and (since findLowestDeadSwimbot-
+                // InArray can now return s itself) can overwrite the corpse and record a
+                // self-parent node -- all of which corrupt the birth/death/lineage record.
+                // Skip the rest of this swimbot's turn if it died during update().
+                //-----------------------------------------------------------------
+                if ( !_swimbots[s].getAlive() )
+                {
+                    continue;
+                }
+
                 //-----------------------------------------------------------------
                 // provide aspects of the environment for the swimbot to perceive
                 //-----------------------------------------------------------------
