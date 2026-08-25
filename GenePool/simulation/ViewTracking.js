@@ -416,7 +416,10 @@ _trackingScale += ( ( loverDistance * 2 ) - _trackingScale ) * 0.1;
     function getMostProlificSwimbot()
     {		
         let mostNumOffspring = 0;
-        let mostProlific = 0;
+        // NULL_INDEX (not 0) so that with no births yet -- when nobody has offspring -- this returns
+        // "nobody" rather than falsely tracking swimbot 0. Matches getMostEfficientSwimbot /
+        // getOldestVirgin / getBiggestEater, which all init to NULL_INDEX.
+        let mostProlific = NULL_INDEX;
 
         for (let s=0; s<MAX_SWIMBOTS; s++)
         {
