@@ -931,7 +931,14 @@ if ( mode === SimulationStartMode.SPECIES )
     	let p = new Vector2D();
 
         for (let f=0; f<_numFoodBits; f++)
-        {            
+        {
+            //-----------------------------------------------------------------------
+            // Bring the food bit alive. Every other setFoodTo* config calls this;
+            // without it, slots that weren't already alive stay dead, so SPECIES
+            // (which raises _numFoodBits to 2000) started with only ~half its food.
+            //-----------------------------------------------------------------------
+            _foodBits[f].initialize(f);
+
             let s = POOL_WIDTH * 0.4;
             p.x = gpRandom() * s;
             p.y = POOL_HEIGHT * ONE_HALF - s * ONE_HALF + + gpRandom() * s;
