@@ -652,7 +652,10 @@ if ( mode === SimulationStartMode.SPECIES )
             //------------------------------------------------------------------------------------
             // add the new swimbot to the family tree
             //------------------------------------------------------------------------------------
-            _familyTree.addNode( i, NULL_INDEX, NULL_INDEX, _clock, this.getSwimbotGenes(i) );
+            // M-clock: founders are born at time 0. Passing _clock stamped the stale tick count left
+            // over from a previous run (the _clock=0 reset at the end of startSimulation runs too
+            // late); runtime births below still use the live _clock.
+            _familyTree.addNode( i, NULL_INDEX, NULL_INDEX, 0, this.getSwimbotGenes(i) );
         }	
         
         //--------------------------------------
@@ -2193,7 +2196,9 @@ if ( globalTweakers.numFoodTypes === 2 )
             //------------------------------------------------------------------------------------
             // add the new swimbot to the family tree
             //------------------------------------------------------------------------------------
-            _familyTree.addNode( id, NULL_INDEX, NULL_INDEX, _clock, this.getSwimbotGenes( id ) );
+            // M-clock: loaded founders are born at time 0. Passing _clock stamped the target
+            // instance's stale tick count (the _clock=0 reset at the end of setPoolData runs too late).
+            _familyTree.addNode( id, NULL_INDEX, NULL_INDEX, 0, this.getSwimbotGenes( id ) );
         }
         
         //----------------------------------------
