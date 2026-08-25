@@ -2073,23 +2073,28 @@ if ( globalTweakers.numFoodTypes === 2 )
     {
         let index = this.findLowestDeadSwimbotInArray();
 
-        assert( index != NULL_INDEX, "GenePool.createNewSwimbotWithGenes: index != NULL_INDEX" );
-           
-        _myGenotype.setGenes( genes );
-    
-        let initialAge      = YOUNG_AGE_DURATION;          
-        let initialAngle    = ZERO;
-        let initialEnergy   = DEFAULT_SWIMBOT_HUNGER_THRESHOLD;
-        
-        _swimbots[ index ].create( index, initialAge, _camera.getPosition(), initialAngle, initialEnergy, _myGenotype, _embryology );			
+        //-----------------------------------------------------------------------
+        // Guard the pool-full case: findLowestDeadSwimbotInArray() returns
+        // NULL_INDEX when every slot is alive. Do nothing rather than indexing
+        // _swimbots[-1] (which crashes). Matches makeNewRandomSwimbot()/cloneSwimbot().
+        //-----------------------------------------------------------------------
+        if ( index != NULL_INDEX )
+        {
+            _myGenotype.setGenes( genes );
 
-        //-------------------------------------------------------
-        // add the new swimbot to the family tree
-        //-------------------------------------------------------
-        _familyTree.addNode( index, NULL_INDEX, NULL_INDEX, _clock, this.getSwimbotGenes( index ) );
+            let initialAge      = YOUNG_AGE_DURATION;
+            let initialAngle    = ZERO;
+            let initialEnergy   = DEFAULT_SWIMBOT_HUNGER_THRESHOLD;
 
+            _swimbots[ index ].create( index, initialAge, _camera.getPosition(), initialAngle, initialEnergy, _myGenotype, _embryology );
 
-        setSelectedSwimbot( index );
+            //-------------------------------------------------------
+            // add the new swimbot to the family tree
+            //-------------------------------------------------------
+            _familyTree.addNode( index, NULL_INDEX, NULL_INDEX, _clock, this.getSwimbotGenes( index ) );
+
+            setSelectedSwimbot( index );
+        }
     }
 
 
