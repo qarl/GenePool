@@ -425,6 +425,18 @@ _camera.setScale( POOL_WIDTH );
             //this.randomizeFood();
         }
 
+        //-----------------------------------------------------------------------------
+        // Kill any food beyond the count this mode actually wants. The default
+        // randomizeFood() above makes INITIAL_NUM_FOODBITS food alive, but the per-mode
+        // setFoodTo*() configs only re-initialize the prefix they use and leave the rest
+        // of that default food alive (stray food in RACE / BIG_BANG / BAD_PARENTS /
+        // NEIGHBORHOOD). Enforce: exactly _numFoodBits food bits are alive.
+        //-----------------------------------------------------------------------------
+        for (let f = _numFoodBits; f < MAX_FOODBITS; f++)
+        {
+            _foodBits[f].kill();
+        }
+
         //----------------------------------
         // initialize swimbots
         //----------------------------------
