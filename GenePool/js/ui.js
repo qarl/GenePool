@@ -91,8 +91,8 @@ function chooseAttraction()
                 
                 else if ( value === "similarColor"      ) { attraction = ATTRACTION_SIMILAR_COLOR;      }
                 else if ( value === "similarSize"       ) { attraction = ATTRACTION_SIMILAR_SIZE;       }
-                else if ( value === "similatHyper"      ) { attraction = ATTRACTION_SIMILAR_HYPER;      }
-                else if ( value === "similatLength"     ) { attraction = ATTRACTION_SIMILAR_LENGTH;     }
+                else if ( value === "similarHyper"      ) { attraction = ATTRACTION_SIMILAR_HYPER;      }
+                else if ( value === "similarLength"     ) { attraction = ATTRACTION_SIMILAR_LENGTH;     }
                 else if ( value === "similarStraight"   ) { attraction = ATTRACTION_SIMILAR_STRAIGHT;   }
                 
                 else if ( value === "random"            ) { attraction = ATTRACTION_RANDOM;             }
@@ -128,8 +128,19 @@ function setEcosystemValue( id )
     else if ( id === "hungerThresholdSlider"    ) { genePool.setHungerThreshold     ( input.value ); }
     else if ( id === "energyToOffspringSlider"  ) { genePool.setOffspringEnergyRatio( input.value ); }
     else if ( id === "maxAgeSlider"             ) { genePool.setMaximumSwimbotAge   ( input.value ); }
-        
-    updateEcosystemUI(); 
+    //--------------------------------------------------------------------------------------------
+    // TODO (future work): the "mutation rate" slider (id "mutationRateSlider", in the Tweak tab)
+    // is intentionally NOT wired here yet, so dragging it does nothing. It's more than a UI hookup:
+    // the mutation rate is a hard-coded const (MUTATION_RATE in Parameters.js, read by
+    // Genotype.setAsOffspring), so making the slider live requires plumbing a mutable rate through
+    // the SIMULATION -- e.g. add mutationRate to GlobalTweakers + genePool.setMutationRate()/
+    // getMutationRate(), have Genotype read globalTweakers.mutationRate, then also set this slider's
+    // min/max in initializeEcosystemUI() and its value in updateEcosystemUI(). That changes evolution
+    // dynamics, so it wants its own tested commit rather than a quick hookup. See docs BUGS "M-mutslider".
+    //--------------------------------------------------------------------------------------------
+    // else if ( id === "mutationRateSlider"    ) { genePool.setMutationRate         ( input.value ); }
+
+    updateEcosystemUI();
 }
 
 //------------------------------------
@@ -140,7 +151,7 @@ function setEcosystemToDefaults()
     genePool.setFoodBitEnergy       ( DEFAULT_FOOD_BIT_ENERGY           );
     genePool.setHungerThreshold     ( DEFAULT_SWIMBOT_HUNGER_THRESHOLD  );
     genePool.setOffspringEnergyRatio( DEFAULT_CHILD_ENERGY_RATIO        );
-    genePool.setMaximumSwimbotAge   ( DEFAULT_MAXIMUM_LIFESPAN          );
+    genePool.setMaximumSwimbotAge   ( DEFAULT_MAXIMUM_AGE               );
     
     updateEcosystemUI(); 
 }
