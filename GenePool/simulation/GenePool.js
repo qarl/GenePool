@@ -2122,13 +2122,19 @@ if ( globalTweakers.numFoodTypes === 2 )
         for (let f=0; f<data.numFoodBits; f++)
         {
             let id = data.foodBitArray[f].id;
-            
-            _foodBits[ id ].initialize();
-                
+
+            // M-foodinit: pass the slot id -- initialize() with no arg left _index=undefined
+            // (still "alive" since undefined != NULL_INDEX, but with a broken identity).
+            _foodBits[ id ].initialize( id );
+
             let foodBitPosition = new Vector2D();
             foodBitPosition.setXY( data.foodBitArray[f].x, data.foodBitArray[f].y );
-            _foodBits[ id ].setPosition( foodBitPosition );                
-        }        
+            _foodBits[ id ].setPosition( foodBitPosition );
+
+            // restore per-bit type (absent in pre-fix saves -> keep initialize()'s default of 0).
+            // energy is not restored per-bit: it is uniform and re-applied below via setFoodBitEnergy.
+            if ( data.foodBitArray[f].type !== undefined ) { _foodBits[ id ].setType( data.foodBitArray[f].type ); }
+        }
 
         //---------------------------------
         // load swimbots 
@@ -2212,6 +2218,15 @@ if ( globalTweakers.numFoodTypes === 2 )
         this.setHungerThreshold     ( data.hungerThreshold          );
         this.setAttraction          ( data.attractionCriterion      );
         this.setOffspringEnergyRatio( data.childEnergyRatio         );
+
+        //--------------------------------------------------------------
+        // M-lossy: restore params that shaped the saved pool. Without this, maximumLifeSpan
+        // (old-age death threshold) reverted to the 40000 default -- so a pool tuned lower lived
+        // far longer on reload -- and numFoodTypes reverted to 1, turning a 2-type pool into a
+        // 1-type one. Guards keep pre-fix save files (which lack these fields) loading unchanged.
+        //--------------------------------------------------------------
+        if ( data.maximumLifeSpan !== undefined ) { this.setMaximumSwimbotAge( data.maximumLifeSpan ); }
+        if ( data.numFoodTypes    !== undefined ) { globalTweakers.numFoodTypes = data.numFoodTypes;   }
         
         _renderingGoals = data.renderingGoals;        
 
@@ -3188,6 +3203,7 @@ if ( globalTweakers.numFoodTypes === 2 )
     this.getHungerThreshold     = function() { return globalTweakers.hungerThreshold;   }
     this.getEnergyToOffspring   = function() { return globalTweakers.childEnergyRatio;  }
     this.getMaximumSwimbotAge   = function() { return globalTweakers.maximumLifeSpan;   }
+    this.getNumFoodTypes        = function() { return globalTweakers.numFoodTypes;      }
     this.getTimeStep            = function() { return _clock;                   }    
 	this.getRenderingGoals      = function() { return _renderingGoals;          }
 	this.getSimulationRunning   = function() { return _simulationRunning;       }
@@ -3352,6 +3368,9 @@ if ( globalTweakers.numFoodTypes === 2 )
             this.id     = NULL_INDEX;
             this.x      = ZERO;
             this.y      = ZERO;
+            this.type   = 0;   // serialized so a 2-type pool doesn't reload as all type-0
+            // (food ENERGY is intentionally not per-bit: it is uniform in this sim and round-trips
+            //  via the foodBitEnergy tweaker, which setPoolData re-applies to every bit on load.)
         }
         
 	    let foodBitDataArray = new Array();
@@ -3365,6 +3384,7 @@ if ( globalTweakers.numFoodTypes === 2 )
                 foodBitDataArray[ numFoodbits ].id = f;
                 foodBitDataArray[ numFoodbits ].x = _foodBits[f].getPosition().x;
                 foodBitDataArray[ numFoodbits ].y = _foodBits[f].getPosition().y;
+                foodBitDataArray[ numFoodbits ].type   = _foodBits[f].getType();
 
                 numFoodbits ++;
             }
@@ -3461,6 +3481,8 @@ for (let g=0; g<NUM_GENES; g++)
             "foodRegenerationPeriod"    : globalTweakers.foodRegenerationPeriod,
             "foodSpread"                : globalTweakers.foodSpread,
             "foodBitEnergy"             : globalTweakers.foodBitEnergy,
+            "maximumLifeSpan"           : globalTweakers.maximumLifeSpan,
+            "numFoodTypes"              : globalTweakers.numFoodTypes,
             "hungerThreshold"           : globalTweakers.hungerThreshold,
             "attractionCriterion"       : globalTweakers.attractionCriterion,
             "childEnergyRatio"          : globalTweakers.childEnergyRatio,
