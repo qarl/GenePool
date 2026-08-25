@@ -2129,16 +2129,18 @@ if ( globalTweakers.numFoodTypes === 2 )
 
             let loadedGenotype = new Genotype();
             loadedGenotype.setGenes( data.swimbotArray[s].genes );
-            
-            //this seems to be glitched - I must explore why
-            //console.log( "s = " + s + "; id = " + id );            
-            //assert( id === s, "GenePool.js: this.setPoolData: assert: id === s" );
 
+            //-----------------------------------------------------------------------------
+            // Pass `id` (the slot this swimbot is stored in) as its internal index, so
+            // getIndex() === slot. getPoolData() saved `id` as the original slot but this
+            // loop's `s` is the packed array position; passing `s` here desynced the index
+            // from the slot for any saved pool with dead-slot gaps, corrupting mate lookups
+            // (mates are resolved by index) and death-time attribution in the family tree.
+            //-----------------------------------------------------------------------------
             _swimbots[ id ].create
-            ( 
-                s,
-                //id, //this seems to be glitched - I must explore why
-                data.swimbotArray[s].age, 
+            (
+                id,
+                data.swimbotArray[s].age,
                 swimbotPosition, 
                 data.swimbotArray[s].angle, 
                 data.swimbotArray[s].energy, 
