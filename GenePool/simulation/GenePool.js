@@ -1203,9 +1203,13 @@ if ( mode === SimulationStartMode.SPECIES )
                             assert( _mateGenotype  != null, "genepool: updateSwimbots: _mateGenotype  != null" );
 
                             //------------------------------------------------------------------------------
-                            // collect genes from me and my chosen mate and recombine them for the child
+                            // collect genes from me and my chosen mate and recombine them for the child.
+                            // Copy this parent's genes into the scratch genotype rather than aliasing it:
+                            // _myGenotype is a shared scratch that other entry points (makeNewRandomSwimbot,
+                            // createNewSwimbotWithGenes, getPresetGenotype) mutate in place, so aliasing a
+                            // live swimbot's genotype here would let those later scramble that swimbot's genes.
                             //------------------------------------------------------------------------------
-                            _myGenotype = _swimbots[s].getGenotype();
+                            _myGenotype.copyFromGenotype( _swimbots[s].getGenotype() );
                             _mateGenotype = _potentialMate.getGenotype();
                              
                             //------------------------------------------------------------------------------
