@@ -1923,6 +1923,12 @@ v[p].setXY( _phenotype.parts[p].axis.x / _phenotype.parts[p].length, _phenotype.
 	//----------------------
 	this.die = function()
 	{
+	    // die() must be idempotent: without this guard a swimbot that dies twice (e.g. old-age AND
+	    // starvation on the same tick), and setPoolData()'s "die() every slot to clear the pool"
+	    // loop, both double-count _numDeadSwimbots and re-notify the FamilyTree. An already-dead
+	    // swimbot is a no-op. (jimmy: guards the death tally + tree notify only -- no sim effect.)
+	    if ( !_alive ) { return; }
+
         _alive = false;
         
         _numDeadSwimbots ++;
