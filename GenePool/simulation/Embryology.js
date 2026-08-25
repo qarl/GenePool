@@ -233,6 +233,29 @@ let testNoEel = true;
             //---------------------------------------------------------------------------------------------
             // make these integers
             //---------------------------------------------------------------------------------------------
+            // NOTE / QUESTION (flagged for review -- behavior intentionally left UNCHANGED):
+            // These discrete "1 of N" gene decodes look off by one. A gene is an integer 0..255 and
+            // _normalizedGenes = gene / BYTE_SIZE (256), so norm is in [0, 255/256] and never reaches 1.0.
+            // Decoding a 1-of-N choice as floor( MIN + (MAX-MIN) * norm ) therefore never yields MAX --
+            // the top bucket is unreachable. An evenly-distributed 1-of-N pick wants
+            // floor( MIN + (MAX-MIN+1) * norm ) -- multiply by the COUNT of choices, not the range
+            // (buckets are exactly equal when N divides 256, e.g. N=4 -> 64 each; within one otherwise).
+            // Measured across all 256 gene values:
+            //     branchCategory  floor(3*norm)    -> {0,1,2}   never 3
+            //     sequenceCount   floor(2+3*norm)  -> {2,3,4}   never 5
+            //     branchPeriod    floor(1+3*norm)  -> {1,2,3}   never 4
+            //     branchShift     floor(6*norm)    -> {0..5}    never 6
+            // (branchNumber and branchReflect reach their MAX via the "+ ONE" offset just below, but that
+            //  trades the unreachable top for an unreachable bottom: they yield {1,2,3}, never 0. For
+            //  branchNumber that looks deliberate -- the branch loop assumes at least one branch. splined
+            //  uses round(), so both 0 and 1 occur.)
+            //
+            // branchCategory in particular looks like a real bug: NUM_CATEGORIES was raised 3 -> 4 (see its
+            // declaration near the top of this file), but branchCategory can still only reach 0..2, so
+            // category 3 is decoded into _categoryValues[3] and then NEVER read -- roughly a quarter of the
+            // coding genome is dead. Was the 4th category meant to be reachable (e.g. floor(NUM_CATEGORIES*norm))?
+            // Left exactly as-is here because fixing it would change how bodies grow, and therefore evolution.
+            //---------------------------------------------------------------------------------------------
             _categoryValues[c].sequenceCount    = Math.floor( ZERO  + _categoryValues[c].sequenceCount  );
             _categoryValues[c].branchPeriod     = Math.floor( ZERO  + _categoryValues[c].branchPeriod   );
             _categoryValues[c].branchNumber     = Math.floor( ONE   + _categoryValues[c].branchNumber   );
