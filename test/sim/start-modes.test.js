@@ -1,17 +1,12 @@
 'use strict';
-// Every SimulationStartMode must boot into a structurally valid pool, and (with one documented
-// exception) stay valid over a short run. The default smoke test only covers RANDOM; this widens the
+// Every SimulationStartMode must boot into a structurally valid pool and stay valid over a short run.
+// The default smoke test only covers RANDOM; this widens the
 // net to all presets so a mode that boots or steps into a corrupt state can't slip in unnoticed, and
-// it guards H-d directly (SPECIES fills to the full 2000 food). Uses checkInvariants (finite x/y/angle/
-// energy/age, genes in range, unique ids, slot identity, no self-parent lineage). NB: the food-count
-// invariant is tautologically balanced, so stray-food per preset (H-c) is guarded by its own
-// dedicated test (test/bugs/hc-stray-food-presets.test.js), not here.
-//
-// SPECIES exception: with H-d filling SPECIES to the full 2000 food and each bit given a RANDOM type
-// (0/1), one type lands slightly over MAX_FOODBITS_PER_TYPE (1000) -- see the {todo} pin below. During
-// updateFood that trips JJ's per-type-cap assert; in the browser asserts only alert-and-continue (the
-// S1 systemic issue) and regeneration rebalances, but our harness makes alert fatal. So SPECIES is
-// boot-checked here and its stepping is covered once the per-type imbalance is fixed (the {todo}).
+// it guards H-d directly (SPECIES fills to the full 2000 food, balanced across the two types so
+// neither exceeds MAX_FOODBITS_PER_TYPE). Uses checkInvariants (finite x/y/angle/energy/age, genes in
+// range, unique ids, slot identity, no self-parent lineage). NB: the food-count invariant is
+// tautologically balanced, so stray-food per preset (H-c) is guarded by its own dedicated test
+// (test/bugs/hc-stray-food-presets.test.js), not here.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -36,8 +31,8 @@ for (const [name, mode] of ALL) {
     });
 }
 
-// Stepping: all modes except SPECIES (see header + {todo} pin).
-for (const [name, mode] of ALL.filter(([n]) => n !== 'SPECIES')) {
+// Stepping: all modes (SPECIES now steps clean since its food types are balanced).
+for (const [name, mode] of ALL) {
     test(`start mode ${name}: stays valid over 100 ticks`, () => {
         const gp = boot(42, mode);
         for (let t = 0; t < 100; t++) {
@@ -57,15 +52,15 @@ test('start modes: EMPTY has no swimbots; RANDOM/SPECIES are populated with full
     assert.equal(species.getPoolData().foodBitArray.length, 2000, 'SPECIES should have 2000 food bits');
 });
 
-// KNOWN BUG (pinned): SPECIES assigns each of its 2000 food bits a random type, so one type lands
-// ~1000+-22 -- over MAX_FOODBITS_PER_TYPE (1000). The regen loop caps at 1000 thereafter, so this is
-// purely an initialization imbalance (setFoodToSpeciesConfiguration should assign types so neither
-// exceeds the cap). getNumFoodBits() is the type-0 count and getNumFoodBits1() the type-1 count when
-// numFoodTypes==2. Remove {todo} in the commit that balances the SPECIES food-type assignment.
-test('SPECIES: neither food type exceeds MAX_FOODBITS_PER_TYPE at boot', { todo: true }, () => {
+// SPECIES assigns its 2000 food bits balanced types (f % 2), so neither type exceeds
+// MAX_FOODBITS_PER_TYPE (1000) -- the cap updateFood's own assert enforces. (A prior random
+// assignment landed one type ~1000+-22, tripping that assert at boot.) getNumFoodBits() is the
+// type-0 count and getNumFoodBits1() the type-1 count when numFoodTypes==2.
+test('SPECIES: neither food type exceeds MAX_FOODBITS_PER_TYPE at boot', () => {
     const gp = boot(42, SM.SPECIES);
     const type0 = gp.getNumFoodBits();
     const type1 = gp.getNumFoodBits1();
     assert.ok(type0 <= MAX_PER_TYPE, `type-0 food ${type0} exceeds ${MAX_PER_TYPE}`);
     assert.ok(type1 <= MAX_PER_TYPE, `type-1 food ${type1} exceeds ${MAX_PER_TYPE}`);
+    assert.equal(type0 + type1, 2000, 'SPECIES should still have 2000 food total');
 });

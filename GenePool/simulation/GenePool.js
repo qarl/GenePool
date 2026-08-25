@@ -958,7 +958,17 @@ if ( mode === SimulationStartMode.SPECIES )
             p.x = gpRandom() * s;
             p.y = POOL_HEIGHT * ONE_HALF - s * ONE_HALF + + gpRandom() * s;
 
-            _foodBits[f].setType( Math.floor( gpRandom() * 2 ) );
+            //-----------------------------------------------------------------------
+            // Assign types in a balanced way (f % 2) rather than randomly. With 2000
+            // bits a random split lands one type ~1000+-22, OVER MAX_FOODBITS_PER_TYPE
+            // (1000) -- which trips updateFood's own per-type-cap assert at boot. f % 2
+            // gives exactly 1000 of each, at (not over) the cap. This matters because
+            // regen only *maintains* an at-or-under-cap state (it redirects new bits away
+            // from a type that's at the cap); it never *reduces* a type already over the
+            // cap, so a boot overshoot never self-heals. (Completes H-d, which fills
+            // SPECIES to the full 2000 food.)
+            //-----------------------------------------------------------------------
+            _foodBits[f].setType( f % 2 );
     
             if ( gpRandom() < ONE_HALF )
             {
