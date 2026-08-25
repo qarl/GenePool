@@ -315,9 +315,22 @@ function Obstacle()
 	    //----------------------------------
 	    // calculate direction
 	    //----------------------------------
-        _direction.x = _axis.x / _length;
-        _direction.y = _axis.y / _length;
-        
+	    // Guard the normalize: coincident/degenerate endpoints give _length 0, and 0/0 = NaN
+	    // would poison _direction and _perp -- which breaks collision detection (its NaN
+	    // comparisons all read false) -- and, via the endpoint-separation block below (which
+	    // scales by _direction), the endpoint positions themselves. Fall back to a unit direction
+	    // so the separation block still pushes the endpoints apart cleanly.
+	    if ( _length > ZERO )
+	    {
+	        _direction.x = _axis.x / _length;
+	        _direction.y = _axis.y / _length;
+	    }
+	    else
+	    {
+	        _direction.x = ONE;
+	        _direction.y = ZERO;
+	    }
+
 	    //---------------------------
 	    // calculate perpendicular
 	    //---------------------------

@@ -98,8 +98,14 @@ function Camera()
 	this.setAspectRatio = function(a)
 	{	
         //console.log( "setAspectRatio" );
-	
-	    _aspectRatio = a;
+
+	    // Guard against a non-finite aspect ratio: GenePool passes _canvasWidth / _canvasHeight,
+	    // so a zero-height canvas yields Infinity (or 0/0 = NaN), which would poison the camera
+	    // frame and position with Infinity/NaN. Ignore a bad value and keep the last good ratio.
+	    if ( Number.isFinite(a) && ( a > ZERO ) )
+	    {
+	        _aspectRatio = a;
+	    }
 
         //---------------------
         // important
