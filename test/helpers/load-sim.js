@@ -89,6 +89,8 @@ function loadSim() {
     MAX_SWIMBOTS:        (typeof MAX_SWIMBOTS        !== 'undefined') ? MAX_SWIMBOTS        : undefined,
     MAX_FOODBITS:        (typeof MAX_FOODBITS        !== 'undefined') ? MAX_FOODBITS        : undefined,
     NULL_INDEX:          (typeof NULL_INDEX          !== 'undefined') ? NULL_INDEX          : undefined,
+    assert:              (typeof assert              !== 'undefined') ? assert              : undefined,
+    assertInteger:       (typeof assertInteger       !== 'undefined') ? assertInteger       : undefined,
 };
 `;
     vm.runInThisContext(src, { filename: 'genepool-bundle.js' });
