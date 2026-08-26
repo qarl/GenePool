@@ -11,5 +11,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-      - run: node --test 'test/**/*.test.js'
+          node-version: '22'   # the documented minimum (README); the suite needs the glob runner (>=22)
+
+      - name: Run tests
+        run: node --test 'test/**/*.test.js'
+
+      # A {todo} pin marks a KNOWN, unfixed bug (a failing todo keeps the suite green). If one starts
+      # PASSING it means the bug was fixed but the {todo} wasn't removed -- so the fix has no live
+      # assertion. node:test does not flag that, so we grep the TAP for a passing `# TODO` and fail.
+      - name: Guard against a passing {todo} (fixed-but-unpromoted bug)
+        run: |
+          tap="$(node --test --test-reporter=tap 'test/**/*.test.js' 2>/dev/null || true)"
+          if printf '%s\n' "$tap" | grep -E '^ok [0-9]+ - .*# TODO'; then
+            echo "::error::A {todo} test is PASSING -- remove the {todo} in the commit that fixes the bug."
+            exit 1
+          fi
+          echo "OK: no passing {todo} pins."
+
+      # Coverage is informational (not a gate); print the per-file table to the log.
+      - name: Coverage (report only)
+        run: node --test --experimental-test-coverage 'test/**/*.test.js' || true
