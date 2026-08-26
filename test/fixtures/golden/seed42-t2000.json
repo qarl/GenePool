@@ -1,0 +1,11 @@
+{
+  "seed": 42,
+  "ticks": 2000,
+  "node": "v25.9.0",
+  "hash": "8172ad7f33eb924373aa60ed4339bc59a845c84d5ace3a961eef98271d83a886",
+  "scalars": {
+    "population": 522,
+    "food": 840,
+    "familyNodes": 548
+  }
+}
