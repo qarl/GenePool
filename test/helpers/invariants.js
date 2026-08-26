@@ -55,6 +55,7 @@ function checkInvariants(gp, GP) {
     for (const f of pd.foodBitArray) {
         if (!(Number.isInteger(f.id) && f.id >= 0 && f.id < MAX_F)) fail(`food id out of range: ${f.id}`);
         for (const k of ['x', 'y']) if (!Number.isFinite(f[k])) fail(`food ${f.id} ${k} not finite: ${f[k]}`);
+        if (!(f.type === 0 || f.type === 1)) fail(`food ${f.id} type invalid (must be 0 or 1): ${f.type}`);
     }
 
     // --- camera present + finite (its VALUE is nondeterministic, but must not be NaN/Inf) ---
@@ -63,13 +64,21 @@ function checkInvariants(gp, GP) {
     }
 
     // --- lineage: no node is its own parent (non-NULL parents only; founders are NULL) ---
+    // + lineage-time sanity: no birth stamped in the future; a recorded death is within [birth, now].
+    // (deathTime 0 = alive / not recorded.) Guards the M-clock class of stale-timestamp bugs.
     const ft = gp.getFamilyTree();
+    const now = gp.getTimeStep();
     for (let n = 0; n < ft.getNumNodes(); n++) {
         const self = ft.getNodePoolIndex(n);
         const p1 = ft.getNodeParent1PoolIndex(n);
         const p2 = ft.getNodeParent2PoolIndex(n);
         if (p1 !== NULLI && p1 === self) fail(`family node ${n} is its own parent1 (poolIndex ${self})`);
         if (p2 !== NULLI && p2 === self) fail(`family node ${n} is its own parent2 (poolIndex ${self})`);
+
+        const bt = ft.getNodeBirthTime(n);
+        const dt = ft.getNodeDeathTime(n);
+        if (!(Number.isFinite(bt) && bt >= 0 && bt <= now)) fail(`family node ${n} birthTime ${bt} not in [0, ${now}]`);
+        if (dt !== 0 && !(Number.isFinite(dt) && dt >= bt && dt <= now)) fail(`family node ${n} deathTime ${dt} not in [${bt}, ${now}]`);
     }
 }
 
