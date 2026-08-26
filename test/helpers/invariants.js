@@ -32,6 +32,14 @@ function checkInvariants(gp, GP) {
             if (!Number.isFinite(s[k])) fail(`swimbot ${s.id} ${k} not finite: ${s[k]}`);
         }
         if (s.energy <= 0) fail(`swimbot ${s.id} alive with energy <= 0: ${s.energy}`);
+        // Energy CEILING (anti-injection backstop, the C2 string-concat class). A swimbot stops
+        // eating once full (~hunger threshold), so it tops out around ~100 at default config and
+        // ~300 in the most extreme UI config (hunger 200 + one 100-energy meal); measured max over
+        // 4000 ticks x 3 seeds is 99.99. A value orders of magnitude above that (C2 injected 3050)
+        // signals an energy-injection bug. 1000 is a generous bound: far above any legitimate energy,
+        // far below an injection. (This is the reliable subset of "energy conservation" -- full
+        // per-tick accounting needs stable IDs + per-meal/-death observation and is deferred.)
+        if (s.energy > 1000) fail(`swimbot ${s.id} energy ${s.energy} exceeds the ceiling (energy-injection bug?)`);
 
         if (!Array.isArray(s.genes) || s.genes.length !== NG) {
             fail(`swimbot ${s.id} genes length ${s.genes && s.genes.length}, expected ${NG}`);
