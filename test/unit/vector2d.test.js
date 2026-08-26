@@ -86,3 +86,30 @@ test('Vector2D: normalize of the zero vector is guarded to (1,0), not NaN', () =
     assert.ok(Number.isFinite(z.x) && Number.isFinite(z.y), 'must not be NaN');
     assert.equal(z.x, 1); assert.equal(z.y, 0);
 });
+
+// getSegmentsCrossing(a0,a1,b0,b1) -> true iff segment a properly crosses segment b. It's the one
+// live segment-geometry method (getClosestPointOnLineSegment / getDistanceToLineSegment are commented
+// out in the source) and it backs Obstacle.getObstruction (line-of-sight / access blocking).
+const P = (x, y) => { const v = V(); v.setXY(x, y); return v; };
+const crosses = (a0, a1, b0, b1) => V().getSegmentsCrossing(a0, a1, b0, b1);
+
+test('Vector2D.getSegmentsCrossing: an X of two segments crosses', () => {
+    assert.equal(crosses(P(0, 0), P(10, 10), P(0, 10), P(10, 0)), true);
+});
+
+test('Vector2D.getSegmentsCrossing: parallel segments do not cross', () => {
+    assert.equal(crosses(P(0, 0), P(10, 0), P(0, 5), P(10, 5)), false);
+});
+
+test('Vector2D.getSegmentsCrossing: disjoint off-axis segments do not cross', () => {
+    // non-parallel, non-collinear, and nowhere near each other
+    assert.equal(crosses(P(0, 0), P(1, 1), P(3, 0), P(4, 0)), false);
+});
+
+test('Vector2D.getSegmentsCrossing: segments cross only where they overlap, not on extensions', () => {
+    // a is a short horizontal stub near the origin; b is a vertical line at x=5 -- their infinite
+    // lines would meet at (5,0), but segment a stops at x=1, so they do not actually cross.
+    assert.equal(crosses(P(0, 0), P(1, 0), P(5, -5), P(5, 5)), false);
+    // move a so it reaches x=5 -> now they cross
+    assert.equal(crosses(P(0, 0), P(10, 0), P(5, -5), P(5, 5)), true);
+});

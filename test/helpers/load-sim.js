@@ -81,6 +81,7 @@ function loadSim() {
     Vector2D:            (typeof Vector2D            !== 'undefined') ? Vector2D            : undefined,
     Obstacle:            (typeof Obstacle            !== 'undefined') ? Obstacle            : undefined,
     Camera:              (typeof Camera              !== 'undefined') ? Camera              : undefined,
+    FoodBit:             (typeof FoodBit             !== 'undefined') ? FoodBit             : undefined,
     SimulationStartMode: (typeof SimulationStartMode !== 'undefined') ? SimulationStartMode : undefined,
     NUM_GENES:           (typeof NUM_GENES           !== 'undefined') ? NUM_GENES           : undefined,
     BYTE_SIZE:           (typeof BYTE_SIZE           !== 'undefined') ? BYTE_SIZE           : undefined,
