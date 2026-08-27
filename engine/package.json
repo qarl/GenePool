@@ -1,0 +1,7 @@
+{
+  "name": "genepool-engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Fresh arbitrary-worlds engine core for GenePool (PLAN-restructure.md). ES modules; JJ's simulation/ is the frozen reference. type:module is scoped here so the CJS test harness keeps working against simulation/."
+}

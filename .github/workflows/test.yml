@@ -11,7 +11,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'   # the documented minimum (README); the suite needs the glob runner (>=22)
+          node-version: '22.12'   # floor: the glob runner needs >=22, and the CJS tests require() the ESM
+                                   # engine/ modules, which is unflagged only from Node 22.12.0 on the 22 line.
 
       - name: Run tests
         run: node --test 'test/**/*.test.js'
