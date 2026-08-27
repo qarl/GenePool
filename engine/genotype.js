@@ -33,6 +33,10 @@ export class Genotype {
 
     clear() { this._genes = new Uint8Array(NUM_GENES); }
 
+    // Copy another genotype's bytes into an owned buffer (JJ's copyFromGenotype). The source is already
+    // canonical (it is a Genotype), so a byte copy suffices; the fresh buffer avoids any aliasing.
+    copyFromGenotype(g) { this._genes = g.getGenes().slice(); }
+
     // Fill with random bytes. Draw order = one rng() per gene (matches JJ's randomize()).
     randomize(rng) {
         for (let g = 0; g < NUM_GENES; g++) {
