@@ -13,7 +13,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { boot } = require('../helpers/boot');
-const { mulberry32 } = require('../helpers/prng');
 const { hashEntities } = require('../helpers/p1a-golden');
 const { World } = require('../../engine/world.js');
 
@@ -39,7 +38,7 @@ function initialState() {
 }
 
 function makeWorld(init, seed) {
-    const world = new World(CONFIG, mulberry32(seed));
+    const world = new World(CONFIG, seed); // masterSeed is a non-negative integer (addressed rng)
     for (const s of init.swimbots) world.loadSwimbot(s.id, s);
     for (const f of init.food) world.loadFood(f.id, { x: f.x, y: f.y, type: f.type, energy: CONFIG.foodBitEnergy });
     world.setObstacle({ x: init.obstacle[0], y: init.obstacle[1] }, { x: init.obstacle[2], y: init.obstacle[3] });
@@ -150,6 +149,26 @@ test('P1b no-ABA BEHAVIOR: a chosenMate/food that died-and-was-swept yields no p
     E.eatChosenFoodBit();
     assert.equal(E.getEnergy(), energyBefore, 'a DEAD chosen food must not be eaten (no energy gain)');
     assert.equal(E.getNumFoodBitsEaten(), eatenBefore, 'a DEAD chosen food must not raise the eaten count');
+});
+
+test('P1b-ii addressed rng: the mate-pref draw is ORDER-INDEPENDENT (MATE_PREF is pairwise-addressed)', () => {
+    // The point of MATE_PREF(looker, candidate, tick): the mate-pref draw is a pure function of WHO judges
+    // WHOM and WHEN -- unaffected by how many other pairs were evaluated first. Under the old single global
+    // stream, intervening draws would shift it. ATTRACTION_RANDOM makes getAttractiveness RETURN that draw.
+    const init = initialState();
+    const world = makeWorld(init, 4);
+    const A = world._swimbots.get(0);
+    const B = world._swimbots.get(1);
+    const C = world._swimbots.get(2);
+    B.setAttraction(16); C.setAttraction(16); // ATTRACTION_RANDOM
+    const tick = 123;
+    const bFirst = B.getAttractiveness(A, tick);
+    // a flurry of OTHER pairings in between (a shared counter would advance; addressed draws do not)
+    C.getAttractiveness(A, tick); C.getAttractiveness(B, tick); B.getAttractiveness(C, tick); C.getAttractiveness(A, 999);
+    const bAgain = B.getAttractiveness(A, tick);
+    assert.equal(bAgain, bFirst, 'MATE_PREF(A,B,tick) must be identical regardless of intervening evaluations');
+    // and it genuinely depends on the address (a different tick gives a different draw)
+    assert.notEqual(B.getAttractiveness(A, tick + 1), bFirst, 'a different tick must give a different mate-pref draw');
 });
 
 test('P1b sanity: a real run has births + deaths + food regeneration, and the ABA cannot occur', () => {

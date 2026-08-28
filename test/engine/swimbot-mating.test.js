@@ -95,7 +95,9 @@ function drivePairNew(scn, draws) {
     };
     const mk = (genes, id, x, y, angle) => {
         const g = new Genotype(); g.setGenes(genes.slice());
-        const sb = new Swimbot({ rng, config: CONFIG, embryology: newEmb });
+        // Addressed rng (P1b-ii): both wander (life) and mate-pref (matePref) replay the OLD single global
+        // stream in call order, so this A/B against JJ still holds.
+        const sb = new Swimbot({ life: { next: rng }, matePref: () => rng(), config: CONFIG, embryology: newEmb });
         sb.create(id, 5000, { x, y }, angle, energy, g);
         return sb;
     };
@@ -107,7 +109,7 @@ function drivePairNew(scn, draws) {
         const before = di;
         for (const [s, other] of pairOrder(A, B)) {
             s.update();
-            if (s.getIsLookingForSensoryInput()) s.setEnvironmentalStimuli(1, [other], false, null);
+            if (s.getIsLookingForSensoryInput()) s.setEnvironmentalStimuli(1, [other], false, null, t);
             if (contribute && s.getIsTryingToMate()
                 && s.getChosenMateIndex() === other.getIndex() && other.getAlive()) {
                 s.contributeToOffspring();
@@ -218,8 +220,8 @@ test('rung2: getAttractiveness reproduces old-vs-new under EVERY attraction crit
         globalThis.gpRandom = oldRng; // old getAttractiveness draws from the global
         const oldVal = oldRun.B.getAttractiveness(oldRun.A);
         const newRng = mkRng();
-        newRun.B._rng = newRng;        // new getAttractiveness draws from the injected rng
-        const newVal = newRun.B.getAttractiveness(newRun.A);
+        newRun.B._matePref = () => newRng(); // new getAttractiveness draws its mate-pref from this feed
+        const newVal = newRun.B.getAttractiveness(newRun.A, 0); // tick arg (unused -- matePref ignores it)
         assert.equal(newVal, oldVal, `getAttractiveness drift at criterion ${criterion}`);
         assert.equal(newRng.count(), oldRng.count(), `getAttractiveness draw-count drift at criterion ${criterion}`);
         const expectedDraws = (criterion === 16) ? 2 : 1; // ATTRACTION_RANDOM draws twice; all else once

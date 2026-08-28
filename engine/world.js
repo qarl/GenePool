@@ -28,6 +28,7 @@ import { Obstacle } from './obstacle.js';
 import { Genotype } from './genotype.js';
 import { Embryology } from './embryology.js';
 import { Vector2D } from './vector2d.js';
+import { draw, makeStream, DOMAIN } from './rng.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
     MAX_FOODBITS_PER_TYPE, NON_REPRODUCING_JUNK_DNA_LIMIT,
@@ -35,12 +36,20 @@ import {
 } from './constants.js';
 
 export class World {
-    constructor(config, rng) {
+    // masterSeed is a non-negative safe integer; every draw is addressed off it (§3). No global stream.
+    constructor(config, masterSeed) {
         this._config = config;
-        this._rng = rng;
+        this._masterSeed = masterSeed;
         this._embryology = new Embryology();
         this._clock = 0;
         this._numDeadSwimbots = 0;
+
+        // Pool-level addressed streams. A swimbot gets its own SWIMBOT_LIFE stream (per id); mate-pref is
+        // a pairwise MATE_PREF draw shared by all swimbots; food regen has one POOL_FOOD_REGEN stream.
+        this._foodRegenStream = makeStream(masterSeed, DOMAIN.POOL_FOOD_REGEN);
+        this._foodRegenRng = () => this._foodRegenStream.next();
+        this._matePref = (lookerId, candidateId, tick, drawIdx) =>
+            draw(masterSeed, DOMAIN.MATE_PREF, lookerId, candidateId, tick, drawIdx);
 
         // Dynamic collections keyed by NEVER-REUSED id (Map preserves insertion = ascending-id order).
         this._swimbots = new Map();
@@ -59,9 +68,13 @@ export class World {
         this._numNearby = 0;
     }
 
-    _makeSwimbot() {
+    // Each swimbot gets its OWN per-life SWIMBOT_LIFE stream keyed on its never-reused id, plus the shared
+    // pairwise matePref. (create() is RNG-free, so the stream is unused until the first tick.)
+    _makeSwimbot(id) {
         return new Swimbot({
-            rng: this._rng, config: this._config, embryology: this._embryology,
+            life: makeStream(this._masterSeed, DOMAIN.SWIMBOT_LIFE, id),
+            matePref: this._matePref,
+            config: this._config, embryology: this._embryology,
             onDeath: () => { this._numDeadSwimbots++; },
         });
     }
@@ -70,7 +83,7 @@ export class World {
     // Ids come from the loaded state and set the never-reused floor (nextId past the highest loaded id). ---
     loadSwimbot(id, { age, x, y, angle, energy, genes, numOffspring = 0, numFoodBitsEaten = 0 }) {
         const g = new Genotype(); g.setGenes(genes);
-        const sb = this._makeSwimbot();
+        const sb = this._makeSwimbot(id);
         sb.create(id, age, { x, y }, angle, energy, g);
         sb.setNumOffspring(numOffspring);
         sb.setNumFoodBitsEaten(numFoodBitsEaten);
@@ -104,8 +117,6 @@ export class World {
         }
         return ONE - (diff / num);
     }
-
-    _getRandomAngleInDegrees() { return -180.0 + this._rng() * 360.0; }
 
     // --- the tick. The live collection governs it; deaths take effect immediately (dead entities are
     // skipped for the rest of the tick); births are staged and applied after (T+1); dead entities are then
@@ -182,7 +193,9 @@ export class World {
             }
         }
 
-        bot.setEnvironmentalStimuli(this._numNearby, this._nearbyArray, foundFoodBit, chosenFoodBit);
+        // The tick is threaded to the mate scan so getAttractiveness can address MATE_PREF(looker,
+        // candidate, tick) -- decoupling the mate-pref draw from the scan order.
+        bot.setEnvironmentalStimuli(this._numNearby, this._nearbyArray, foundFoodBit, chosenFoodBit, this._clock);
     }
 
     _handleBirth(parent) {
@@ -198,7 +211,12 @@ export class World {
 
         const newBornId = this._nextSwimbotId++;
 
-        this._childGenotype.setAsOffspring(this._myGenotype, mateGenotype, this._rng, {
+        // The newborn's birth-time randomness (genome crossover+mutation, then the initial angle) comes
+        // from its OWN addressed OFFSPRING_GENOME stream -- a pure function of its id, independent of when
+        // in the tick the birth happens.
+        const genomeStream = makeStream(this._masterSeed, DOMAIN.OFFSPRING_GENOME, newBornId);
+        const genomeRng = () => genomeStream.next();
+        this._childGenotype.setAsOffspring(this._myGenotype, mateGenotype, genomeRng, {
             crossoverRate: this._config.crossoverRate, mutationRate: this._config.mutationRate,
         });
 
@@ -211,9 +229,9 @@ export class World {
         this._birthPos.x = parent.getGenitalPosition().x + diffX * ONE_HALF;
         this._birthPos.y = parent.getGenitalPosition().y + diffY * ONE_HALF;
 
-        const initialAngle = this._getRandomAngleInDegrees(); // 1 draw, AFTER setAsOffspring
+        const initialAngle = -180.0 + genomeRng() * 360.0; // from the same stream, AFTER the genome
 
-        const child = this._makeSwimbot();
+        const child = this._makeSwimbot(newBornId);
         child.create(newBornId, 0, this._birthPos, initialAngle, energyToOffspring, this._childGenotype);
         // T+1: stage the newborn; it joins the collection AFTER this tick and first acts next tick.
         this._pendingBirths.push(child);
@@ -227,7 +245,7 @@ export class World {
             if (food.getAlive() && food.getType() === foodType) candidates.push(food);
         }
         if (candidates.length === 0) return null;
-        return candidates[Math.floor(this._rng() * candidates.length)];
+        return candidates[Math.floor(this._foodRegenRng() * candidates.length)];
     }
 
     _updateFood() {
@@ -245,7 +263,7 @@ export class World {
             let parent = this._findRandomLivingFoodOfType(newFoodType);
 
             if (this._config.numFoodTypes === 2) {
-                newFoodType = Math.floor(this._rng() * 2);
+                newFoodType = Math.floor(this._foodRegenRng() * 2);
                 // >= (JJ used ==, which was safe under the hard total cap; without it, use >= so the
                 // per-type balance can't be skipped past). MAX_FOODBITS_PER_TYPE stays a per-type balance
                 // hint, not a hard ceiling.
@@ -259,12 +277,12 @@ export class World {
                 const childId = this._nextFoodId++;
                 const child = new FoodBit();
                 child.setMaxSpawnRadius(this._config.foodSpread);
-                child.spawnFromParent(parent, childId, newFoodType, this._rng);
+                child.spawnFromParent(parent, childId, newFoodType, this._foodRegenRng);
 
                 let looking = true;
                 let num = 0;
                 while (looking) {
-                    child.randomizeSpawnPosition(parent, this._rng);
+                    child.randomizeSpawnPosition(parent, this._foodRegenRng);
                     if (!this._obstacle.getObstruction(parent.getPosition(), child.getPosition())) looking = false;
                     num++;
                     if (num > 10) looking = false;

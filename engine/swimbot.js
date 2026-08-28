@@ -2,8 +2,10 @@
 // the per-tick physics/brain/eat path is bit-exact against JJ (proven by the rung-1 in-process A/B in
 // test/engine/swimbot-fidelity.test.js), so operator order, the faithful quirks, and draw order are all
 // preserved. Two structural changes per the plan:
-//   - randomness is INJECTED (ctx.rng = () -> [0,1)), never a global gpRandom (§3). Draw SITES/ORDER are
-//     unchanged: wanderFocus() draws 2 (or 4 on the first, zero-direction call); getAttractiveness draws.
+//   - randomness is INJECTED and ADDRESSED (§3, P1b-ii): own draws from ctx.life (a per-swimbot
+//     SWIMBOT_LIFE counter stream); mate-pref draws from ctx.matePref (pairwise MATE_PREF, scan-order
+//     independent). Draw SITES/COUNT are unchanged from the global-stream version: wanderFocus() draws 2
+//     (or 4 on the first, zero-direction call); getAttractiveness draws 1 (2 for ATTRACTION_RANDOM).
 //   - world params are INJECTED (ctx.config): maximumLifeSpan, numFoodTypes, childEnergyRatio, and pool
 //     bounds -- JJ read these off globalTweakers / POOL_* globals (§11). Mechanism scalars stay constant.
 // die() no longer touches a global dead-count or a FamilyTree; it flips _alive (idempotently) and calls
@@ -46,7 +48,11 @@ import {
 export class Swimbot {
     // ctx = { rng: () -> [0,1), config, embryology, onDeath?: (index) -> void }
     constructor(ctx) {
-        this._rng = ctx.rng;
+        // Addressed RNG (P1b-ii): a swimbot's OWN draws come from its per-life SWIMBOT_LIFE stream
+        // (ctx.life, a counter stream keyed on its id); mate-preference draws are PAIRWISE addressed
+        // (ctx.matePref(lookerId, candidateId, tick, drawIdx)) so mate choice can't couple to scan order.
+        this._life = ctx.life;
+        this._matePref = ctx.matePref;
         this._config = ctx.config;
         this._embryology = ctx.embryology;
         this._onDeath = ctx.onDeath || null;
@@ -418,13 +424,13 @@ export class Swimbot {
         let length = this._directionToGoal.getMagnitude();
 
         if (length === ZERO) {
-            this._directionToGoal.x = -ONE_HALF + this._rng();
-            this._directionToGoal.y = -ONE_HALF + this._rng();
+            this._directionToGoal.x = -ONE_HALF + this._life.next();
+            this._directionToGoal.y = -ONE_HALF + this._life.next();
             length = this._directionToGoal.getMagnitude();
         }
 
-        this._directionToGoal.x += (-BRAIN_WANDER_AMOUNT * ONE_HALF + this._rng() * BRAIN_WANDER_AMOUNT);
-        this._directionToGoal.y += (-BRAIN_WANDER_AMOUNT * ONE_HALF + this._rng() * BRAIN_WANDER_AMOUNT);
+        this._directionToGoal.x += (-BRAIN_WANDER_AMOUNT * ONE_HALF + this._life.next() * BRAIN_WANDER_AMOUNT);
+        this._directionToGoal.y += (-BRAIN_WANDER_AMOUNT * ONE_HALF + this._life.next() * BRAIN_WANDER_AMOUNT);
 
         this._directionToGoal.x /= length;
         this._directionToGoal.y /= length;
@@ -606,7 +612,7 @@ export class Swimbot {
         return this._chosenFoodBitIndex;
     }
 
-    setEnvironmentalStimuli(numNearbySwimbots, nearbySwimbotArray, foodBitWasFound, theFoodBit) {
+    setEnvironmentalStimuli(numNearbySwimbots, nearbySwimbotArray, foodBitWasFound, theFoodBit, tick) {
         this._chosenFoodBit = null;
         this._chosenFoodBitIndex = NULL_INDEX;
 
@@ -626,7 +632,7 @@ export class Swimbot {
             let highestBabeFactor = -100.0;
 
             for (let o = 0; o < numNearbySwimbots; o++) {
-                const babeFactor = nearbySwimbotArray[o].getAttractiveness(this);
+                const babeFactor = nearbySwimbotArray[o].getAttractiveness(this, tick);
                 if ((babeFactor > highestBabeFactor)
                     && (babeFactor > TOO_UGLY_TO_CHOOSE)
                     && (nearbySwimbotArray[o].getAge() > YOUNG_AGE_DURATION)
@@ -685,8 +691,10 @@ export class Swimbot {
         this._brain.setAttraction(attraction);
     }
 
-    getAttractiveness(judge) {
-        let attractiveness = this._rng();
+    getAttractiveness(judge, tick) {
+        // PAIRWISE addressed: the top draw is MATE_PREF(lookerId=judge, candidateId=this, tick, 0) --
+        // a pure function of WHO is judging WHOM and WHEN, independent of perception/scan order.
+        let attractiveness = this._matePref(judge.getIndex(), this._index, tick, 0);
 
         const attractionCriterion = this._brain.getAttractionCriterion();
 
@@ -709,7 +717,7 @@ export class Swimbot {
         if (attractionCriterion === ATTRACTION_SIMILAR_STRAIGHT) { attractiveness = this.getStraightessSimilarity(judge); }
 
         if (attractionCriterion === ATTRACTION_CLOSEST) { attractiveness = this.getCloseness(judge); }
-        if (attractionCriterion === ATTRACTION_RANDOM) { attractiveness = this._rng(); }
+        if (attractionCriterion === ATTRACTION_RANDOM) { attractiveness = this._matePref(judge.getIndex(), this._index, tick, 1); }
 
         return attractiveness;
     }

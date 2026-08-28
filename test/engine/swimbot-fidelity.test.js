@@ -127,7 +127,9 @@ function runNew(scn, draws) {
     const geno = new Genotype();
     geno.setGenes(genes.slice());
     const pos = { x, y };
-    const sb = new Swimbot({ rng, config: configFor(numFoodTypes), embryology: newEmb });
+    // Addressed rng (P1b-ii): wander draws from ctx.life. This rung replays the OLD global draws, so life
+    // wraps the single replay fn (no mate scan here, so matePref is unused).
+    const sb = new Swimbot({ life: { next: rng }, config: configFor(numFoodTypes), embryology: newEmb });
     sb.create(0, age, pos, angle, energy, geno);
 
     const states = [];
