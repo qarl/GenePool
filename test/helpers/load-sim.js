@@ -86,6 +86,7 @@ function loadSim() {
     Brain:               (typeof Brain               !== 'undefined') ? Brain               : undefined,
     Embryology:          (typeof Embryology          !== 'undefined') ? Embryology          : undefined,
     SimulationStartMode: (typeof SimulationStartMode !== 'undefined') ? SimulationStartMode : undefined,
+    globalTweakers:      (typeof globalTweakers      !== 'undefined') ? globalTweakers      : undefined,
     NUM_GENES:           (typeof NUM_GENES           !== 'undefined') ? NUM_GENES           : undefined,
     BYTE_SIZE:           (typeof BYTE_SIZE           !== 'undefined') ? BYTE_SIZE           : undefined,
     MAX_SWIMBOTS:        (typeof MAX_SWIMBOTS        !== 'undefined') ? MAX_SWIMBOTS        : undefined,
