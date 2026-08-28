@@ -576,9 +576,11 @@ export class Swimbot {
     }
 
     eatChosenFoodBit() {
-        assert(this._chosenFoodBit !== null, 'eatChosenFoodBit: _chosenFoodBit != null');
-        assert(this._chosenFoodBit.getAlive(), 'eatChosenFoodBit: _chosenFoodBit.getAlive()');
-
+        // JJ asserts _chosenFoodBit is non-null + alive here, but his assert() only alerts-then-CONTINUES
+        // (browser), so it falls through to the guard below. This is a RECOVERABLE case, not a bug: a
+        // swimbot can be _tryingToEat (set in update()) yet have its chosen food nulled by the perception
+        // that runs between (food that moved behind the obstacle -> foundFoodBit=false -> _chosenFoodBit
+        // null). Throwing here would abort the tick where JJ skips; the guard handles it faithfully.
         if ((this._chosenFoodBit !== null) && (this._chosenFoodBit.getAlive())) {
             let energyFromFoodBit = this._chosenFoodBit.getEnergy();
 
