@@ -81,7 +81,13 @@ export class World {
     }
 
     // --- loading (Option B: inject a constructed state; create() reconstructs hidden state, RNG-free).
-    // Ids come from the loaded state and set the never-reused floor (nextId past the highest loaded id). ---
+    //
+    // THIS IS A FRESH-SCENARIO SEEDER, NOT A CHECKPOINT/RESUME. It derives the never-reused floor from the
+    // highest LOADED id -- correct only when nothing has died yet. A mid-run checkpoint must persist AND
+    // restore _nextSwimbotId/_nextFoodId, _clock, and every live entity's stream counter, reconstructing
+    // nextId from the HIGH-WATER MARK (not the surviving id set) -- otherwise births re-mint ids that dead
+    // swimbots already used, resurrecting the ABA + an RNG-ABA (a reborn id replays the dead one's stream).
+    // That persistence contract is a P5 deliverable (§13); until it exists, do not treat load* as resume. ---
     loadSwimbot(id, { age, x, y, angle, energy, genes, numOffspring = 0, numFoodBitsEaten = 0 }) {
         const g = new Genotype(); g.setGenes(genes);
         const sb = this._makeSwimbot(id);
@@ -108,6 +114,7 @@ export class World {
     getClock() { return this._clock; }
     getNextSwimbotId() { return this._nextSwimbotId; }
     getNextFoodId() { return this._nextFoodId; }
+    getNumDeadSwimbots() { return this._numDeadSwimbots; }
 
     _getJunkDnaSimilarity(genotype1, genotype2) {
         let diff = ZERO;
@@ -177,19 +184,23 @@ export class World {
         this._numNearby = Math.min(this._nearbyCandidates.length, BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS);
         for (let i = 0; i < this._numNearby; i++) this._nearbyArray[i] = this._nearbyCandidates[i].other;
 
-        // closest visible food (of the preferred type, when 2 food types).
+        // closest visible food (of the preferred type, when 2 food types). GRID-SAFE: an id tiebreak on
+        // exactly-equal distance makes the choice independent of iteration order (P2 grid buckets).
         let foundFoodBit = false;
         let chosenFoodBit = null;
         let smallestDistance = Number.MAX_SAFE_INTEGER;
+        let chosenFoodId = Infinity;
         for (const food of this._foodBits.values()) {
             if (!food.getAlive()) continue;
             if (this._config.numFoodTypes === 2 && food.getType() !== bot.getPreferredFoodType()) continue;
             const viewDistance = bot.getMouthPosition().getDistanceTo(food.getPosition());
             if (viewDistance < SWIMBOT_VIEW_RADIUS) {
                 const distance = viewDistance / SWIMBOT_VIEW_RADIUS;
-                if (distance < smallestDistance) {
+                const id = food.getIndex();
+                if ((distance < smallestDistance) || (distance === smallestDistance && id < chosenFoodId)) {
                     if (!this._obstacle.getObstruction(bot.getMouthPosition(), food.getPosition())) {
                         smallestDistance = distance;
+                        chosenFoodId = id;
                         chosenFoodBit = food;
                         foundFoodBit = true;
                     }
@@ -243,12 +254,15 @@ export class World {
 
     // Pick a random LIVING food of the given type (JJ's slot-index rejection sampling doesn't survive the
     // never-reused-id collection; this draws one index into the living-of-type list -- a rebaseline).
+    // GRID-SAFE: sort the candidate list by id so the indexed draw hits the SAME food regardless of the
+    // collection's iteration order (a P2 spatial grid may iterate food in bucket order, not id order).
     _findRandomLivingFoodOfType(foodType) {
         const candidates = [];
         for (const food of this._foodBits.values()) {
             if (food.getAlive() && food.getType() === foodType) candidates.push(food);
         }
         if (candidates.length === 0) return null;
+        candidates.sort((a, b) => a.getIndex() - b.getIndex());
         return candidates[Math.floor(this._foodRegenRng() * candidates.length)];
     }
 
@@ -264,9 +278,11 @@ export class World {
 
         if (this._clock % this._config.foodRegenerationPeriod === 0) {
             let newFoodType = 0;
-            let parent = this._findRandomLivingFoodOfType(newFoodType);
+            let parent;
 
-            if (this._config.numFoodTypes === 2) {
+            if (this._config.numFoodTypes !== 2) {
+                parent = this._findRandomLivingFoodOfType(0); // single type: one parent pick, one draw
+            } else {
                 newFoodType = Math.floor(this._foodRegenRng() * 2);
                 // >= (JJ used ==, which was safe under the hard total cap; without it, use >= so the
                 // per-type balance can't be skipped past). MAX_FOODBITS_PER_TYPE stays a per-type balance

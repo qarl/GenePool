@@ -46,7 +46,8 @@ import {
 } from './constants.js';
 
 export class Swimbot {
-    // ctx = { rng: () -> [0,1), config, embryology, onDeath?: (index) -> void }
+    // ctx = { life: { next() -> [0,1) }, matePref: (lookerId, candidateId, tick, drawIdx) -> [0,1),
+    //         config, embryology, onDeath?: (index) -> void }
     constructor(ctx) {
         // Addressed RNG (P1b-ii): a swimbot's OWN draws come from its per-life SWIMBOT_LIFE stream
         // (ctx.life, a counter stream keyed on its id); mate-preference draws are PAIRWISE addressed

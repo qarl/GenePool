@@ -91,6 +91,7 @@ test('P1b determinism: same initial state + same seed reproduces the run bit-for
         const world = makeWorld(init, seed);
         const hashes = new Array(200);
         for (let t = 0; t < 200; t++) { world.tick(); hashes[t] = hashEntities(world.dumpSwimbots(), world.dumpFood()); }
+        assert.ok(world.getLivingSwimbotCount() > 0, `seed ${seed} went extinct -- hashes would be trivially equal`);
         return hashes;
     };
     const a = runHashes(9);
@@ -210,4 +211,44 @@ test('P1c closest-20: perception picks the 20 CLOSEST swimbots, not the first-20
     for (let id = 5; id <= 24; id++) assert.ok(chosenIds.has(id), `closest-20 must include id ${id}`);
     // the 5 farthest (k=20..24, distances 210..250) have ids 4..0 and must be EXCLUDED.
     for (let id = 0; id <= 4; id++) assert.ok(!chosenIds.has(id), `farthest id ${id} must be excluded (it's id-low but distance-far)`);
+});
+
+test('P1b/P1c 2-food-type World: the 2-type food ecology runs, both types persist and regenerate', () => {
+    // The most rebaselined, branch-heavy tick code (2-type census + >=cap steering + extinct-type
+    // fallbacks + the preferred-type perception filter + FOOD_TYPE_OFFSET eating) is unexercised by the
+    // 1-type tests. Build a 2-type World and drive it.
+    const gp = boot(42);
+    const pd = gp.getPoolData();
+    const obstacle = [pd.obstacleEnd1X, pd.obstacleEnd1Y, pd.obstacleEnd2X, pd.obstacleEnd2Y];
+    const config2 = { ...CONFIG, numFoodTypes: 2 };
+    const world = new World(config2, 8);
+    for (const s of pd.swimbotArray) {
+        world.loadSwimbot(s.id, {
+            age: s.age, x: s.x, y: s.y, angle: s.angle, energy: s.energy, genes: Array.from(s.genes),
+            numOffspring: s.numOffspring, numFoodBitsEaten: s.numFoodBitsEaten,
+        });
+    }
+    // seed BOTH food types (alternate by id) so the census + balance logic has something to balance
+    for (const f of pd.foodBitArray) world.loadFood(f.id, { x: f.x, y: f.y, type: f.id % 2, energy: config2.foodBitEnergy });
+    world.setObstacle({ x: obstacle[0], y: obstacle[1] }, { x: obstacle[2], y: obstacle[3] });
+
+    const check = makeInvariantChecker();
+    const startFoodId = world.getNextFoodId();
+    for (let t = 1; t <= 700; t++) { world.tick(); check(world, t); }
+
+    // regen actually ran (new food minted) and BOTH types still exist (the ecology didn't collapse a type)
+    assert.ok(world.getNextFoodId() > startFoodId, '2-type food regen never minted new food');
+    let t0 = 0; let t1 = 0;
+    for (const f of world.dumpFood()) { if (f.type === 0) t0++; else if (f.type === 1) t1++; }
+    assert.ok(t0 > 0, 'food type 0 went extinct in the 2-type World');
+    assert.ok(t1 > 0, 'food type 1 went extinct in the 2-type World');
+    assert.ok(world.getLivingSwimbotCount() > 0, '2-type World population went extinct');
+
+    // determinism holds at 2 types too
+    const world2 = new World(config2, 8);
+    for (const s of pd.swimbotArray) world2.loadSwimbot(s.id, { age: s.age, x: s.x, y: s.y, angle: s.angle, energy: s.energy, genes: Array.from(s.genes), numOffspring: s.numOffspring, numFoodBitsEaten: s.numFoodBitsEaten });
+    for (const f of pd.foodBitArray) world2.loadFood(f.id, { x: f.x, y: f.y, type: f.id % 2, energy: config2.foodBitEnergy });
+    world2.setObstacle({ x: obstacle[0], y: obstacle[1] }, { x: obstacle[2], y: obstacle[3] });
+    for (let t = 1; t <= 700; t++) world2.tick();
+    assert.equal(hashEntities(world2.dumpSwimbots(), world2.dumpFood()), hashEntities(world.dumpSwimbots(), world.dumpFood()), '2-type run is non-deterministic');
 });
