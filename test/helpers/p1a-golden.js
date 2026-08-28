@@ -121,6 +121,17 @@ function hashSnapshot(snap) {
     return crypto.createHash('sha256').update(JSON.stringify(snap)).digest('hex');
 }
 
+// Canonical ENTITY snapshot (swimbots + food, no config) from RAW records -- used by the rung-3d pool
+// A/B where both the OLD engine (getPoolData + chosenMate/brainState getters) and the NEW World (dump*)
+// build the same raw shape and must hash identically. Raw swimbot: {x,y,angle,energy,age,numOffspring,
+// numFoodBitsEaten,genes,id,chosenMate,brainState}; raw food: {x,y,type,id}.
+function entitiesSnapshot(swimbotRaws, foodRaws) {
+    const swimbots = swimbotRaws.map((s) => swimbotRecord(s, s.chosenMate, s.brainState)).sort(cmpSwimbot);
+    const food = foodRaws.map(foodRecord).sort(cmpFood);
+    return { swimbots, food };
+}
+function hashEntities(swimbotRaws, foodRaws) { return hashSnapshot(entitiesSnapshot(swimbotRaws, foodRaws)); }
+
 // The set of living stable ids, for ABA (slot-reuse) detection.
 function livingIds(gp) {
     return new Set(gp.getPoolData().swimbotArray.map((s) => s.id));
@@ -179,5 +190,6 @@ const path = require('node:path');
 const goldenPath = () => path.join(__dirname, '..', 'fixtures', 'golden', `p1a-tick-baseline-seed${SEED}-t${TICKS}.json`);
 
 module.exports = {
-    captureRun, canonicalSnapshot, hashSnapshot, scalarsOf, livingIds, SEED, TICKS, goldenPath,
+    captureRun, canonicalSnapshot, hashSnapshot, hashEntities, entitiesSnapshot,
+    scalarsOf, livingIds, SEED, TICKS, goldenPath,
 };

@@ -83,6 +83,13 @@ export const FOOD_BIT_BOUNDARY_MARGIN = POOL_WIDTH * 0.01;
 export const DEFAULT_FOOD_BIT_MAX_SPAWN_RADIUS = 4000.0;
 export const DEFAULT_FOOD_BIT_ENERGY = 50.0;
 
+// Pool capacities (JJ's fixed slot counts; P1b/P3 make the collection dynamic). Kept for P1a so the
+// dynamic collection reproduces the OLD slot-order + lowest-dead-slot birth (the ABA) exactly.
+export const MAX_SWIMBOTS = 2000;
+export const MAX_FOODBITS = 2000;
+export const MAX_FOODBITS_PER_TYPE = 1000;
+export const NON_REPRODUCING_JUNK_DNA_LIMIT = 0.9; // junk-DNA similarity gate for reproduction
+
 // Mate attraction (getAttractiveness dispatch). Values match SwimbotTypes.js exactly.
 export const ATTRACTION_NULL = -1;
 export const ATTRACTION_COLORFUL = 0;

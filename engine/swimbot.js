@@ -91,6 +91,12 @@ export class Swimbot {
 
     setParent(onDeath) { this._onDeath = onDeath; }
 
+    // add to velocity (JJ's addForce) -- used by the pool's obstacle-collision response.
+    addForce(force) { this._velocity.add(force); }
+    setVelocity(v) { this._velocity.set(v); }
+    setEnergy(e) { this._energy = e; }
+    setAngle(a) { this._angle = a; }
+
     clear() {
         this._lastPositionForEfficiencyMeasurement.clear();
         this._genotype.clear();
