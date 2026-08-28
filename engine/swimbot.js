@@ -9,21 +9,23 @@
 // die() no longer touches a global dead-count or a FamilyTree; it flips _alive (idempotently) and calls
 // an injected onDeath hook -- the pool owns death accounting / lineage (wired at P1b).
 //
-// COVERAGE STATUS (rung-by-rung, PLAN §19). Rung 1 (swimbot-fidelity.test.js) A/B-validates the
-// AUTONOMOUS per-tick path bit-for-bit: create/processPhenotype, updateBodyParts + all physics
-// helpers, calculateFluidForces, calculateEnergyEfficiency, updateWallCollisions, wanderFocus, the Brain
-// FSM, aging/growth, and both death paths. NOT yet exercised (ported faithfully, validated in later
-// rungs): eatChosenFoodBit + setEnvironmentalStimuli's food branch (rung 1b), and the MATE path
-// (rung 2) -- contributeToOffspring, the PURSUING_MATE branches, and getAttractiveness + the
-// attraction/similarity helpers, which are NOT PORTED YET. setEnvironmentalStimuli's mate branch
-// therefore throws until rung 2 wires those in (it is unreachable until a real pool feeds nearby mates).
+// COVERAGE STATUS (rung-by-rung, PLAN §19). A/B-validated bit-for-bit against JJ:
+//   rung 1 (swimbot-fidelity.test.js) -- the autonomous per-tick path: create/processPhenotype,
+//     updateBodyParts + physics, calculateFluidForces, energy efficiency, wall collisions, wanderFocus,
+//     the Brain FSM, aging/growth, both death paths;
+//   rung 1b -- eatChosenFoodBit + setEnvironmentalStimuli's food branch (incl. FOOD_TYPE_OFFSET);
+//   rung 2 (swimbot-mating.test.js) -- the swimbot-side MATE path: setEnvironmentalStimuli's mate branch,
+//     getAttractiveness + every attraction/similarity/color/body-metric helper, PURSUING_MATE steering,
+//     trying-to-mate, and contributeToOffspring.
+// The pool-level birth ORCHESTRATION (findLowestDeadSlot, the junk-DNA gate, setAsOffspring, child
+// creation, the T+1 birth loop) is rung 3 -- it lives in the pool, not here.
 
 import { Vector2D } from './vector2d.js';
 import { Genotype } from './genotype.js';
 import { Brain } from './brain.js';
 import { assert } from './assert.js';
 import {
-    ZERO, ONE, ONE_HALF, PI_OVER_180,
+    ZERO, ONE, ONE_HALF, ONE_THIRD, PI_OVER_180, MAX_PARTS,
     NULL_INDEX, NULL_PART, ROOT_PART, MOUTH_INDEX, GENITAL_INDEX,
     YOUNG_AGE_DURATION, OLD_AGE_DURATION, STARVING, STARVING_TIMER_DELTA, TIMER_DELTA_INCREASE_RATE,
     CONTINUAL_ENERGY_DRAIN, ENERGY_USED_UP_SWIMMING, WALL_BOUNCE, SWIMBOT_SELECT_RADIUS_SCALAR,
@@ -34,6 +36,11 @@ import {
     BRAIN_STATE_PURSUING_FOOD, BRAIN_STATE_PURSUING_MATE,
     BRAIN_STATE_LOOKING_FOR_FOOD, BRAIN_STATE_LOOKING_FOR_MATE,
     POOL_LEFT, POOL_RIGHT, POOL_TOP, POOL_BOTTOM,
+    SWIMBOT_VIEW_RADIUS, GREATEST_POSSIBLE_SWIMBOT_MASS, GREATEST_POSSIBLE_SWIMBOT_LENGTH,
+    ATTRACTION_COLORFUL, ATTRACTION_BIG, ATTRACTION_HYPER, ATTRACTION_LONG, ATTRACTION_STRAIGHT,
+    ATTRACTION_NO_COLOR, ATTRACTION_SMALL, ATTRACTION_STILL, ATTRACTION_SHORT, ATTRACTION_CROOKED,
+    ATTRACTION_SIMILAR_COLOR, ATTRACTION_SIMILAR_SIZE, ATTRACTION_SIMILAR_HYPER,
+    ATTRACTION_SIMILAR_LENGTH, ATTRACTION_SIMILAR_STRAIGHT, ATTRACTION_CLOSEST, ATTRACTION_RANDOM,
 } from './constants.js';
 
 export class Swimbot {
@@ -611,12 +618,6 @@ export class Swimbot {
             let highestBabeFactor = -100.0;
 
             for (let o = 0; o < numNearbySwimbots; o++) {
-                // rung 2: getAttractiveness + the attraction/similarity helpers are not ported yet, so this
-                // throws if a pool feeds nearby mates before then. Fail loudly with the reason, not a bare
-                // TypeError, if that happens.
-                if (typeof nearbySwimbotArray[o].getAttractiveness !== 'function') {
-                    throw new Error('Swimbot.setEnvironmentalStimuli: mate path not wired until rung 2 (getAttractiveness unported)');
-                }
                 const babeFactor = nearbySwimbotArray[o].getAttractiveness(this);
                 if ((babeFactor > highestBabeFactor)
                     && (babeFactor > TOO_UGLY_TO_CHOOSE)
@@ -666,6 +667,196 @@ export class Swimbot {
         this._chosenMateIndex = NULL_INDEX;
         this._brain.setFoundSwimbot(false);
         return energyToContribute;
+    }
+
+    // --- mate attraction (rung 2). getAttractiveness draws gpRandom() ONCE at the top (the mate-scan
+    // draw that MUST be preserved), then overwrites it per the brain's criterion (ATTRACTION_RANDOM draws
+    // a second time). `judge` is the swimbot doing the judging (for the "similar-to-me" criteria). All
+    // the metric helpers are RNG-free pure functions of the phenotype. ---
+    setAttraction(attraction) {
+        this._brain.setAttraction(attraction);
+    }
+
+    getAttractiveness(judge) {
+        let attractiveness = this._rng();
+
+        const attractionCriterion = this._brain.getAttractionCriterion();
+
+        if (attractionCriterion === ATTRACTION_COLORFUL) { attractiveness = this.getColorSaturation(); }
+        if (attractionCriterion === ATTRACTION_BIG) { attractiveness = this.getCurrentBodyBigness(); }
+        if (attractionCriterion === ATTRACTION_HYPER) { attractiveness = this.getCurrentBodyHyperness(); }
+        if (attractionCriterion === ATTRACTION_LONG) { attractiveness = this.getCurrentBodyLongness(); }
+        if (attractionCriterion === ATTRACTION_STRAIGHT) { attractiveness = this.getCurrentBodyStraightness(); }
+
+        if (attractionCriterion === ATTRACTION_NO_COLOR) { attractiveness = ONE - this.getColorSaturation(); }
+        if (attractionCriterion === ATTRACTION_SMALL) { attractiveness = ONE - this.getCurrentBodyBigness(); }
+        if (attractionCriterion === ATTRACTION_STILL) { attractiveness = ONE - this.getCurrentBodyHyperness(); }
+        if (attractionCriterion === ATTRACTION_SHORT) { attractiveness = ONE - this.getCurrentBodyLongness(); }
+        if (attractionCriterion === ATTRACTION_CROOKED) { attractiveness = ONE - this.getCurrentBodyStraightness(); }
+
+        if (attractionCriterion === ATTRACTION_SIMILAR_COLOR) { attractiveness = this.getColorSimilarity(judge); }
+        if (attractionCriterion === ATTRACTION_SIMILAR_SIZE) { attractiveness = this.getBignessSimilarity(judge); }
+        if (attractionCriterion === ATTRACTION_SIMILAR_HYPER) { attractiveness = this.getHypernessSimilarity(judge); }
+        if (attractionCriterion === ATTRACTION_SIMILAR_LENGTH) { attractiveness = this.getLengthSimilarity(judge); }
+        if (attractionCriterion === ATTRACTION_SIMILAR_STRAIGHT) { attractiveness = this.getStraightessSimilarity(judge); }
+
+        if (attractionCriterion === ATTRACTION_CLOSEST) { attractiveness = this.getCloseness(judge); }
+        if (attractionCriterion === ATTRACTION_RANDOM) { attractiveness = this._rng(); }
+
+        return attractiveness;
+    }
+
+    getColorSaturation() {
+        let saturation = ZERO;
+        let accumulatedMass = ZERO;
+        for (let p = 1; p < this._phenotype.numParts; p++) {
+            accumulatedMass += this._phenotype.parts[p].mass;
+            const rgDiff = Math.abs(this._phenotype.parts[p].red - this._phenotype.parts[p].green);
+            const rbDiff = Math.abs(this._phenotype.parts[p].red - this._phenotype.parts[p].blue);
+            const gbDiff = Math.abs(this._phenotype.parts[p].green - this._phenotype.parts[p].blue);
+            let thisPartSaturation = (rgDiff + rbDiff + gbDiff) / 3;
+            assert(thisPartSaturation <= ONE, 'thisPartSaturation <= ONE');
+            thisPartSaturation *= this._phenotype.parts[p].mass;
+            saturation += thisPartSaturation;
+        }
+        assert(accumulatedMass > ZERO, 'getColorSaturation: accumulatedMass > ZERO');
+        saturation /= accumulatedMass;
+        assert(saturation <= ONE, 'getColorSaturation: saturation <= ONE');
+        return saturation;
+    }
+
+    getCloseness(judge) {
+        let closest = SWIMBOT_VIEW_RADIUS;
+        const distance = this._position.getDistanceTo(judge.getPosition());
+        if (distance < closest) {
+            closest = distance;
+        }
+        return ONE - (closest / SWIMBOT_VIEW_RADIUS);
+    }
+
+    getSimilarity(judge) {
+        let amount = this.getColorSimilarity(judge)
+            + this.getBignessSimilarity(judge)
+            + this.getHypernessSimilarity(judge)
+            + this.getLengthSimilarity(judge)
+            + this.getStraightessSimilarity(judge);
+        amount /= 5;
+        return amount;
+    }
+
+    getColorSimilarity(judge) {
+        const c1 = judge.getAverageColor();
+        const c2 = this.getAverageColor();
+        const rDiff = Math.abs(c2.red - c1.red);
+        const gDiff = Math.abs(c2.green - c1.green);
+        const bDiff = Math.abs(c2.blue - c1.blue);
+        return ONE - ((rDiff + gDiff + bDiff) * ONE_THIRD);
+    }
+
+    getBignessSimilarity(judge) {
+        const b1 = judge.getCurrentBodyBigness();
+        const b2 = this.getCurrentBodyBigness();
+        return ONE - Math.abs(b1 - b2);
+    }
+
+    getHypernessSimilarity(judge) {
+        const b1 = judge.getCurrentBodyHyperness();
+        const b2 = this.getCurrentBodyHyperness();
+        return ONE - Math.abs(b1 - b2);
+    }
+
+    getLengthSimilarity(judge) {
+        const b1 = judge.getCurrentBodyLongness();
+        const b2 = this.getCurrentBodyLongness();
+        return ONE - Math.abs(b1 - b2);
+    }
+
+    getStraightessSimilarity(judge) {
+        const b1 = judge.getCurrentBodyStraightness();
+        const b2 = this.getCurrentBodyStraightness();
+        return ONE - Math.abs(b1 - b2);
+    }
+
+    getCurrentBodyBigness() {
+        return this._phenotype.mass / GREATEST_POSSIBLE_SWIMBOT_MASS;
+    }
+
+    getCurrentBodyLongness() {
+        let amount = ZERO;
+        for (let p = 1; p < this._phenotype.numParts; p++) {
+            for (let pp = 1; pp < this._phenotype.numParts; pp++) {
+                if (pp !== p) {
+                    const d = this._phenotype.parts[p].midPosition.getDistanceTo(this._phenotype.parts[pp].midPosition);
+                    if (d > amount) {
+                        amount = d;
+                    }
+                }
+            }
+        }
+        amount /= GREATEST_POSSIBLE_SWIMBOT_LENGTH;
+        return amount;
+    }
+
+    getCurrentBodyStraightness() {
+        let amount = ZERO;
+        const v = new Array();
+        for (let p = 1; p < this._phenotype.numParts; p++) {
+            v[p] = new Vector2D();
+            v[p].setXY(this._phenotype.parts[p].axis.x / this._phenotype.parts[p].length, this._phenotype.parts[p].axis.y / this._phenotype.parts[p].length);
+        }
+        if (this._phenotype.numParts < 3) {
+            amount = ONE;
+        } else {
+            let numTests = 0;
+            for (let p = 1; p < this._phenotype.numParts; p++) {
+                for (let pp = p + 1; pp < this._phenotype.numParts; pp++) {
+                    numTests++;
+                    assert(p !== pp, 'getCurrentBodyStraightness: p != pp');
+                    amount += Math.abs(v[p].dotWith(v[pp]));
+                }
+            }
+            amount /= numTests;
+        }
+        amount *= 0.7;
+        amount += (this._phenotype.numParts / MAX_PARTS) * 0.3;
+        if (amount > ONE) {
+            amount = ONE;
+        }
+        return amount;
+    }
+
+    getCurrentBodyHyperness() {
+        let amount = ZERO;
+        for (let p = 1; p < this._phenotype.numParts; p++) {
+            amount += this._phenotype.parts[p].velocity.getMagnitude();
+        }
+        const FugdeFactorToScaleHyperAttraction = 0.4;
+        amount *= FugdeFactorToScaleHyperAttraction;
+        if (amount > ONE) {
+            amount = ONE;
+        }
+        return amount;
+    }
+
+    getAverageColor() {
+        let r = ZERO;
+        let g = ZERO;
+        let b = ZERO;
+        let accumulatedMass = ZERO;
+        for (let p = 1; p < this._phenotype.numParts; p++) {
+            accumulatedMass += this._phenotype.parts[p].mass;
+            r += this._phenotype.parts[p].red * this._phenotype.parts[p].mass;
+            g += this._phenotype.parts[p].green * this._phenotype.parts[p].mass;
+            b += this._phenotype.parts[p].blue * this._phenotype.parts[p].mass;
+        }
+        assert(accumulatedMass > ZERO, 'getAverageColor: accumulatedMass > ZERO');
+        r /= accumulatedMass;
+        g /= accumulatedMass;
+        b /= accumulatedMass;
+        assert(r <= ONE, 'getAverageColor: r <= ONE');
+        assert(g <= ONE, 'getAverageColor: g <= ONE');
+        assert(b <= ONE, 'getAverageColor: b <= ONE');
+        return { red: r, green: g, blue: b }; // JJ returns a Color; only red/green/blue are read
     }
 
     die() {

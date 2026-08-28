@@ -11,6 +11,7 @@ import {
     BRAIN_STATE_LOOKING_FOR_FOOD,
     BRAIN_STATE_PURSUING_FOOD,
     NUM_BRAIN_STATES,
+    ATTRACTION_SIMILAR_COLOR,
     ZERO,
 } from './constants.js';
 import { assert } from './assert.js';
@@ -22,6 +23,7 @@ export class Brain {
         this._foundFoodBit = false;
         this._foundSwimbot = false;
         this._hungerThreshold = ZERO;
+        this._attractionCriterion = ATTRACTION_SIMILAR_COLOR;
     }
 
     initialize() {
@@ -69,6 +71,13 @@ export class Brain {
     setFoundFoodBit(f) { this._foundFoodBit = f; }
     setFoundSwimbot(f) { this._foundSwimbot = f; }
 
+    setAttraction(a) {
+        this._attractionCriterion = a;
+        // setting _foundSwimbot to false causes the swimbot to search for a new potential mate
+        this._foundSwimbot = false;
+    }
+
     getHungerThreshold() { return this._hungerThreshold; }
+    getAttractionCriterion() { return this._attractionCriterion; }
     getState() { return this._state; }
 }

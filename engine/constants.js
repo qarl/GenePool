@@ -8,6 +8,7 @@
 export const ZERO = 0.0;
 export const ONE = 1.0;
 export const ONE_HALF = 0.5;
+export const ONE_THIRD = ONE / 3.0;
 export const PI2 = Math.PI * 2.0;
 export const NULL_INDEX = -1;
 
@@ -72,3 +73,30 @@ export const POOL_LEFT = 0.0;
 export const POOL_RIGHT = 8000.0;
 export const POOL_TOP = 0.0;
 export const POOL_BOTTOM = 8000.0;
+
+// Mate attraction (getAttractiveness dispatch). Values match SwimbotTypes.js exactly.
+export const ATTRACTION_NULL = -1;
+export const ATTRACTION_COLORFUL = 0;
+export const ATTRACTION_BIG = 1;
+export const ATTRACTION_HYPER = 2;
+export const ATTRACTION_LONG = 3;
+export const ATTRACTION_STRAIGHT = 4;
+export const ATTRACTION_NO_COLOR = 5;
+export const ATTRACTION_SMALL = 6;
+export const ATTRACTION_STILL = 7;
+export const ATTRACTION_SHORT = 8;
+export const ATTRACTION_CROOKED = 9;
+export const ATTRACTION_SIMILAR_COLOR = 10;   // GlobalTweakers / Brain default
+export const ATTRACTION_SIMILAR_SIZE = 11;
+export const ATTRACTION_SIMILAR_HYPER = 12;
+export const ATTRACTION_SIMILAR_LENGTH = 13;
+export const ATTRACTION_SIMILAR_STRAIGHT = 14;
+export const ATTRACTION_CLOSEST = 15;
+export const ATTRACTION_RANDOM = 16;
+export const NUM_ATTRACTIONS = 17;
+
+export const SWIMBOT_VIEW_RADIUS = 300.0;             // closeness attraction normalizer
+// Body-metric normalizers. MAX_LENGTH=27, MAX_WIDTH=7 are Embryology's morphology bounds (kept in sync
+// there); GREATEST = MAX_PARTS * those, as JJ's Embryology.js derives them.
+export const GREATEST_POSSIBLE_SWIMBOT_MASS = MAX_PARTS * 27.0 * 7.0;
+export const GREATEST_POSSIBLE_SWIMBOT_LENGTH = MAX_PARTS * 27.0;
