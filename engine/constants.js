@@ -73,6 +73,15 @@ export const POOL_LEFT = 0.0;
 export const POOL_RIGHT = 8000.0;
 export const POOL_TOP = 0.0;
 export const POOL_BOTTOM = 8000.0;
+export const POOL_WIDTH = POOL_RIGHT - POOL_LEFT;
+export const POOL_HEIGHT = POOL_BOTTOM - POOL_TOP;
+
+// Food ecology. FOOD_BIT_BOUNDARY_MARGIN keeps spawned food off the walls (JJ: POOL_WIDTH*0.01).
+// The spawn radius / energy defaults are GlobalTweakers defaults, overridable via config (foodSpread /
+// foodBitEnergy). SPAWN_FOOD_RANDOMLY_IN_POOL is false in JJ, so randomizeSpawnPosition draws exactly 6.
+export const FOOD_BIT_BOUNDARY_MARGIN = POOL_WIDTH * 0.01;
+export const DEFAULT_FOOD_BIT_MAX_SPAWN_RADIUS = 4000.0;
+export const DEFAULT_FOOD_BIT_ENERGY = 50.0;
 
 // Mate attraction (getAttractiveness dispatch). Values match SwimbotTypes.js exactly.
 export const ATTRACTION_NULL = -1;
