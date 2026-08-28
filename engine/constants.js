@@ -83,10 +83,13 @@ export const FOOD_BIT_BOUNDARY_MARGIN = POOL_WIDTH * 0.01;
 export const DEFAULT_FOOD_BIT_MAX_SPAWN_RADIUS = 4000.0;
 export const DEFAULT_FOOD_BIT_ENERGY = 50.0;
 
-// Pool capacities (JJ's fixed slot counts; P1b/P3 make the collection dynamic). Kept for P1a so the
-// dynamic collection reproduces the OLD slot-order + lowest-dead-slot birth (the ABA) exactly.
+// RETIRED as engine limits at P1b: JJ's fixed slot counts were a hardcoded population CAP (births
+// suppressed when the arrays filled). The dynamic collection has no engine-imposed ceiling -- world-scale
+// bounds are user config, not engine defaults (North Star; a config carrying-capacity is the optional
+// knob, D-f). Kept only to record JJ's original values; nothing in the engine references them now.
 export const MAX_SWIMBOTS = 2000;
 export const MAX_FOODBITS = 2000;
+// MAX_FOODBITS_PER_TYPE is still used: a per-type BALANCE hint for 2-type food regen (not a hard cap).
 export const MAX_FOODBITS_PER_TYPE = 1000;
 export const NON_REPRODUCING_JUNK_DNA_LIMIT = 0.9; // junk-DNA similarity gate for reproduction
 
