@@ -228,3 +228,30 @@ test('rung2: getAttractiveness reproduces old-vs-new under EVERY attraction crit
         assert.equal(oldRng.count(), expectedDraws, `criterion ${criterion} should consume ${expectedDraws} draw(s)`);
     }
 });
+
+// --- P1c: the mate-choice argmax tiebreak (D-b): (attractiveness DESC, distanceSquared ASC, stableID ASC) ---
+test('P1c argmax: among EQUALLY-attractive candidates the CLOSEST wins, independent of scan order (D-b)', () => {
+    // Identical genome -> identical color -> equal attractiveness (SIMILAR_COLOR default), so the tiebreak
+    // (distance^2, then id) decides. Bodies are identical + angle 0, so genital d^2 == position d^2.
+    const genes = WILSON;
+    const mk = (id, x, y) => {
+        const g = new Genotype(); g.setGenes(genes.slice());
+        // matePref constant (SIMILAR_COLOR discards it); life unused (no wander in a single setStimuli call).
+        const sb = new Swimbot({ life: { next: () => 0.5 }, matePref: () => 0.5, config: CONFIG, embryology: newEmb });
+        sb.create(id, 5000, { x, y }, 0, 80, g); // mature + fed (passes age/energy filters) + mate-mode (E>hunger)
+        return sb;
+    };
+    const L = mk(0, 4000, 4000);
+    const near = mk(3, 4000, 4030); // 30 away (closest)
+    const mid = mk(1, 4000, 4060);  // 60
+    const far = mk(2, 4000, 4090);  // 90
+    // fed in FAR-first order: the winner must NOT depend on scan order.
+    L.setEnvironmentalStimuli(3, [far, mid, near], false, null, 7);
+    assert.equal(L.getChosenMateIndex(), 3, 'the CLOSEST candidate (id 3) must win, not the first-scanned (far)');
+
+    // equal distance -> lowest stableID wins.
+    const tieHi = mk(9, 4000, 4030); // +30
+    const tieLo = mk(5, 4000, 3970); // -30 (same distance)
+    L.setEnvironmentalStimuli(2, [tieHi, tieLo], false, null, 7);
+    assert.equal(L.getChosenMateIndex(), 5, 'at equal distance + attractiveness, the lower stableID (5) wins');
+});

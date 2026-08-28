@@ -65,6 +65,7 @@ export class World {
         this._birthPos = new Vector2D();
         this._collisionForce = new Vector2D();
         this._nearbyArray = new Array(BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS);
+        this._nearbyCandidates = []; // scratch: all in-view candidates {other, d2, id}, ranked for closest-20
         this._numNearby = 0;
     }
 
@@ -158,20 +159,23 @@ export class World {
     }
 
     _giveSwimbotNearbyEnvironmentalStimuli(bot) {
-        // nearby visible swimbots -- first-N (<20) in id order, within view radius, not obstructed.
-        // (Order still matters here; P1c replaces it with distance-ranked closest-20.)
-        this._numNearby = 0;
+        // nearby visible swimbots -- the CLOSEST-20 (D-b), replacing JJ's first-20-in-array-order (the last
+        // slot/id-order artifact). Collect all in-view, non-obstructed candidates, rank by genital
+        // distance^2 (tiebreak by stableID for determinism), take the closest BRAIN_MAX_PERCEIVED. Fully
+        // order-independent now that the mate-pref rng is addressed (P1b-ii).
+        this._nearbyCandidates.length = 0;
         for (const other of this._swimbots.values()) {
-            if (this._numNearby >= BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS) break;
             if (other === bot || !other.getAlive()) continue;
             const distanceSquared = bot.getGenitalPosition().getDistanceSquaredTo(other.getGenitalPosition());
             if (distanceSquared < SWIMBOT_VIEW_RADIUS * SWIMBOT_VIEW_RADIUS) {
                 if (!this._obstacle.getObstruction(bot.getGenitalPosition(), other.getGenitalPosition())) {
-                    this._nearbyArray[this._numNearby] = other;
-                    this._numNearby++;
+                    this._nearbyCandidates.push({ other, d2: distanceSquared, id: other.getIndex() });
                 }
             }
         }
+        this._nearbyCandidates.sort((a, b) => (a.d2 - b.d2) || (a.id - b.id));
+        this._numNearby = Math.min(this._nearbyCandidates.length, BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS);
+        for (let i = 0; i < this._numNearby; i++) this._nearbyArray[i] = this._nearbyCandidates[i].other;
 
         // closest visible food (of the preferred type, when 2 food types).
         let foundFoodBit = false;

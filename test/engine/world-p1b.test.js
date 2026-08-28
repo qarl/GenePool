@@ -188,3 +188,26 @@ test('P1b sanity: a real run has births + deaths + food regeneration, and the AB
     assert.ok(world.getLivingSwimbotCount() < init.swimbots.length + births, 'no deaths occurred (nothing swept)');
     assert.ok(totalOffspring > 0, 'no swimbot recorded offspring');
 });
+
+test('P1c closest-20: perception picks the 20 CLOSEST swimbots, not the first-20-by-id (D-b)', () => {
+    // 25 candidates on a line at distances 10,20,..,250 (all < view radius 300); ids assigned in REVERSE
+    // of distance, so first-20-by-id would be the FARTHEST 20. Identical genome + angle 0 => genital d^2
+    // == position d^2, so distance order == y order.
+    const gp = boot(42);
+    const genes = Array.from(gp.getPoolData().swimbotArray[0].genes); // any real genome
+    const world = new World(CONFIG, 1);
+    world.loadSwimbot(100, { age: 5000, x: 4000, y: 4000, angle: 0, energy: 80, genes }); // the looker
+    for (let k = 0; k < 25; k++) {
+        world.loadSwimbot(24 - k, { age: 5000, x: 4000, y: 4000 + 10 * (k + 1), angle: 0, energy: 80, genes });
+    }
+    const looker = world._swimbots.get(100);
+    world._giveSwimbotNearbyEnvironmentalStimuli(looker);
+
+    assert.equal(world._numNearby, 20, 'perception must cap at the 20 closest');
+    const chosenIds = new Set();
+    for (let i = 0; i < world._numNearby; i++) chosenIds.add(world._nearbyArray[i].getIndex());
+    // the 20 closest are k=0..19 (distances 10..200), whose ids are 24..5.
+    for (let id = 5; id <= 24; id++) assert.ok(chosenIds.has(id), `closest-20 must include id ${id}`);
+    // the 5 farthest (k=20..24, distances 210..250) have ids 4..0 and must be EXCLUDED.
+    for (let id = 0; id <= 4; id++) assert.ok(!chosenIds.has(id), `farthest id ${id} must be excluded (it's id-low but distance-far)`);
+});

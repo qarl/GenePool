@@ -629,16 +629,32 @@ export class Swimbot {
         if (this._brain.getState() === BRAIN_STATE_LOOKING_FOR_MATE) {
             let mostAttractiveFound = null;
             let atLeastOneBabeIsVisible = false;
-            let highestBabeFactor = -100.0;
+            // D-b argmax: (attractiveness DESC, distanceSquared ASC, stableID ASC). getAttractiveness is
+            // still called once per candidate (draw structure preserved); the addressed MATE_PREF draw is
+            // order-independent, so the winner is a deterministic function of the candidate set, not the
+            // scan order. distance^2 and id break attractiveness ties.
+            let bestFactor = -100.0;
+            let bestDistSq = Infinity;
+            let bestId = Infinity;
 
             for (let o = 0; o < numNearbySwimbots; o++) {
-                const babeFactor = nearbySwimbotArray[o].getAttractiveness(this, tick);
-                if ((babeFactor > highestBabeFactor)
-                    && (babeFactor > TOO_UGLY_TO_CHOOSE)
-                    && (nearbySwimbotArray[o].getAge() > YOUNG_AGE_DURATION)
-                    && (nearbySwimbotArray[o].getEnergy() > STARVING)) {
-                    highestBabeFactor = babeFactor;
-                    mostAttractiveFound = nearbySwimbotArray[o];
+                const candidate = nearbySwimbotArray[o];
+                const babeFactor = candidate.getAttractiveness(this, tick);
+                if (!((babeFactor > TOO_UGLY_TO_CHOOSE)
+                    && (candidate.getAge() > YOUNG_AGE_DURATION)
+                    && (candidate.getEnergy() > STARVING))) continue;
+                const dx = candidate.getGenitalPosition().x - this.getGenitalPosition().x;
+                const dy = candidate.getGenitalPosition().y - this.getGenitalPosition().y;
+                const distSq = dx * dx + dy * dy;
+                const id = candidate.getIndex();
+                const better = (babeFactor > bestFactor)
+                    || (babeFactor === bestFactor && distSq < bestDistSq)
+                    || (babeFactor === bestFactor && distSq === bestDistSq && id < bestId);
+                if (better) {
+                    bestFactor = babeFactor;
+                    bestDistSq = distSq;
+                    bestId = id;
+                    mostAttractiveFound = candidate;
                     atLeastOneBabeIsVisible = true;
                 }
             }
