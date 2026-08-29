@@ -18,8 +18,7 @@ import { allocCoopGrid } from './coop-grid.mjs';
 
 const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_SIZE } from './barrier.mjs';
-import { makeConfig, makeFounders, makeWallFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
-import { runBaseline } from './baseline.mjs';
+import { makeEcologyConfig, makeFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS (config leaves viewRadius default)
@@ -101,35 +100,20 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
     return { ms, tps: Math.round(ticks / (ms / 1000)), hash, totalBots: fp.length };
 }
 
+// CLI: quick coop-1 vs coop-W determinism + speedup on a full-ecology pool. (The authoritative correctness gate
+// is run-g1.mjs = bit-identical to world.js; run-ecology.mjs = determinism; run-pool.mjs = the user runner.)
 if (import.meta.url === `file://${process.argv[1]}`) await (async () => {
-const N = Number(process.argv[2] || 5000);
-const ticks = Number(process.argv[3] || 200);
-const W = Number(process.argv[4] || 8);
-const pool = Number(process.argv[5] || 12000);
-
-console.log(`\nGenePool intra-tick parallelism SPIKE — COOPERATIVE GRID  (N=${N}, ticks=${ticks}, pool=${pool})`);
-
-// Main A/B: JS-grid single-thread reference vs coop at W=1 (parallelization-free) vs coop at W.
-const config = makeConfig(pool);
-const founders = makeFounders(N, pool);
-const food = makeFood(N * 4, pool);
-const base = runBaseline(N, ticks, pool, founders, config, food);
-console.log(`  baseline (JS grid, 1 thread): ${String(base.tps).padStart(6)} tps   hash=${base.hash}`);
-const coop1 = await runParallel(N, ticks, 1, pool, founders, config, food);
-console.log(`  coop grid (1 worker):         ${String(coop1.tps).padStart(6)} tps   hash=${coop1.hash}  ${coop1.hash === base.hash ? 'matches JS grid ✓' : 'DIFFERS FROM JS GRID ✗'}`);
-const coopW = await runParallel(N, ticks, W, pool, founders, config, food);
-console.log(`  coop grid (${W} workers):        ${String(coopW.tps).padStart(6)} tps   hash=${coopW.hash}  ${coopW.hash === coop1.hash ? 'deterministic ✓' : 'NONDETERMINISTIC ✗'}`);
-console.log(`  speedup vs baseline: ${(base.ms / coopW.ms).toFixed(2)}x   (vs coop-1: ${(coop1.ms / coopW.ms).toFixed(2)}x)`);
-const allOk = coop1.hash === base.hash && coopW.hash === coop1.hash;
-console.log(`  correctness: ${allOk ? 'IDENTICAL across JS/coop-1/coop-' + W + ' ✓' : 'MISMATCH ✗'}`);
-
-// Wall-hugging correctness: founders packed at the edges -> genitals at/past walls -> exercises clamp/skip.
-const wallPool = 2500;
-const wallN = Math.min(N, 1500);
-const wallCfg = makeConfig(wallPool);
-const wallFounders = makeWallFounders(wallN, wallPool);
-const wallFood = makeFood(wallN * 4, wallPool);
-const wallBase = runBaseline(wallN, 300, wallPool, wallFounders, wallCfg, wallFood);
-const wallPar = await runParallel(wallN, 300, Math.min(W, 6), wallPool, wallFounders, wallCfg, wallFood);
-console.log(`  wall-hugging A/B (N=${wallN}, pool=${wallPool}): coop ${wallPar.hash === wallBase.hash ? 'matches JS grid at the walls ✓' : 'DIFFERS AT WALLS ✗ (clamp/skip bug)'}`);
+    const N = Number(process.argv[2] || 4000);
+    const ticks = Number(process.argv[3] || 400);
+    const W = Number(process.argv[4] || 8);
+    const pool = Number(process.argv[5] || 12000);
+    const config = makeEcologyConfig(pool);
+    const founders = makeFounders(N, pool);
+    const food = makeFood(N * 4, pool);
+    console.log(`\nGenePool parallel — coop grid  (N=${N}, ticks=${ticks}, pool=${pool}, full ecology)`);
+    const coop1 = await runParallel(N, ticks, 1, pool, founders, config, food);
+    console.log(`  coop grid (1 worker):   ${String(coop1.tps).padStart(6)} tps   hash=${coop1.hash}`);
+    const coopW = await runParallel(N, ticks, W, pool, founders, config, food);
+    console.log(`  coop grid (${W} workers):  ${String(coopW.tps).padStart(6)} tps   hash=${coopW.hash}   ${coopW.hash === coop1.hash ? 'DETERMINISTIC ✓' : 'NONDETERMINISTIC ✗'}`);
+    console.log(`  speedup (W vs 1): ${(coop1.ms / coopW.ms).toFixed(2)}x`);
 })();
