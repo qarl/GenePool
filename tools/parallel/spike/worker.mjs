@@ -10,7 +10,7 @@ import { CoopGrid } from './coop-grid.mjs';
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, barrier } from './barrier.mjs';
 
 const { frozenSab, ctrlSab, gridSpec, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, W, workerIndex,
-        foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders } = workerData;
+        foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders, renderSab } = workerData;
 const f64 = new Float64Array(frozenSab);
 const ctrl = new Int32Array(ctrlSab);
 const coopGrid = new CoopGrid(gridSpec);
@@ -29,7 +29,8 @@ const res = resSabs ? {
     newbornCount: new Int32Array(resSabs.newbornCountSab),
     newbornRec: new Float64Array(resSabs.newbornRecSab),
 } : null;
-const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood, puF64, res, numFounders);
+const renderF32 = renderSab ? new Float32Array(renderSab) : null;
+const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood, puF64, res, numFounders, renderF32);
 
 parentPort.postMessage({ type: 'ready', idStart });
 

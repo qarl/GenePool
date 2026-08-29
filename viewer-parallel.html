@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GenePool — parallel engine viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 -apple-system, system-ui, sans-serif; background: #0b0f14; color: #cdd6e0; }
+  header { display: flex; align-items: center; gap: 14px; padding: 8px 14px; background: #10161f; border-bottom: 1px solid #1e2733; flex-wrap: wrap; }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; color: #eef3f8; letter-spacing: .2px; }
+  header .tag { font-size: 11px; color: #7d8ea0; }
+  .wrap { display: flex; gap: 14px; padding: 14px; align-items: flex-start; flex-wrap: wrap; }
+  canvas { background: #060a10; border: 1px solid #1e2733; border-radius: 6px; image-rendering: auto; max-width: 100%; }
+  .panel { min-width: 240px; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: #10161f; border: 1px solid #1e2733; border-radius: 6px; padding: 12px; }
+  .stat { display: flex; justify-content: space-between; padding: 3px 0; }
+  .stat .k { color: #7d8ea0; }
+  .stat .v { font-variant-numeric: tabular-nums; font-weight: 600; color: #eef3f8; }
+  button { font: inherit; color: #cdd6e0; background: #1a2431; border: 1px solid #2a3949; border-radius: 5px; padding: 6px 12px; cursor: pointer; }
+  button:hover { background: #22303f; }
+  button.primary { background: #2563a5; border-color: #2f74c0; color: #fff; }
+  label.row { display: flex; align-items: center; gap: 8px; }
+  input[type=range] { flex: 1; }
+  .legend { font-size: 11px; color: #7d8ea0; line-height: 1.7; }
+  code { color: #9db4cc; }
+  #err { color: #ff9a9a; font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GenePool — parallel engine viewer</h1>
+  <span class="tag">the REAL multi-core engine (Web Workers + SharedArrayBuffer) — bit-identical to single-thread</span>
+</header>
+<div class="wrap">
+  <canvas id="c" width="760" height="760"></canvas>
+  <div class="panel">
+    <div class="card">
+      <div class="stat"><span class="k">workers (cores)</span><span class="v" id="s-workers">—</span></div>
+      <div class="stat"><span class="k">tick</span><span class="v" id="s-tick">0</span></div>
+      <div class="stat"><span class="k">swimbots (live)</span><span class="v" id="s-pop">0</span></div>
+      <div class="stat"><span class="k">food (live)</span><span class="v" id="s-food">0</span></div>
+      <div class="stat"><span class="k">ticks / sec</span><span class="v" id="s-tps">0</span></div>
+    </div>
+    <div class="card">
+      <div style="display:flex; gap:8px; flex-wrap:wrap">
+        <button class="primary" id="playBtn" disabled>Pause</button>
+      </div>
+      <div style="margin-top:12px">
+        <label class="row"><span style="width:74px">speed</span>
+          <input type="range" id="speed" min="1" max="40" value="8">
+          <span class="v" id="s-speed" style="width:64px; text-align:right">8 / frame</span>
+        </label>
+      </div>
+    </div>
+    <div class="card legend">
+      <div><span style="color:#3fb968">■</span> food bits &nbsp; <span style="color:#e0e0e0">▲</span> swimbots (hue = genome; brighter = more energy)</div>
+      <div style="margin-top:8px" id="note">Booting workers…</div>
+      <div id="err" style="margin-top:8px"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { makeFrozenBuffer } from './tools/parallel/spike/frozen-layout.mjs';
+import { setupFood, FD_STRIDE, FD_POSX, FD_POSY, FD_ALIVE } from './tools/parallel/spike/food-layout.mjs';
+import { makePostUpdateBuffer, makeResolutionBuffers } from './tools/parallel/spike/resolution-layout.mjs';
+import { makeRenderBuffer, R_X, R_Y, R_ANGLE, R_ENERGY, R_HUE, R_ALIVE, R_STRIDE } from './tools/parallel/spike/render-layout.mjs';
+import { allocCoopGrid } from './tools/parallel/spike/coop-grid.mjs';
+import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_SIZE } from './tools/parallel/spike/barrier.mjs';
+import { Genotype } from './engine/genotype.js';
+
+const noteEl = document.getElementById('note');
+const errEl = document.getElementById('err');
+function fail(msg) { errEl.textContent = msg; noteEl.textContent = 'stopped.'; throw new Error(msg); }
+
+// --- preflight: SharedArrayBuffer requires cross-origin isolation (the COOP/COEP headers from serve.mjs) ---
+if (typeof SharedArrayBuffer === 'undefined' || !self.crossOriginIsolated) {
+    fail('SharedArrayBuffer unavailable — the page is not cross-origin isolated.\nServe it with:  node tools/parallel/spike/serve.mjs\nthen open http://localhost:8099/viewer-parallel.html in Chrome (NOT file://).');
+}
+
+// --- config: EXACTLY viewer.html's proven CONFIG + pool bounds (viewRadius left default = 300 = CELL_SIZE) ---
+const POOL = 10000;
+const N = 2500;                 // founders
+const CELL_SIZE = 300;          // == SWIMBOT_VIEW_RADIUS (the P2 grid invariant)
+const NUM_GENES = 256, NUM_GENES_USED = 112;
+const maxBots = N * 8;          // capacity ceiling (ids never reused; worker 0 stops minting here)
+const maxFood = N * 4 + 30000;  // initial food + generous regen headroom for a long session
+const CONFIG = {
+    maximumLifeSpan: 40000, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
+    crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: 4000,
+    foodBitEnergy: 50, attractionCriterion: 10,
+    pool: { left: 0, top: 0, right: POOL, bottom: POOL },
+};
+const OBSTACLE = [{ x: 40, y: 40 }, { x: 80, y: 40 }];
+const MASTER_SEED = (Date.now() >>> 0) || 1; // time-seeded so each load differs
+
+function mulberry32(seed) { let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+// --- seed founders (random genomes with junk DNA zeroed — JJ's rule; else the speciation gate kills all births) ---
+const rng = mulberry32(MASTER_SEED);
+const founders = new Array(N);
+for (let i = 0; i < N; i++) {
+    const g = new Genotype(); g.randomize(rng);
+    const genes = g.getGenes().slice();
+    for (let k = NUM_GENES_USED; k < NUM_GENES; k++) genes[k] = 0;
+    founders[i] = { genes, age: Math.floor(rng() * 20000), x: rng() * POOL, y: rng() * POOL, angle: rng() * 360 - 180, energy: 80 };
+}
+const food = new Array(N * 4);
+for (let i = 0; i < food.length; i++) food[i] = { x: rng() * POOL, y: rng() * POOL, type: 0, energy: 50 };
+
+// --- allocate the shared buffers (mirrors runParallel + the render buffer the viewer needs) ---
+const frozenSab = makeFrozenBuffer(maxBots);
+const gridSpec = allocCoopGrid(CONFIG.pool, CELL_SIZE, maxBots);
+const { foodSab, foodGridSpec, numFood } = setupFood(food, CONFIG.pool, CELL_SIZE, maxFood);
+const foodF64 = new Float64Array(foodSab); // main reads this to draw food
+const puSab = makePostUpdateBuffer(maxBots);
+const resSabs = makeResolutionBuffers(maxBots, NUM_GENES);
+new Int32Array(resSabs.wantsEatSab).fill(-1); // 0 is a valid foodId; -1 = "not eating"
+new Int32Array(resSabs.wantsMateSab).fill(-1);
+const renderSab = makeRenderBuffer(maxBots);
+const renderF32 = new Float32Array(renderSab); // main reads this to draw swimbots
+const ctrlSab = new SharedArrayBuffer(CTL_SIZE * Int32Array.BYTES_PER_ELEMENT);
+const ctrl = new Int32Array(ctrlSab);
+
+// --- spawn EXACTLY W workers (W must equal the barrier width) ---
+const W = Math.max(1, (navigator.hardwareConcurrency || 4) - 1);
+document.getElementById('s-workers').textContent = W;
+const chunk = Math.ceil(N / W);
+const workers = [];
+let readyCount = 0, running = false, stopped = false;
+const workerURL = new URL('./tools/parallel/spike/browser-worker.js', location.href);
+
+function stopAll(msg) {
+    stopped = true; running = false;
+    Atomics.store(ctrl, CTL_SHUTDOWN, 1);
+    for (const w of workers) w.terminate();
+    if (msg) { errEl.textContent = msg; noteEl.textContent = 'stopped.'; }
+}
+
+const ready = new Promise((resolve) => {
+    for (let w = 0; w < W; w++) {
+        const idStart = w * chunk, idEnd = Math.min(N, (w + 1) * chunk);
+        const worker = new Worker(workerURL, { type: 'module' });
+        worker.onerror = (e) => stopAll('worker error: ' + (e.message || e.filename + ':' + e.lineno));
+        worker.onmessageerror = () => stopAll('worker message error (structured clone failed)');
+        worker.onmessage = (e) => { if (e.data && e.data.type === 'ready' && ++readyCount === W) resolve(); };
+        worker.postMessage({
+            type: 'init', frozenSab, ctrlSab, gridSpec, maxBots, masterSeed: MASTER_SEED, config: CONFIG,
+            founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle: OBSTACLE, W, workerIndex: w,
+            foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders: N, renderSab,
+        });
+        workers.push(worker);
+    }
+});
+
+// --- the tick pump (main-paced, driven from requestAnimationFrame so ticks + paint interleave) ---
+let curTick = 0;
+function releaseTick() {
+    Atomics.store(ctrl, CTL_TICK, ++curTick);
+    const before = Atomics.load(ctrl, CTL_DONEGEN);
+    Atomics.add(ctrl, CTL_TICKGEN, 1);
+    Atomics.notify(ctrl, CTL_TICKGEN);
+    return before;
+}
+async function awaitTickDone(before) {
+    // Loop with a timeout so a stall (a thrown worker) can't hang the pump forever; running is re-checked.
+    while (Atomics.load(ctrl, CTL_DONEGEN) === before) {
+        if (stopped) return;
+        const r = Atomics.waitAsync(ctrl, CTL_DONEGEN, before, 2000);
+        if (r.async) await r.value; // 'ok' or 'timed-out' -> re-check the condition + stopped
+    }
+}
+
+const canvas = document.getElementById('c');
+const cx2d = canvas.getContext('2d');
+const SCALE = canvas.width / (CONFIG.pool.right - CONFIG.pool.left); // pool coords -> canvas px (NOT hardcoded)
+
+function render() {
+    cx2d.clearRect(0, 0, canvas.width, canvas.height);
+    // food (read the food SoA directly)
+    cx2d.fillStyle = '#3fb968';
+    for (let id = 0; id < maxFood; id++) {
+        const o = id * FD_STRIDE;
+        if (foodF64[o + FD_ALIVE] !== 1) continue;
+        cx2d.fillRect(foodF64[o + FD_POSX] * SCALE - 1, foodF64[o + FD_POSY] * SCALE - 1, 2.2, 2.2);
+    }
+    // swimbots (read the render SoA)
+    for (let id = 0; id < maxBots; id++) {
+        const o = id * R_STRIDE;
+        if (renderF32[o + R_ALIVE] !== 1) continue;
+        const px = renderF32[o + R_X] * SCALE, py = renderF32[o + R_Y] * SCALE;
+        const light = 42 + Math.min(38, renderF32[o + R_ENERGY] * 0.4);
+        cx2d.fillStyle = `hsl(${renderF32[o + R_HUE]} 70% ${light}%)`;
+        const a = renderF32[o + R_ANGLE] * Math.PI / 180, r = 4.5;
+        cx2d.beginPath();
+        cx2d.moveTo(px + Math.cos(a) * r, py + Math.sin(a) * r);
+        cx2d.lineTo(px + Math.cos(a + 2.5) * r, py + Math.sin(a + 2.5) * r);
+        cx2d.lineTo(px + Math.cos(a - 2.5) * r, py + Math.sin(a - 2.5) * r);
+        cx2d.closePath();
+        cx2d.fill();
+    }
+    // obstacle
+    cx2d.strokeStyle = '#4a5a6a'; cx2d.lineWidth = 2;
+    cx2d.beginPath(); cx2d.moveTo(OBSTACLE[0].x * SCALE, OBSTACLE[0].y * SCALE); cx2d.lineTo(OBSTACLE[1].x * SCALE, OBSTACLE[1].y * SCALE); cx2d.stroke();
+}
+
+let ticksSinceHud = 0, lastHud = performance.now();
+function hud() {
+    let pop = 0; for (let id = 0; id < maxBots; id++) if (renderF32[id * R_STRIDE + R_ALIVE] === 1) pop++;
+    let fc = 0; for (let id = 0; id < maxFood; id++) if (foodF64[id * FD_STRIDE + FD_ALIVE] === 1) fc++;
+    document.getElementById('s-tick').textContent = curTick.toLocaleString();
+    document.getElementById('s-pop').textContent = pop.toLocaleString();
+    document.getElementById('s-food').textContent = fc.toLocaleString();
+    const now = performance.now();
+    if (now - lastHud > 500) {
+        document.getElementById('s-tps').textContent = Math.round(ticksSinceHud / ((now - lastHud) / 1000)).toLocaleString();
+        ticksSinceHud = 0; lastHud = now;
+    }
+}
+
+const speedInput = document.getElementById('speed');
+speedInput.oninput = () => document.getElementById('s-speed').textContent = speedInput.value + ' / frame';
+
+async function frame() {
+    if (running && !stopped) {
+        const speed = +speedInput.value;
+        for (let i = 0; i < speed && running && !stopped; i++) { await awaitTickDone(releaseTick()); ticksSinceHud++; }
+    }
+    render();
+    hud();
+    if (!stopped) requestAnimationFrame(frame);
+}
+
+const playBtn = document.getElementById('playBtn');
+playBtn.onclick = () => { if (stopped) return; running = !running; playBtn.textContent = running ? 'Pause' : 'Play'; };
+
+await ready;
+noteEl.textContent = `${W} workers running the real parallel engine. Founders share a species tag (junk DNA = 0) so they interbreed — evolution needs generations; crank speed and watch the pop climb.`;
+running = true;
+playBtn.disabled = false;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

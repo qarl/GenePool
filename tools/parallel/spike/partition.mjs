@@ -18,6 +18,7 @@ import { writeSlot, F_ALIVE, F_GX, F_GY, STRIDE } from './frozen-layout.mjs';
 import { FD_STRIDE, FD_ALIVE, FD_ENERGY, FD_POSX, FD_POSY, FD_TYPE, writeFood, buildFoodGridOnce } from './food-layout.mjs';
 import { writePostUpdate, PU_STRIDE, PU_ALIVE, PU_ENERGY, PU_GX, PU_GY, FLAG_ENERGY_SET, FLAG_TIMER_RESET, FLAG_CLEAR_EAT, FLAG_CLEAR_MATE,
          NB_ID, NB_X, NB_Y, NB_ANGLE, NB_ENERGY, NB_STRIDE } from './resolution-layout.mjs';
+import { R_X, R_Y, R_ANGLE, R_ENERGY, R_HUE, R_ALIVE, R_STRIDE, hueOfGenes } from './render-layout.mjs';
 import { Perceiver } from './perceive.mjs';
 
 export class Partition {
@@ -26,7 +27,8 @@ export class Partition {
     // foodGrid/foodF64/numFood: the prebuilt read-only food grid + food SoA (S1) for the perceiver's food scan.
     // res (or null): the cross-worker resolution buffers {wantsEat, resolvedEnergy, numFoodEatenDelta,
     // numOffspringDelta, flags} (typed-array views) + {foodF64, numFood, numBotIds} for worker 0's resolve.
-    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1, foodGrid = null, foodF64 = null, numFood = 0, puF64 = null, res = null, nextIdStart = 0) {
+    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1, foodGrid = null, foodF64 = null, numFood = 0, puF64 = null, res = null, nextIdStart = 0, renderF32 = null) {
+        this._renderF32 = renderF32; // optional shared render buffer (viewer streaming)
         this._f64 = f64;
         this._maxBots = maxBots;
         this._masterSeed = masterSeed;
@@ -236,6 +238,12 @@ export class Partition {
                 }
             }
             if (pu) { const gp = sb.getGenitalPosition(); writePostUpdate(pu, id, sb.getAlive(), sb.getEnergy(), gp.x, gp.y); }
+            if (this._renderF32) { // display state for the viewer (current post-update position/angle/energy)
+                const r = this._renderF32, ro = id * R_STRIDE, pos = sb.getPosition();
+                r[ro + R_X] = pos.x; r[ro + R_Y] = pos.y; r[ro + R_ANGLE] = sb.getAngle();
+                r[ro + R_ENERGY] = sb.getEnergy(); r[ro + R_HUE] = hueOfGenes(sb.getGenotype().getGenes());
+                r[ro + R_ALIVE] = sb.getAlive() ? 1 : 0;
+            }
             // STAGE this tick's intents (this-tick's chosenFood/chosenMate, set by perceive). -1 if not / dead.
             if (wantsEat) {
                 const live = sb.getAlive();
