@@ -47,6 +47,14 @@ export class World {
         this._clock = 0;
         this._numDeadSwimbots = 0;
 
+        // PERF: targeted sweep + O(1) live counts (was: scan the whole Map every tick to delete ~0). Deaths
+        // are captured as they happen -- swimbots via the onDeath hook, food via the eat return in
+        // _updateSwimbots -- so _sweepDead touches only what died. Living counts are maintained incrementally.
+        this._deadSwimbotIds = [];        // swimbot ids that died this tick (from onDeath)
+        this._eatenFoodIds = new Set();   // food ids eaten this tick (Set dedups two-bots-one-food)
+        this._livingSwimbotCount = 0;
+        this._livingFoodCount = 0;
+
         // Pool-level addressed streams. A swimbot gets its own SWIMBOT_LIFE stream (per id); mate-pref is
         // a pairwise MATE_PREF draw shared by all swimbots; food regen has one POOL_FOOD_REGEN stream.
         this._foodRegenStream = makeStream(masterSeed, DOMAIN.POOL_FOOD_REGEN);
@@ -101,7 +109,7 @@ export class World {
             life: makeStream(this._masterSeed, DOMAIN.SWIMBOT_LIFE, id),
             matePref: this._matePref,
             config: this._config, embryology: this._embryology,
-            onDeath: () => { this._numDeadSwimbots++; },
+            onDeath: (deadId) => { this._numDeadSwimbots++; this._deadSwimbotIds.push(deadId); this._livingSwimbotCount--; },
         });
     }
 
@@ -120,6 +128,7 @@ export class World {
         sb.setNumOffspring(numOffspring);
         sb.setNumFoodBitsEaten(numFoodBitsEaten);
         this._swimbots.set(id, sb);
+        this._livingSwimbotCount++;
         if (this._useSpatialGrid) { const gp = sb.getGenitalPosition(); this._swimbotGrid.insert(sb, gp.x, gp.y); }
         if (id >= this._nextSwimbotId) this._nextSwimbotId = id + 1;
     }
@@ -133,6 +142,7 @@ export class World {
         f.setMaxSpawnRadius(this._config.foodSpread);
         f.setPoolBounds(this._config.pool);
         this._foodBits.set(id, f);
+        this._livingFoodCount++;
         if (this._useSpatialGrid) { const p = f.getPosition(); this._foodGrid.insert(f, p.x, p.y); }
         if (id >= this._nextFoodId) this._nextFoodId = id + 1;
     }
@@ -211,7 +221,8 @@ export class World {
             }
 
             if (bot.getIsTryingToEat()) {
-                bot.eatChosenFoodBit();
+                const eatenId = bot.eatChosenFoodBit(); // returns the chosen food's index (NULL_INDEX if none)
+                if (eatenId !== NULL_INDEX) this._eatenFoodIds.add(eatenId); // dedups two-bots-one-food; swept below
             }
 
             if (bot.getIsTryingToMate()) {
@@ -376,6 +387,7 @@ export class World {
                     if (num > 10) looking = false;
                 }
                 this._foodBits.set(childId, child);
+                this._livingFoodCount++;
                 // Regen runs AFTER perception, so this food is first perceivable next tick (same as brute
                 // force, which also scans _foodBits only during _updateSwimbots). Add it to the grid now.
                 if (this._useSpatialGrid) { const p = child.getPosition(); this._foodGrid.insert(child, p.x, p.y); }
@@ -386,6 +398,7 @@ export class World {
     _applyPendingBirths() {
         for (const child of this._pendingBirths) {
             this._swimbots.set(child.getIndex(), child);
+            this._livingSwimbotCount++;
             // Newborn joins the grid at its birth position; it first acts (and is first perceived) next tick.
             if (this._useSpatialGrid) { const gp = child.getGenitalPosition(); this._swimbotGrid.insert(child, gp.x, gp.y); }
         }
@@ -394,19 +407,37 @@ export class World {
 
     // Remove dead entities so the collection stays bounded. Their ids are NEVER reused (nextId is
     // monotonic), so a lingering chosenMate/chosenFood reference to a swept entity can only ever resolve
-    // to that same (now-gone) individual -- never a new one.
+    // to that same (now-gone) individual -- never a new one. PERF: sweep only what died this tick (the
+    // captured id lists), not the whole collection. Same SET removed as the old full scan (only dead
+    // swimbots reach _deadSwimbotIds via die(); only eaten food reaches _eatenFoodIds), same ascending-id
+    // survivor order (Map deletion doesn't reorder), same end-of-tick timing. Guards (has + !getAlive) make
+    // it robust to duplicate/NULL ids so the live-food count decrements exactly once per removal.
     _sweepDead() {
-        for (const [id, bot] of this._swimbots) {
-            if (!bot.getAlive()) { this._swimbots.delete(id); if (this._useSpatialGrid) this._swimbotGrid.remove(bot); }
+        for (const id of this._deadSwimbotIds) {
+            const bot = this._swimbots.get(id);
+            if (bot !== undefined && !bot.getAlive()) {
+                this._swimbots.delete(id);
+                if (this._useSpatialGrid) this._swimbotGrid.remove(bot);
+                // (living count already decremented in the onDeath hook, once per death)
+            }
         }
-        for (const [id, food] of this._foodBits) {
-            if (!food.getAlive()) { this._foodBits.delete(id); if (this._useSpatialGrid) this._foodGrid.remove(food); }
+        this._deadSwimbotIds.length = 0;
+
+        for (const id of this._eatenFoodIds) {
+            const food = this._foodBits.get(id);
+            if (food !== undefined && !food.getAlive()) {
+                this._foodBits.delete(id);
+                if (this._useSpatialGrid) this._foodGrid.remove(food);
+                this._livingFoodCount--;
+            }
         }
+        this._eatenFoodIds.clear();
     }
 
     // --- snapshot for tests (living entities; content + hidden chosenMate/brainState) ---
-    getLivingSwimbotCount() { let n = 0; for (const s of this._swimbots.values()) if (s.getAlive()) n++; return n; }
-    getLivingFoodCount() { let n = 0; for (const f of this._foodBits.values()) if (f.getAlive()) n++; return n; }
+    // O(1): maintained incrementally (loadSwimbot/birth ++, onDeath --; loadFood/regen ++, eaten-sweep --).
+    getLivingSwimbotCount() { return this._livingSwimbotCount; }
+    getLivingFoodCount() { return this._livingFoodCount; }
 
     dumpSwimbots() {
         const out = [];
