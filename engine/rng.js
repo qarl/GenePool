@@ -49,6 +49,16 @@ function foldInt(h, n) {
 
 const SEED_CONST = 0x9e3779b9; // arbitrary nonzero start (golden-ratio constant)
 
+// Combine two decorrelated 32-bit mixes of the folded hash into a full-precision 53-bit [0,1) double: hi
+// contributes 27 bits, lo 26 bits. (32-bit alone birthday-collides at ~2^16; this pushes that to ~2^26.5
+// and gives double-resolution values -- the "splitmix-class" output the plan §3 specifies.) Shared by
+// draw() and makeStream().next() so both produce byte-identical values.
+function finalize(h) {
+    const hi = mix32(h) >>> 5;                           // 27 bits
+    const lo = mix32((h ^ 0x9e3779b9) >>> 0) >>> 6;      // 26 bits
+    return (hi * 67108864 + lo) / 9007199254740992;      // (hi*2^26 + lo) / 2^53  in [0, 1)
+}
+
 // The primitive. `address` is a list of non-negative integers whose meaning is fixed per DOMAIN.
 export function draw(masterSeed, domain, ...address) {
     if (!DOMAIN_VALUES.has(domain)) throw new Error('rng: unknown DOMAIN tag ' + String(domain));
@@ -57,21 +67,29 @@ export function draw(masterSeed, domain, ...address) {
     h = foldInt(h, domain);
     h = foldInt(h, address.length); // fold arity too, belt-and-suspenders against shape reuse
     for (let i = 0; i < address.length; i++) h = foldInt(h, address[i]);
-    // Combine two decorrelated 32-bit mixes into a full-precision 53-bit [0,1) double: hi contributes 27
-    // bits, lo 26 bits. (32-bit alone birthday-collides at ~2^16; this pushes that to ~2^26.5 and gives
-    // double-resolution values -- the "splitmix-class" output the plan §3 specifies.)
-    const hi = mix32(h) >>> 5;                           // 27 bits
-    const lo = mix32((h ^ 0x9e3779b9) >>> 0) >>> 6;      // 26 bits
-    return (hi * 67108864 + lo) / 9007199254740992;      // (hi*2^26 + lo) / 2^53  in [0, 1)
+    return finalize(h);
 }
 
 // A per-(entity/pool, domain) sequential stream: draw(...) with a bumped counter at the tail of the
 // address. The counter is the ONLY per-stream state (one integer) -- so a checkpoint that saves it can
 // resume bit-exactly (PLAN §13). Everything else is recomputed from the address.
+//
+// PERF: the address prefix (masterSeed, domain, arity, ...prefix) is CONSTANT for the stream's life -- only
+// the trailing counter varies -- so we fold it ONCE here into `base`; next() then folds only the counter and
+// finalizes. This is BYTE-IDENTICAL to draw(masterSeed, domain, ...prefix, counter): foldInt is a pure
+// left-fold, so caching a prefix of the chain yields the exact same running hash at every counter. The
+// folded arity MUST be prefix.length + 1 (the address is [...prefix, counter]). ~10x faster per draw (no
+// per-call rest-array allocation, no re-folding of the constant prefix).
 export function makeStream(masterSeed, domain, ...prefix) {
+    if (!DOMAIN_VALUES.has(domain)) throw new Error('rng: unknown DOMAIN tag ' + String(domain));
+    let base = SEED_CONST;
+    base = foldInt(base, masterSeed);
+    base = foldInt(base, domain);
+    base = foldInt(base, prefix.length + 1);             // arity of [...prefix, counter]
+    for (let i = 0; i < prefix.length; i++) base = foldInt(base, prefix[i]); // validates each prefix int once
     let counter = 0;
     return {
-        next() { return draw(masterSeed, domain, ...prefix, counter++); },
+        next() { return finalize(foldInt(base, counter++)); },
         get position() { return counter; },
         set position(c) {
             if (!Number.isInteger(c) || c < 0 || c > Number.MAX_SAFE_INTEGER) {
