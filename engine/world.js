@@ -122,6 +122,10 @@ export class World {
         // the swimbot nearby-scan from O(n) brute force into O(neighbors). Only allocated when snapshot+grid are
         // both on; useSpatialGrid:false keeps the brute-force scan (kept for the grid-vs-brute-force A/B).
         this._snapshotGrid = (this._snapshotMode && this._useSpatialGrid) ? new SpatialGrid(this._viewRadius) : null;
+        // Opt-in per-phase wall-clock profiling (parallelism ceiling analysis). options.profile = an object;
+        // the tick accumulates ms into .build / .loop / .resolve on it. null -> a couple of per-TICK branch
+        // checks, no per-bot cost. The loop is the parallelizable phase; build+resolve are the serial Amdahl tax.
+        this._profile = options.profile || null;
 
         // scratch genotypes / vectors (mirroring JJ's shared scratch in GenePool)
         this._myGenotype = new Genotype();
@@ -231,12 +235,20 @@ export class World {
     }
 
     _updateSwimbots() {
+        const prof = this._profile;
+        let t0;
         // SNAPSHOT: capture the frozen tick-start view of every bot ONCE, before the loop, so all bots perceive
         // the same set regardless of processing order (order-independence). Mixed-live builds nothing.
-        if (this._snapshotMode) this._buildSnapshot();
+        if (this._snapshotMode) {
+            if (prof) t0 = performance.now();
+            this._buildSnapshot();
+            if (prof) prof.build += performance.now() - t0;
+        }
 
+        if (prof) t0 = performance.now();
         // Iterate a snapshot of the current live swimbots (staged births are NOT in it -> they act next
-        // tick). Structural mutation (staging/sweeping) happens outside this loop.
+        // tick). Structural mutation (staging/sweeping) happens outside this loop. THIS is the parallelizable
+        // phase: each bot reads the frozen snapshot and writes only its OWN state (eats/births deferred below).
         for (const bot of this._swimbots.values()) {
             if (!bot.getAlive()) continue;
             bot.update();
@@ -279,8 +291,14 @@ export class World {
                 }
             }
         }
+        if (prof) prof.loop += performance.now() - t0;
 
-        if (this._snapshotMode) { this._resolveStagedEats(); this._resolveStagedBirths(); }
+        if (this._snapshotMode) {
+            if (prof) t0 = performance.now();
+            this._resolveStagedEats();
+            this._resolveStagedBirths();
+            if (prof) prof.resolve += performance.now() - t0;
+        }
     }
 
     // SNAPSHOT: build the tick-start frozen view of every bot. ONE FrozenSwimbot per id, refreshed IN PLACE
