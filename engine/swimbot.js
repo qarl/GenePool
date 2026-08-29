@@ -73,6 +73,7 @@ export class Swimbot {
         this._focusDirection = new Vector2D();
         this._centerOfMass = new Vector2D();
         this._vectorUtility = new Vector2D();
+        this._previousFocusDirection = new Vector2D(); // reused scratch (was allocated per tick in update())
         this._lastPositionForEfficiencyMeasurement = new Vector2D();
 
         this._chosenFoodBit = null;
@@ -298,28 +299,35 @@ export class Swimbot {
 
         const directionDot = this._focusDirection.x * perpX + this._focusDirection.y * perpY;
 
-        this._phenotype.parts[ROOT_PART].position.set(this._position);
-        this._phenotype.parts[ROOT_PART].currentAngle = this._angle - this.getMomentAdjustment();
+        // PERF: hoist the repeated `this._phenotype.parts[...]` / `.frequency` lookups (pure reference
+        // aliasing -- `part`/`parentPart` are the same objects, so every read/write is identical; no float
+        // arithmetic is reordered). Bit-for-bit unchanged.
+        const parts = this._phenotype.parts;
+        const numParts = this._phenotype.numParts;
+        const frequency = this._phenotype.frequency;
 
-        for (let p = 1; p < this._phenotype.numParts; p++) {
-            this._phenotype.parts[p].position.set(this.getPartParentPosition(p));
+        parts[ROOT_PART].position.set(this._position);
+        parts[ROOT_PART].currentAngle = this._angle - this.getMomentAdjustment();
 
-            this._phenotype.parts[p].currentAngle =
-                this._phenotype.parts[this._phenotype.parts[p].parent].currentAngle +
-                this._phenotype.parts[p].angle;
+        for (let p = 1; p < numParts; p++) {
+            const part = parts[p];
+            const parentPart = parts[part.parent];
+            part.position.set(this.getPartParentPosition(p));
+
+            part.currentAngle = parentPart.currentAngle + part.angle;
 
             if (p > 1) { // part 1 has nothing to 'bend' off of
-                const ampModulator = this._phenotype.parts[p].turnAmp * directionDot;
-                const phaseModulator = this._phenotype.parts[p].turnPhase * directionDot;
+                const ampModulator = part.turnAmp * directionDot;
+                const phaseModulator = part.turnPhase * directionDot;
 
-                const bendRadian = this._timer * this._phenotype.frequency + (this._phenotype.parts[p].phase + phaseModulator);
-                this._phenotype.parts[p].bendingAngle = (this._phenotype.parts[p].amp + ampModulator) * Math.sin(bendRadian);
+                const bendRadian = this._timer * frequency + (part.phase + phaseModulator);
+                part.bendingAngle = (part.amp + ampModulator) * Math.sin(bendRadian);
 
-                this._phenotype.parts[p].currentAngle += this._phenotype.parts[p].bendingAngle;
+                part.currentAngle += part.bendingAngle;
             }
 
-            const partRadian = this._phenotype.parts[p].currentAngle * PI_OVER_180;
-            let length = this._phenotype.parts[p].length;
+            const partRadian = part.currentAngle * PI_OVER_180;
+            let length = part.length;
 
             if (this._age < YOUNG_AGE_DURATION) {
                 length *= this._growthScale;
@@ -327,22 +335,23 @@ export class Swimbot {
 
             const x = length * Math.sin(partRadian);
             const y = length * Math.cos(partRadian);
-            this._phenotype.parts[p].previousMid.setXY(this._phenotype.parts[p].midPosition.x, this._phenotype.parts[p].midPosition.y);
-            this._phenotype.parts[p].midPosition.setXY(this._phenotype.parts[p].position.x, this._phenotype.parts[p].position.y);
-            this._phenotype.parts[p].position.addXY(x, y);
-            this._phenotype.parts[p].midPosition.addXY(x * ONE_HALF, y * ONE_HALF);
+            part.previousMid.setXY(part.midPosition.x, part.midPosition.y);
+            part.midPosition.setXY(part.position.x, part.position.y);
+            part.position.addXY(x, y);
+            part.midPosition.addXY(x * ONE_HALF, y * ONE_HALF);
 
-            this._phenotype.parts[p].axis.x = this._phenotype.parts[p].position.x - this._phenotype.parts[this._phenotype.parts[p].parent].position.x;
-            this._phenotype.parts[p].axis.y = this._phenotype.parts[p].position.y - this._phenotype.parts[this._phenotype.parts[p].parent].position.y;
+            part.axis.x = part.position.x - parentPart.position.x;
+            part.axis.y = part.position.y - parentPart.position.y;
 
-            this._phenotype.parts[p].perpendicular.setXY(this._phenotype.parts[p].axis.y / length, -this._phenotype.parts[p].axis.x / length);
+            part.perpendicular.setXY(part.axis.y / length, -part.axis.x / length);
 
-            this._phenotype.parts[p].velocity.setToDifference(this._phenotype.parts[p].midPosition, this._phenotype.parts[p].previousMid);
+            part.velocity.setToDifference(part.midPosition, part.previousMid);
         }
 
+        // COM -> adjust (the only reader of _centerOfMass) -> [removed a dead 2nd calculateCenterOfMass():
+        // its write to _centerOfMass was never read before line 343 recomputes it next tick]. Bit-for-bit.
         this.calculateCenterOfMass();
         this.adjustToCenterOfMass();
-        this.calculateCenterOfMass();
 
         if (this._age % 20 === 0) {
             for (let p = 1; p < this._phenotype.numParts; p++) {
@@ -406,7 +415,7 @@ export class Swimbot {
             }
         }
 
-        const previousFocusDirection = new Vector2D();
+        const previousFocusDirection = this._previousFocusDirection; // reused scratch; set fresh each call below
         previousFocusDirection.set(this._focusDirection);
 
         this._focusDirection.addScaled(this._directionToGoal, BRAIN_FOCUS_TARGET_SHIFT_STRENGTH);
@@ -462,38 +471,42 @@ export class Swimbot {
         this._torque = ZERO;
         assert(this._phenotype.numParts > 0, '_phenotype.numParts > 0');
 
-        for (let p = 1; p < this._phenotype.numParts; p++) {
-            const fractionOfWhole = this._phenotype.parts[p].length / this._phenotype.sumPartLengths;
+        // PERF: hoist the repeated phenotype/parts lookups (pure reference aliasing; no float reorder).
+        const parts = this._phenotype.parts;
+        const numParts = this._phenotype.numParts;
+        const sumPartLengths = this._phenotype.sumPartLengths;
 
-            this._phenotype.parts[p].velocity.setToDifference(this._phenotype.parts[p].midPosition, this._phenotype.parts[p].previousMid);
+        for (let p = 1; p < numParts; p++) {
+            const part = parts[p];
+            const fractionOfWhole = part.length / sumPartLengths;
 
-            const strokeAmplitude = this._phenotype.parts[p].velocity.dotWith(this._phenotype.parts[p].perpendicular) * fractionOfWhole;
+            // LOAD-BEARING: recompute velocity here -- adjustToCenterOfMass shifted midPosition (not
+            // previousMid) after updateBodyParts, so this folds the COM shift into strokeAmplitude. Do NOT
+            // remove (verified: removing it crashes the population).
+            part.velocity.setToDifference(part.midPosition, part.previousMid);
 
-            const strokeForceX = this._phenotype.parts[p].perpendicular.x * strokeAmplitude;
-            const strokeForceY = this._phenotype.parts[p].perpendicular.y * strokeAmplitude;
+            const strokeAmplitude = part.velocity.dotWith(part.perpendicular) * fractionOfWhole;
+
+            const strokeForceX = part.perpendicular.x * strokeAmplitude;
+            const strokeForceY = part.perpendicular.y * strokeAmplitude;
 
             this._energy -= Math.abs(strokeAmplitude) * ENERGY_USED_UP_SWIMMING;
             if (this._energy < ZERO) {
                 this._energy = ZERO;
             }
 
-            const partVectorFromCenterX = this._phenotype.parts[p].midPosition.x - this._position.x;
-            const partVectorFromCenterY = this._phenotype.parts[p].midPosition.y - this._position.y;
+            const partVectorFromCenterX = part.midPosition.x - this._position.x;
+            const partVectorFromCenterY = part.midPosition.y - this._position.y;
 
-            // Faithful quirk: JJ squares the components first, so this "distance" is sqrt(dx^4 + dy^4),
-            // NOT the Euclidean distance. It only feeds the (dead) partDirectionFromCenter below and the
-            // distance>0 guard (equivalent to dx!=0||dy!=0), so it does not affect the output -- but it is
-            // ported verbatim to keep this a line-for-line translation.
+            // Faithful quirk: JJ forms sqrt(dx^4 + dy^4) here (squares the components first -- NOT Euclidean
+            // distance), but it feeds ONLY this guard (and a commented-out partDirectionFromCenter). PERF:
+            // drop the dead sqrt and test the radicand directly -- sqrt(v) > 0 iff v > 0 for all v >= 0, so
+            // the branch taken is bit-identical. Keep the sum-of-squares form (dx!==0||dy!==0 would differ
+            // when dx^4 underflows to 0). Output unchanged.
             const xx = partVectorFromCenterX * partVectorFromCenterX;
             const yy = partVectorFromCenterY * partVectorFromCenterY;
-            const distance = Math.sqrt(xx * xx + yy * yy);
 
-            if (distance > ZERO) {
-                // partDirectionFromCenter is computed by JJ but only used in a commented-out branch; kept
-                // for faithfulness (unused).
-                // const partDirectionFromCenterX = partVectorFromCenterX / distance;
-                // const partDirectionFromCenterY = partVectorFromCenterY / distance;
-
+            if (xx * xx + yy * yy > ZERO) {
                 const partAccelerationX = -strokeForceX;
                 const partAccelerationY = -strokeForceY;
 
@@ -503,7 +516,7 @@ export class Swimbot {
                 const partPerpendicularX = partVectorFromCenterY;
                 const partPerpendicularY = -partVectorFromCenterX;
 
-                const perpDot = (strokeForceX * partPerpendicularX + strokeForceY * partPerpendicularY) / this._phenotype.sumPartLengths;
+                const perpDot = (strokeForceX * partPerpendicularX + strokeForceY * partPerpendicularY) / sumPartLengths;
 
                 this._torque -= perpDot;
             }
