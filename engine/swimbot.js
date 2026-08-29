@@ -63,6 +63,10 @@ export class Swimbot {
         // getCloseness. sensoryPeriod is the every-Nth-tick perception cadence.
         this._viewRadius = (ctx.config && ctx.config.viewRadius) || SWIMBOT_VIEW_RADIUS;
         this._sensoryPeriod = (ctx.config && ctx.config.sensoryPeriod) || BRAIN_SENSORY_UPDATE_PERIOD;
+        // Energy economy + exploration knobs (?? so 0 is a valid setting, e.g. no metabolism / no wander).
+        this._swimEnergyCost = ctx.config?.swimEnergyCost ?? ENERGY_USED_UP_SWIMMING; // energy per unit stroke
+        this._baseMetabolism = ctx.config?.baseMetabolism ?? CONTINUAL_ENERGY_DRAIN;  // baseline drain per tick
+        this._wanderAmount = ctx.config?.wanderAmount ?? BRAIN_WANDER_AMOUNT;          // wander randomness magnitude
         this._embryology = ctx.embryology;
         this._onDeath = ctx.onDeath || null;
 
@@ -447,8 +451,8 @@ export class Swimbot {
             length = this._directionToGoal.getMagnitude();
         }
 
-        this._directionToGoal.x += (-BRAIN_WANDER_AMOUNT * ONE_HALF + this._life.next() * BRAIN_WANDER_AMOUNT);
-        this._directionToGoal.y += (-BRAIN_WANDER_AMOUNT * ONE_HALF + this._life.next() * BRAIN_WANDER_AMOUNT);
+        this._directionToGoal.x += (-this._wanderAmount * ONE_HALF + this._life.next() * this._wanderAmount);
+        this._directionToGoal.y += (-this._wanderAmount * ONE_HALF + this._life.next() * this._wanderAmount);
 
         this._directionToGoal.x /= length;
         this._directionToGoal.y /= length;
@@ -461,7 +465,7 @@ export class Swimbot {
             this.calculateEnergyEfficiency();
         }
 
-        this._energy -= CONTINUAL_ENERGY_DRAIN;
+        this._energy -= this._baseMetabolism;
 
         if (this._energy <= ZERO) {
             this._energy = ZERO;
@@ -495,7 +499,7 @@ export class Swimbot {
             const strokeForceX = part.perpendicular.x * strokeAmplitude;
             const strokeForceY = part.perpendicular.y * strokeAmplitude;
 
-            this._energy -= Math.abs(strokeAmplitude) * ENERGY_USED_UP_SWIMMING;
+            this._energy -= Math.abs(strokeAmplitude) * this._swimEnergyCost;
             if (this._energy < ZERO) {
                 this._energy = ZERO;
             }

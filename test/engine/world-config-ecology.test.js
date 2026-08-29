@@ -61,3 +61,19 @@ test('config.viewRadius changes the ecology (and is deterministic)', () => {
     assert.notEqual(wide, dflt, 'viewRadius=600 produced the same run as the default 300 -- knob had no effect');
     assert.equal(hash(run(seed42World({ viewRadius: 600 }), 300)), wide, 'viewRadius run is non-deterministic');
 });
+
+test('config metabolism/wander knobs each change the ecology and stay deterministic', () => {
+    const dflt = hash(run(seed42World({}), 300));
+    for (const knob of [{ swimEnergyCost: 0.05 }, { baseMetabolism: 0.01 }, { wanderAmount: 0.5 }]) {
+        const h = hash(run(seed42World(knob), 300));
+        assert.notEqual(h, dflt, `${JSON.stringify(knob)} produced the default run -- knob had no effect`);
+        assert.equal(hash(run(seed42World(knob), 300)), h, `${JSON.stringify(knob)} is non-deterministic`);
+    }
+});
+
+test('config.baseMetabolism: a heavy baseline drain starves more swimbots', () => {
+    const none = run(seed42World({ baseMetabolism: 0 }), 600);     // no baseline drain
+    const heavy = run(seed42World({ baseMetabolism: 0.2 }), 600);  // energy ~80 -> starves in ~400 ticks
+    assert.ok(heavy.getNumDeadSwimbots() > none.getNumDeadSwimbots(),
+        `heavy metabolism killed ${heavy.getNumDeadSwimbots()}, should exceed no-drain ${none.getNumDeadSwimbots()}`);
+});
