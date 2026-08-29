@@ -8,9 +8,9 @@ import { makeFrozenBuffer, STRIDE } from './frozen-layout.mjs';
 import { Partition } from './partition.mjs';
 import { makeConfig, makeFounders, MASTER_SEED, OBSTACLE } from './common.mjs';
 
-export function runBaseline(N, ticks, poolSize) {
-    const config = makeConfig(poolSize);
-    const founders = makeFounders(N, poolSize);
+export function runBaseline(N, ticks, poolSize, founders = null, config = null) {
+    config = config || makeConfig(poolSize);
+    founders = founders || makeFounders(N, poolSize);
     const sab = makeFrozenBuffer(N);
     const f64 = new Float64Array(sab);
     const part = new Partition(f64, N, MASTER_SEED, config, founders, 0, N, OBSTACLE);

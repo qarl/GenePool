@@ -1,32 +1,34 @@
 // SPIKE — the per-bot perception work a worker runs, REPLICATED from world.js#_giveSwimbotNearbyEnvironmentalStimuli
 // (the swimbot nearby-scan + closest-20 min-heap + lazy obstruction + the mate argmax inside setEnvironmentalStimuli).
-// It runs against SlotView candidates (shared-buffer-backed) instead of live bots. This is a PERF PROBE: it
-// deliberately OMITS the food scan (the spike disables ecology for a stable measurement), so it passes
-// foundFoodBit=false. If the spike validates, this logic gets shared with world.js (one implementation) rather
-// than duplicated. Kept faithful to the real selection so the measured compute is representative.
+// It runs against SlotView candidates (shared-buffer-backed). This is a PERF PROBE: it OMITS the food scan (the
+// spike disables ecology for a stable measurement), so it passes foundFoodBit=false. If the spike validates, this
+// logic gets shared with world.js (one implementation) rather than duplicated.
+//
+// Candidate source is either a COOP grid (query by id -> view; built cooperatively, no per-worker rebuild) or a
+// per-worker JS grid (the old path, kept as the single-thread reference for the A/B). Selection is identical.
 
 import { BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS } from '../../../engine/constants.js';
 import { SpatialGrid } from '../../../engine/spatialGrid.js';
 import { STRIDE, F_ALIVE, F_GX, F_GY, SlotView } from './frozen-layout.mjs';
 
 export class Perceiver {
-    constructor(f64, maxBots, matePref, viewRadius, obstacle) {
+    constructor(f64, maxBots, matePref, viewRadius, obstacle, coopGrid = null) {
         this._f64 = f64;
         this._viewRadius = viewRadius;
         this._obstacle = obstacle;
-        this._grid = new SpatialGrid(viewRadius);
+        this._coopGrid = coopGrid;                       // if set, query it; else rebuild+use a local JS grid
+        this._grid = coopGrid ? null : new SpatialGrid(viewRadius);
         this._views = new Array(maxBots);
         for (let id = 0; id < maxBots; id++) this._views[id] = new SlotView(f64, id, matePref, viewRadius);
         this._candidates = [];
         this._nearbyArray = new Array(BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS);
     }
 
-    // Rebuild the read structures from the shared frozen buffer: a grid over the LIVE slots. O(n) per worker;
-    // in worker-owns-partition this runs concurrently on every worker (so its wall-clock ~ the serial build,
-    // not W* it) -- the naive-ceiling tradeoff. A cooperative shared grid is the follow-up that beats it.
+    // JS-grid mode only: rebuild the local grid from the shared frozen buffer (O(n) per worker -- the cost the
+    // coop grid eliminates). No-op in coop mode (the grid is built cooperatively via count/scatter).
     rebuild(maxBots) {
-        const f64 = this._f64;
-        const grid = this._grid;
+        if (this._coopGrid) return;
+        const f64 = this._f64, grid = this._grid;
         grid.clear();
         for (let id = 0; id < maxBots; id++) {
             const o = id * STRIDE;
@@ -49,18 +51,24 @@ export class Perceiver {
     }
 
     // Perceive for a LIVE local bot: closest-20 visible non-obstructed swimbots (frozen views), then hand them to
-    // the bot's own setEnvironmentalStimuli (which runs the mate argmax / rescan). Faithful to world.js selection.
+    // the bot's own setEnvironmentalStimuli (mate argmax / rescan). Faithful to world.js selection.
     perceive(bot, tick) {
         const cands = this._candidates;
         cands.length = 0;
         const gpos = bot.getGenitalPosition(); // looker LIVE genital (its own; order-independent)
         const vr2 = this._viewRadius * this._viewRadius;
         const selfId = bot.getIndex();
-        this._grid.forEachNear(gpos.x, gpos.y, (view) => {
+        const views = this._views;
+        const consider = (view) => {
             if (view.getIndex() === selfId || !view.getAlive()) return;
             const d2 = gpos.getDistanceSquaredTo(view.getGenitalPosition());
             if (d2 < vr2) cands.push({ other: view, d2, id: view.getIndex() });
-        });
+        };
+        if (this._coopGrid) {
+            this._coopGrid.query(gpos.x, gpos.y, (id) => consider(views[id]));
+        } else {
+            this._grid.forEachNear(gpos.x, gpos.y, consider);
+        }
 
         let heapSize = cands.length;
         for (let i = (heapSize >> 1) - 1; i >= 0; i--) this._siftDown(cands, i, heapSize);

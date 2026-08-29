@@ -17,7 +17,9 @@ import { writeSlot } from './frozen-layout.mjs';
 import { Perceiver } from './perceive.mjs';
 
 export class Partition {
-    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle) {
+    // coopGrid (a CoopGrid or null): null -> JS-grid mode (writeFrozen+step, the single-thread reference);
+    // set -> coop mode (the phased build below). w/W: this worker's index + total, for the cell-range zero.
+    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1) {
         this._f64 = f64;
         this._maxBots = maxBots;
         this._config = config;
@@ -27,6 +29,9 @@ export class Partition {
         this._obstacle = new Obstacle();
         this._obstacle.setEndpointPositions(obstacle[0], obstacle[1]);
         this._collisionForce = new Vector2D();
+        this._coopGrid = coopGrid;
+        this._w = w;
+        this._W = W;
         this._bots = [];
         // `founders` is indexed for THIS range: founders[id - idStart] is bot `id` (so a worker is handed only
         // its own slice, not all N). The single-thread baseline passes the full array with idStart=0.
@@ -37,7 +42,7 @@ export class Partition {
             sb.create(id, f.age, { x: f.x, y: f.y }, f.angle, f.energy, g);
             this._bots.push(sb);
         }
-        this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle);
+        this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle, coopGrid);
     }
 
     // Phase 1: publish my bots' tick-start frozen view into the shared buffer.
@@ -58,6 +63,55 @@ export class Partition {
     // Phase 2 (after the barrier): rebuild read structures from the shared buffer, then update+perceive my bots.
     step(tick) {
         this._perceiver.rebuild(this._maxBots);
+        for (const sb of this._bots) {
+            if (!sb.getAlive()) continue;
+            sb.update();
+            if (!sb.getAlive()) continue;
+            if (sb.getIsLookingForSensoryInput()) this._perceiver.perceive(sb, tick);
+            if (this._obstacle.getCollision(sb.getPosition(), sb.getBoundingRadius() * ONE_HALF)) {
+                this._collisionForce.set(this._obstacle.getCurrentCollisionForce());
+                this._collisionForce.scale(1.2);
+                sb.addForce(this._collisionForce);
+            }
+        }
+    }
+
+    // --- COOP MODE phases (worker.mjs orchestrates these with barriers between them) ---
+
+    // Phase 1: zero this worker's cell-range slice of the shared count[]/cursor[].
+    zeroGridCells() { this._coopGrid.zeroCellRange(this._w, this._W); }
+
+    // Phase 2: publish each of my bots' frozen slot AND count it into its cell. Uses the tick-start genital
+    // (update() has NOT run yet) -- the SAME position scatter() will use, so cursor can never exceed count.
+    writeAndCount() {
+        const f64 = this._f64, grid = this._coopGrid;
+        for (const sb of this._bots) {
+            const crit = sb.getAttractionCriterion();
+            const gp = sb.getGenitalPosition();
+            const pos = sb.getPosition();
+            writeSlot(f64, sb.getIndex(), {
+                alive: sb.getAlive(), age: sb.getAge(), energy: sb.getEnergy(),
+                genitalX: gp.x, genitalY: gp.y, rootX: pos.x, rootY: pos.y,
+                criterion: crit, metric: computeMetricForCriterion(sb, crit),
+            });
+            grid.countOne(gp.x, gp.y);
+        }
+    }
+
+    // Phase 3 (worker 0 only, gated by the caller): exclusive prefix sum.
+    prefix() { this._coopGrid.prefixSum(); }
+
+    // Phase 4: scatter each of my bots into botIds[] at its cell. SAME genital as writeAndCount (no update yet).
+    scatter() {
+        const grid = this._coopGrid;
+        for (const sb of this._bots) {
+            const gp = sb.getGenitalPosition();
+            grid.scatterOne(sb.getIndex(), gp.x, gp.y);
+        }
+    }
+
+    // Phase 5: update + perceive (query the shared coop grid) + obstacle collision for my bots.
+    updatePerceive(tick) {
         for (const sb of this._bots) {
             if (!sb.getAlive()) continue;
             sb.update();

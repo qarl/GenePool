@@ -38,3 +38,22 @@ export function makeFounders(n, poolSize, seed = 1234) {
     }
     return founders;
 }
+
+// WALL-HUGGING fixture: pack founders into a thin margin around all four edges so genitals routinely land AT /
+// just past the walls -- the ONLY situation that exercises the coop grid's clamp/skip edge handling (the clamp
+// bug is invisible in an interior-only pool). Used by the wall-correctness A/B (coop must match the JS grid here).
+export function makeWallFounders(n, poolSize, seed = 4321) {
+    const rng = mulberry32(seed);
+    const margin = 120; // < viewRadius, so edge bots perceive across the boundary
+    const founders = new Array(n);
+    for (let i = 0; i < n; i++) {
+        const edge = i & 3; // cycle the four edges
+        let x, y;
+        if (edge === 0) { x = rng() * margin; y = rng() * poolSize; }               // left
+        else if (edge === 1) { x = poolSize - rng() * margin; y = rng() * poolSize; } // right
+        else if (edge === 2) { x = rng() * poolSize; y = rng() * margin; }            // top
+        else { x = rng() * poolSize; y = poolSize - rng() * margin; }                 // bottom
+        founders[i] = { genes: GENES[i % GENES.length], age: Math.floor(rng() * 10000), x, y, angle: rng() * 360 - 180, energy: 85 };
+    }
+    return founders;
+}
