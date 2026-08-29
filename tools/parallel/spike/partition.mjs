@@ -295,15 +295,20 @@ export class Partition {
 
         // --- BIRTHS: ascending PARENT id (_resolveStagedBirths / _handleBirth) with working energy + trying arrays.
         const workE = this._workEnergy, workT = this._workTrying;
+        let living = 0; // post-update living swimbots -> the carrying-capacity gate (world.js _livingSwimbotCount)
         for (let id = 0; id < numBotIds; id++) {
             // start from post-EAT energy (eaters have FLAG_ENERGY_SET/resolvedEnergy; others from post-update)
             workE[id] = (flags[id] & FLAG_ENERGY_SET) ? resolvedEnergy[id] : pu[id * PU_STRIDE + PU_ENERGY];
-            workT[id] = (wantsMate[id] >= 0 && pu[id * PU_STRIDE + PU_ALIVE] === 1) ? 1 : 0; // parent must be post-update alive
+            const alive = pu[id * PU_STRIDE + PU_ALIVE] === 1;
+            if (alive) living++;
+            workT[id] = (wantsMate[id] >= 0 && alive) ? 1 : 0; // parent must be post-update alive
         }
         res.newbornCount[0] = 0; // reset the per-tick newborn list (owners read last tick's before this reset)
         const rec = res.newbornRec;
+        let born = 0; // newborns staged this tick (world.js's pendingBirths.length in the cap check)
         for (let pid = 0; pid < numBotIds; pid++) {
             if (!workT[pid]) continue; // not trying, or consumed as a mate (its trying was cleared below)
+            if (living + born >= this._maxPopulation) continue; // JJ MAX_SWIMBOTS carrying capacity (opt-in)
             if (this._nextId >= this._maxBots) break; // capacity ceiling (never-reused-id overflow stopgap)
             const mateId = wantsMate[pid];
             if (frozen[mateId * STRIDE + F_ALIVE] !== 1) continue; // mate must be alive at TICK START (world.js snapshot gate)
@@ -330,6 +335,7 @@ export class Partition {
             const no = (res.newbornCount[0]++) * NB_STRIDE;
             rec[no + NB_ID] = newBornId; rec[no + NB_X] = bx; rec[no + NB_Y] = by;
             rec[no + NB_ANGLE] = initialAngle; rec[no + NB_ENERGY] = energyToOffspring;
+            born++; // count toward the carrying-capacity gate
         }
 
         // --- FOOD REGEN (world.js _updateFood, 1-type) on the authoritative FoodBits + POOL_FOOD_REGEN stream ---
