@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GenePool engine viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 -apple-system, system-ui, sans-serif; background: #0b0f14; color: #cdd6e0; }
+  header { display: flex; align-items: center; gap: 14px; padding: 8px 14px; background: #10161f; border-bottom: 1px solid #1e2733; flex-wrap: wrap; }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; color: #eef3f8; letter-spacing: .2px; }
+  header .tag { font-size: 11px; color: #7d8ea0; }
+  .wrap { display: flex; gap: 14px; padding: 14px; align-items: flex-start; flex-wrap: wrap; }
+  canvas { background: #060a10; border: 1px solid #1e2733; border-radius: 6px; image-rendering: auto; max-width: 100%; }
+  .panel { min-width: 220px; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: #10161f; border: 1px solid #1e2733; border-radius: 6px; padding: 12px; }
+  .stat { display: flex; justify-content: space-between; padding: 3px 0; }
+  .stat .k { color: #7d8ea0; }
+  .stat .v { font-variant-numeric: tabular-nums; font-weight: 600; color: #eef3f8; }
+  button { font: inherit; color: #cdd6e0; background: #1a2431; border: 1px solid #2a3949; border-radius: 5px; padding: 6px 12px; cursor: pointer; }
+  button:hover { background: #22303f; }
+  button.primary { background: #2563a5; border-color: #2f74c0; color: #fff; }
+  label.row { display: flex; align-items: center; gap: 8px; }
+  input[type=range] { flex: 1; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .legend { font-size: 11px; color: #7d8ea0; line-height: 1.7; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+  code { color: #9db4cc; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GenePool — live engine viewer</h1>
+  <span class="tag">driven by the NEW <code>engine/</code> (headless mechanism) — not JJ's <code>simulation/</code></span>
+</header>
+<div class="wrap">
+  <canvas id="c" width="760" height="760"></canvas>
+  <div class="panel">
+    <div class="card">
+      <div class="stat"><span class="k">tick</span><span class="v" id="s-tick">0</span></div>
+      <div class="stat"><span class="k">swimbots (live)</span><span class="v" id="s-pop">0</span></div>
+      <div class="stat"><span class="k">food (live)</span><span class="v" id="s-food">0</span></div>
+      <div class="stat"><span class="k">births</span><span class="v" id="s-births">0</span></div>
+      <div class="stat"><span class="k">deaths</span><span class="v" id="s-deaths">0</span></div>
+      <div class="stat"><span class="k">ticks / sec</span><span class="v" id="s-tps">0</span></div>
+    </div>
+    <div class="card">
+      <div class="controls">
+        <button class="primary" id="playBtn">Pause</button>
+        <button id="stepBtn">Step</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+      <div style="margin-top:12px">
+        <label class="row"><span style="width:74px">speed</span>
+          <input type="range" id="speed" min="1" max="60" value="12">
+          <span class="v" id="s-speed" style="width:54px; text-align:right">12×</span>
+        </label>
+        <label class="row" style="margin-top:8px"><span style="width:74px">founders</span>
+          <input type="range" id="founders" min="50" max="700" value="400">
+          <span class="v" id="s-founders" style="width:54px; text-align:right">400</span>
+        </label>
+        <label class="row" style="margin-top:8px"><span style="width:74px">grid</span>
+          <input type="checkbox" id="grid" checked>
+          <span class="legend" style="flex:1">spatial grid on (P2)</span>
+        </label>
+      </div>
+    </div>
+    <div class="card legend">
+      <div><span class="dot" style="background:#3fb968"></span>food bits</div>
+      <div><span class="dot" style="background:#e0e0e0"></span>swimbots (hue = genome; brighter = more energy; the notch points along heading)</div>
+      <div style="margin-top:8px">Founders share a species tag (junk DNA = 0, JJ's rule) so they interbreed. They start as poor swimmers — evolution needs generations. Crank <b>speed</b> and watch <b>births</b> climb as foragers/maters get selected.</div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { World } from './engine/world.js';
+import { Genotype } from './engine/genotype.js';
+
+const POOL = 8000;                       // engine POOL_WIDTH/HEIGHT
+const CONFIG = {
+  maximumLifeSpan: 40000, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
+  crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: 4000,
+  foodBitEnergy: 50, attractionCriterion: 10,
+};
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const SCALE = canvas.width / POOL;       // pool coords -> canvas px
+
+// small seedable PRNG so Reset is repeatable-ish
+function mulberry32(seed) { let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+let world, nFounders, rng, seedCounter = 1;
+
+const NUM_GENES = 256, NUM_GENES_USED = 112; // genes[USED..NUM) are junk DNA — a reproductive-isolation marker
+
+function build() {
+  const useGrid = document.getElementById('grid').checked;
+  nFounders = +document.getElementById('founders').value;
+  rng = mulberry32(0xA11FE + (seedCounter++));
+  world = new World(CONFIG, 1, { useSpatialGrid: useGrid });
+  for (let i = 0; i < nFounders; i++) {
+    const g = new Genotype(); g.randomize(rng);
+    const genes = g.getGenes().slice();
+    // JJ's founder rule (GenePool.js: "This sets all junk DNA to a value of 0!!!"): zero the junk-DNA region
+    // so all founders share a species tag and can interbreed. The engine's mating gate requires junk-DNA
+    // similarity (NON_REPRODUCING_JUNK_DNA_LIMIT); RANDOM junk DNA makes every founder its own species, so
+    // nothing ever reproduces. This one line is the difference between a dead pool and a living, evolving one.
+    for (let k = NUM_GENES_USED; k < NUM_GENES; k++) genes[k] = 0;
+    world.loadSwimbot(i, {
+      age: Math.floor(rng() * 20000),           // wide age spread (like JJ) — no synchronized old-age die-off
+      x: rng() * POOL, y: rng() * POOL,
+      angle: rng() * 360 - 180, energy: 80, genes,
+    });
+  }
+  const nFood = nFounders * 3;
+  for (let i = 0; i < nFood; i++) world.loadFood(i, { x: rng() * POOL, y: rng() * POOL, type: 0, energy: 50 });
+  world.setObstacle({ x: 40, y: 40 }, { x: 80, y: 40 });
+}
+
+// derive a stable vivid color from a genome (a few gene bytes -> hue)
+function hueOf(genes) {
+  const n = genes.length;
+  const h = (genes[3 % n] * 1 + genes[7 % n] * 2 + genes[11 % n] * 3) % 256;
+  return (h / 256) * 360;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // food
+  const food = world.dumpFood();
+  ctx.fillStyle = '#3fb968';
+  for (const f of food) {
+    ctx.fillRect(f.x * SCALE - 1, f.y * SCALE - 1, 2.2, 2.2);
+  }
+  // swimbots — a small triangle pointing along heading, hue=genome, brightness=energy
+  const bots = world.dumpSwimbots();
+  for (const b of bots) {
+    const cx = b.x * SCALE, cy = b.y * SCALE;
+    const hue = hueOf(b.genes);
+    const light = 42 + Math.min(38, b.energy * 0.4); // energy -> brightness
+    ctx.fillStyle = `hsl(${hue} 70% ${light}%)`;
+    const a = b.angle * Math.PI / 180;
+    const r = 4.5;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    ctx.lineTo(cx + Math.cos(a + 2.5) * r, cy + Math.sin(a + 2.5) * r);
+    ctx.lineTo(cx + Math.cos(a - 2.5) * r, cy + Math.sin(a - 2.5) * r);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // obstacle
+  const g = ctx;
+  g.strokeStyle = '#4a5a6a'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(40 * SCALE, 40 * SCALE); g.lineTo(80 * SCALE, 40 * SCALE); g.stroke();
+}
+
+function updateHud(tps) {
+  document.getElementById('s-tick').textContent = world.getClock().toLocaleString();
+  document.getElementById('s-pop').textContent = world.getLivingSwimbotCount();
+  document.getElementById('s-food').textContent = world.getLivingFoodCount();
+  document.getElementById('s-births').textContent = Math.max(0, world.getNextSwimbotId() - nFounders);
+  document.getElementById('s-deaths').textContent = world.getNumDeadSwimbots();
+  if (tps != null) document.getElementById('s-tps').textContent = tps.toLocaleString();
+}
+
+let running = true;
+let ticksSince = 0, lastTps = performance.now();
+function frame() {
+  if (running) {
+    const speed = +document.getElementById('speed').value;
+    for (let i = 0; i < speed; i++) world.tick();
+    ticksSince += speed;
+  }
+  draw();
+  const now = performance.now();
+  if (now - lastTps > 500) {
+    const tps = Math.round(ticksSince / ((now - lastTps) / 1000));
+    updateHud(tps);
+    ticksSince = 0; lastTps = now;
+  } else {
+    updateHud(null);
+  }
+  requestAnimationFrame(frame);
+}
+
+// wiring
+document.getElementById('playBtn').onclick = (e) => { running = !running; e.target.textContent = running ? 'Pause' : 'Play'; };
+document.getElementById('stepBtn').onclick = () => { world.tick(); draw(); updateHud(null); };
+document.getElementById('resetBtn').onclick = () => { build(); draw(); updateHud(0); };
+document.getElementById('speed').oninput = (e) => document.getElementById('s-speed').textContent = e.target.value + '×';
+document.getElementById('founders').oninput = (e) => document.getElementById('s-founders').textContent = e.target.value;
+document.getElementById('grid').onchange = () => { build(); draw(); updateHud(0); };
+
+build();
+updateHud(0);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
