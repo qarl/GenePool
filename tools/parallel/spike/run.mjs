@@ -25,12 +25,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS (config leaves viewRadius default)
 
 export async function runParallel(N, ticks, W, poolSize, founders, config, food) {
-    const frozenSab = makeFrozenBuffer(N);
-    const gridSpec = allocCoopGrid(config.pool, CELL_SIZE, N);
+    // Ids are never reused + monotonic, so buffers are sized to a CAPACITY CEILING (founders + birth headroom),
+    // not the living count. maxBots caps LIFETIME births -> worker 0 stops minting at the ceiling (a documented
+    // stopgap for the never-reused-id overflow; slot-recycling is the real fix, review required #7).
+    const maxBots = N * 8;
+    const frozenSab = makeFrozenBuffer(maxBots);
+    const gridSpec = allocCoopGrid(config.pool, CELL_SIZE, maxBots);
     // Food SoA + food grid built ONCE (static positions); workers reconstruct read-only views over the same SABs.
     const { foodSab, foodGridSpec, numFood } = setupFood(food, config.pool, CELL_SIZE, food.length);
-    const puSab = makePostUpdateBuffer(N); // post-update SoA (workers publish; worker 0 resolves from it)
-    const resSabs = makeResolutionBuffers(N, NUM_GENES);
+    const puSab = makePostUpdateBuffer(maxBots); // post-update SoA (workers publish; worker 0 resolves from it)
+    const resSabs = makeResolutionBuffers(maxBots, NUM_GENES);
     new Int32Array(resSabs.wantsEatSab).fill(-1);  // 0 is a valid foodId; -1 = "not eating"
     new Int32Array(resSabs.wantsMateSab).fill(-1);
     const ctrlSab = new SharedArrayBuffer(CTL_SIZE * Int32Array.BYTES_PER_ELEMENT);
@@ -48,9 +52,9 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food)
         const idEnd = Math.min(N, (w + 1) * chunk);
         const worker = new Worker(join(HERE, 'worker.mjs'), {
             workerData: {
-                frozenSab, ctrlSab, gridSpec, maxBots: N, masterSeed: MASTER_SEED, config,
+                frozenSab, ctrlSab, gridSpec, maxBots, masterSeed: MASTER_SEED, config,
                 founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle: OBSTACLE, W, workerIndex: w,
-                foodGridSpec, foodSab, numFood, puSab, resSabs, numBotIds: N,
+                foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders: N,
             },
         });
         worker.on('message', (m) => {
@@ -92,7 +96,7 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food)
     for (let w = 0; w < W; w++) fp.push(...fingerprints.get(w * chunk));
     fp.sort((a, b) => Number(a.split(':')[0]) - Number(b.split(':')[0]));
     const hash = createHash('sha256').update(fp.join('|')).digest('hex').slice(0, 16);
-    return { ms, tps: Math.round(ticks / (ms / 1000)), hash };
+    return { ms, tps: Math.round(ticks / (ms / 1000)), hash, totalBots: fp.length };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) await (async () => {

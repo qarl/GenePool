@@ -10,7 +10,7 @@ import { CoopGrid } from './coop-grid.mjs';
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, barrier } from './barrier.mjs';
 
 const { frozenSab, ctrlSab, gridSpec, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, W, workerIndex,
-        foodGridSpec, foodSab, numFood, puSab, resSabs, numBotIds } = workerData;
+        foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders } = workerData;
 const f64 = new Float64Array(frozenSab);
 const ctrl = new Int32Array(ctrlSab);
 const coopGrid = new CoopGrid(gridSpec);
@@ -26,8 +26,10 @@ const res = resSabs ? {
     numOffspringDelta: new Int32Array(resSabs.numOffspringDeltaSab),
     flags: new Int32Array(resSabs.flagsSab),
     genome: new Uint8Array(resSabs.genomeSab),
+    newbornCount: new Int32Array(resSabs.newbornCountSab),
+    newbornRec: new Float64Array(resSabs.newbornRecSab),
 } : null;
-const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood, puF64, res);
+const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood, puF64, res, numFounders);
 
 parentPort.postMessage({ type: 'ready', idStart });
 
@@ -60,7 +62,7 @@ for (;;) {
     barrier(ctrl, W);                   // B5: all post-update state visible before worker 0 resolves
 
     if (workerIndex === 0) {            // phase 6: serial cross-worker resolution -> deltas -> tick done
-        part.resolve(tick, numBotIds);
+        part.resolve(tick);
         Atomics.add(ctrl, CTL_DONEGEN, 1);
         Atomics.notify(ctrl, CTL_DONEGEN);
     }

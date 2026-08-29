@@ -12,10 +12,11 @@ import { Obstacle } from '../../../engine/obstacle.js';
 import { Vector2D } from '../../../engine/vector2d.js';
 import { makeStream, draw, DOMAIN } from '../../../engine/rng.js';
 import { computeMetricForCriterion } from '../../../engine/attraction.js';
-import { SWIMBOT_VIEW_RADIUS, ONE_HALF } from '../../../engine/constants.js';
-import { writeSlot } from './frozen-layout.mjs';
+import { SWIMBOT_VIEW_RADIUS, ONE_HALF, ONE, NUM_GENES, NUM_GENES_USED, BYTE_SIZE, NON_REPRODUCING_JUNK_DNA_LIMIT } from '../../../engine/constants.js';
+import { writeSlot, F_ALIVE, F_GX, F_GY, STRIDE } from './frozen-layout.mjs';
 import { FD_STRIDE, FD_ALIVE, FD_ENERGY } from './food-layout.mjs';
-import { writePostUpdate, PU_STRIDE, PU_ALIVE, PU_ENERGY, FLAG_ENERGY_SET, FLAG_TIMER_RESET, FLAG_CLEAR_EAT, FLAG_CLEAR_MATE } from './resolution-layout.mjs';
+import { writePostUpdate, PU_STRIDE, PU_ALIVE, PU_ENERGY, PU_GX, PU_GY, FLAG_ENERGY_SET, FLAG_TIMER_RESET, FLAG_CLEAR_EAT, FLAG_CLEAR_MATE,
+         NB_ID, NB_X, NB_Y, NB_ANGLE, NB_ENERGY, NB_STRIDE } from './resolution-layout.mjs';
 import { Perceiver } from './perceive.mjs';
 
 export class Partition {
@@ -24,9 +25,10 @@ export class Partition {
     // foodGrid/foodF64/numFood: the prebuilt read-only food grid + food SoA (S1) for the perceiver's food scan.
     // res (or null): the cross-worker resolution buffers {wantsEat, resolvedEnergy, numFoodEatenDelta,
     // numOffspringDelta, flags} (typed-array views) + {foodF64, numFood, numBotIds} for worker 0's resolve.
-    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1, foodGrid = null, foodF64 = null, numFood = 0, puF64 = null, res = null) {
+    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1, foodGrid = null, foodF64 = null, numFood = 0, puF64 = null, res = null, nextIdStart = 0) {
         this._f64 = f64;
         this._maxBots = maxBots;
+        this._masterSeed = masterSeed;
         this._config = config;
         this._embryology = new Embryology();
         this._matePref = (l, c, t, i) => draw(masterSeed, DOMAIN.MATE_PREF, l, c, t, i);
@@ -41,17 +43,51 @@ export class Partition {
         this._res = res;     // cross-worker resolution buffers (null in the ecology-off / JS-baseline paths)
         this._foodF64 = foodF64;
         this._numFood = numFood;
+        // Birth-resolution state (worker 0): the monotonic newborn-id counter, config rates, and scratch genotypes
+        // + a shared genome view. Founders write their genomes into the shared SoA so worker 0 can read any
+        // parent/mate genome for the junk-DNA gate + setAsOffspring. (All workers hold these; only w0 mints.)
+        this._nextId = nextIdStart;
+        this._childEnergyRatio = config.childEnergyRatio;
+        this._crossoverRate = config.crossoverRate;
+        this._mutationRate = config.mutationRate;
+        this._maxPopulation = config.maxPopulation ?? Infinity;
+        this._genomeU8 = res ? res.genome : null;
+        this._myGeno = new Genotype();
+        this._mateGeno = new Genotype();
+        this._childGeno = new Genotype();
+        this._workEnergy = res ? new Float64Array(maxBots) : null;   // worker-0 scratch (working energy during resolve)
+        this._workTrying = res ? new Uint8Array(maxBots) : null;     // worker-0 scratch (working tryingToMate)
         this._bots = [];
-        // `founders` is indexed for THIS range: founders[id - idStart] is bot `id` (so a worker is handed only
-        // its own slice, not all N). The single-thread baseline passes the full array with idStart=0.
+        // `founders` is indexed for THIS range: founders[id - idStart] is bot `id`. The single-thread baseline
+        // passes the full array with idStart=0.
         for (let id = idStart; id < idEnd; id++) {
             const f = founders[id - idStart];
-            const g = new Genotype(); g.setGenes(f.genes);
-            const sb = new Swimbot({ life: makeStream(masterSeed, DOMAIN.SWIMBOT_LIFE, id), matePref: this._matePref, config, embryology: this._embryology });
-            sb.create(id, f.age, { x: f.x, y: f.y }, f.angle, f.energy, g);
-            this._bots.push(sb);
+            this._bots.push(this._makeBot(id, f.age, f.x, f.y, f.angle, f.energy, f.genes));
+            if (this._genomeU8) this._genomeU8.set(f.genes, id * NUM_GENES); // publish founder genome for worker 0
         }
         this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle, coopGrid, config.numFoodTypes ?? 1, foodGrid, foodF64, numFood);
+    }
+
+    // Construct one real Swimbot (founder or newborn). Same ctx wiring as world.js#_makeSwimbot: a per-id
+    // SWIMBOT_LIFE stream + the shared pairwise matePref.
+    _makeBot(id, age, x, y, angle, energy, genes) {
+        const g = new Genotype(); g.setGenes(genes);
+        const sb = new Swimbot({ life: makeStream(this._masterSeed, DOMAIN.SWIMBOT_LIFE, id), matePref: this._matePref, config: this._config, embryology: this._embryology });
+        sb.create(id, age, { x, y }, angle, energy, g);
+        return sb;
+    }
+
+    // Junk-DNA similarity between two genomes in the shared SoA -- bit-identical to world.js#_getJunkDnaSimilarity
+    // (same accumulation order over genes [NUM_GENES_USED, NUM_GENES), /BYTE_SIZE per gene, /num at the end).
+    _junkDnaSimilarity(idA, idB) {
+        const g = this._genomeU8;
+        const baseA = idA * NUM_GENES, baseB = idB * NUM_GENES;
+        let diff = 0, num = 0;
+        for (let k = NUM_GENES_USED; k < NUM_GENES; k++) {
+            diff += Math.abs(g[baseA + k] - g[baseB + k]) / BYTE_SIZE;
+            num++;
+        }
+        return ONE - (diff / num);
     }
 
     // Phase 1: publish my bots' tick-start frozen view into the shared buffer.
@@ -103,6 +139,20 @@ export class Partition {
                 (fl & FLAG_TIMER_RESET) !== 0, (fl & FLAG_CLEAR_EAT) !== 0, (fl & FLAG_CLEAR_MATE) !== 0,
             );
             flags[id] = 0; numFoodEatenDelta[id] = 0; numOffspringDelta[id] = 0; // clear for next tick
+        }
+        // Construct the newborns worker 0 minted last tick that are assigned to ME (round-robin newId % W). Genes
+        // come from the shared genome SoA at newId. They first act + are first perceived THIS tick (T+1) -- exactly
+        // world.js's T+1 birth semantics (_applyPendingBirths adds after the tick; newborn acts next tick).
+        const count = res.newbornCount[0];
+        if (count > 0) {
+            const rec = res.newbornRec, genome = res.genome, W = this._W;
+            for (let k = 0; k < count; k++) {
+                const o = k * NB_STRIDE;
+                const newId = rec[o + NB_ID];
+                if (newId % W !== this._w) continue;
+                this._bots.push(this._makeBot(newId, 0, rec[o + NB_X], rec[o + NB_Y], rec[o + NB_ANGLE], rec[o + NB_ENERGY],
+                    genome.subarray(newId * NUM_GENES, newId * NUM_GENES + NUM_GENES)));
+            }
         }
     }
 
@@ -173,13 +223,17 @@ export class Partition {
     }
 
     // Phase 6 (worker 0 ONLY): serial cross-worker resolution over the GLOBAL id set in ascending order (owner-
-    // agnostic). S2b: EATS -- lowest-id-per-food wins via the food-alive guard (exactly eatChosenFoodBit's loser
-    // semantics), producing per-bot resolved energy + counts + flags the owners apply next tick. (Births = S3.)
-    resolve(tick, numBotIds) {
+    // agnostic), mirroring world.js's snapshot tick: EATS first (_resolveStagedEats), then BIRTHS
+    // (_resolveStagedBirths). Produces per-bot resolved energy + count deltas + flags + a newborn list the owners
+    // apply/construct next tick.
+    resolve(tick) {
         const res = this._res;
         if (!res) return;
-        const { wantsEat, resolvedEnergy, numFoodEatenDelta, flags } = res;
-        const pu = this._puF64, food = this._foodF64;
+        const numBotIds = this._nextId; // all ids ever minted (founders + births so far) -- grows with the pool
+        const { wantsEat, wantsMate, resolvedEnergy, numFoodEatenDelta, numOffspringDelta, flags } = res;
+        const pu = this._puF64, food = this._foodF64, frozen = this._f64, genome = this._genomeU8;
+
+        // --- EATS: ascending id, lowest-id-per-food wins via the food-alive guard (eatChosenFoodBit semantics) ---
         for (let id = 0; id < numBotIds; id++) {
             const foodId = wantsEat[id];
             if (foodId < 0) continue;
@@ -191,6 +245,45 @@ export class Partition {
             numFoodEatenDelta[id] += 1;
             flags[id] |= FLAG_ENERGY_SET | FLAG_TIMER_RESET | FLAG_CLEAR_EAT;
             food[fo + FD_ALIVE] = 0; // kill the food (SoA); the static grid still lists it, filtered by alive
+        }
+
+        // --- BIRTHS: ascending PARENT id (_resolveStagedBirths / _handleBirth) with working energy + trying arrays.
+        const workE = this._workEnergy, workT = this._workTrying;
+        for (let id = 0; id < numBotIds; id++) {
+            // start from post-EAT energy (eaters have FLAG_ENERGY_SET/resolvedEnergy; others from post-update)
+            workE[id] = (flags[id] & FLAG_ENERGY_SET) ? resolvedEnergy[id] : pu[id * PU_STRIDE + PU_ENERGY];
+            workT[id] = (wantsMate[id] >= 0 && pu[id * PU_STRIDE + PU_ALIVE] === 1) ? 1 : 0; // parent must be post-update alive
+        }
+        res.newbornCount[0] = 0; // reset the per-tick newborn list (owners read last tick's before this reset)
+        const rec = res.newbornRec;
+        for (let pid = 0; pid < numBotIds; pid++) {
+            if (!workT[pid]) continue; // not trying, or consumed as a mate (its trying was cleared below)
+            if (this._nextId >= this._maxBots) break; // capacity ceiling (never-reused-id overflow stopgap)
+            const mateId = wantsMate[pid];
+            if (frozen[mateId * STRIDE + F_ALIVE] !== 1) continue; // mate must be alive at TICK START (world.js snapshot gate)
+            if (this._junkDnaSimilarity(pid, mateId) <= NON_REPRODUCING_JUNK_DNA_LIMIT) continue; // speciation gate
+            const newBornId = this._nextId++;
+            const genomeStream = makeStream(this._masterSeed, DOMAIN.OFFSPRING_GENOME, newBornId);
+            const genomeRng = () => genomeStream.next();
+            this._myGeno.setGenes(genome.subarray(pid * NUM_GENES, pid * NUM_GENES + NUM_GENES));   // canonicalize copies
+            this._mateGeno.setGenes(genome.subarray(mateId * NUM_GENES, mateId * NUM_GENES + NUM_GENES));
+            this._childGeno.setAsOffspring(this._myGeno, this._mateGeno, genomeRng, { crossoverRate: this._crossoverRate, mutationRate: this._mutationRate });
+            genome.set(this._childGeno.getGenes(), newBornId * NUM_GENES); // publish child genome for its owner
+            // contributeToOffspring (parent then mate) on the WORKING energy -> sequential, order-correct.
+            const myContribution = workE[pid] * this._childEnergyRatio; workE[pid] -= myContribution;
+            const mateContribution = workE[mateId] * this._childEnergyRatio; workE[mateId] -= mateContribution;
+            const energyToOffspring = myContribution + mateContribution;
+            resolvedEnergy[pid] = workE[pid]; flags[pid] |= FLAG_ENERGY_SET | FLAG_TIMER_RESET | FLAG_CLEAR_MATE; numOffspringDelta[pid] += 1;
+            resolvedEnergy[mateId] = workE[mateId]; flags[mateId] |= FLAG_ENERGY_SET | FLAG_TIMER_RESET | FLAG_CLEAR_MATE; numOffspringDelta[mateId] += 1;
+            workT[mateId] = 0; workT[pid] = 0; // contributeToOffspring clears both roles' tryingToMate
+            // birthPos: parent POST-UPDATE genital + mate FROZEN (tick-start) genital -- matches _handleBirth (snapshot)
+            const pgx = pu[pid * PU_STRIDE + PU_GX], pgy = pu[pid * PU_STRIDE + PU_GY];
+            const mgx = frozen[mateId * STRIDE + F_GX], mgy = frozen[mateId * STRIDE + F_GY];
+            const bx = pgx + (mgx - pgx) * ONE_HALF, by = pgy + (mgy - pgy) * ONE_HALF;
+            const initialAngle = -180.0 + genomeRng() * 360.0; // same stream, AFTER the genome (world.js order)
+            const no = (res.newbornCount[0]++) * NB_STRIDE;
+            rec[no + NB_ID] = newBornId; rec[no + NB_X] = bx; rec[no + NB_Y] = by;
+            rec[no + NB_ANGLE] = initialAngle; rec[no + NB_ENERGY] = energyToOffspring;
         }
     }
 

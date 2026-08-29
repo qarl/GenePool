@@ -41,8 +41,20 @@ export function makeResolutionBuffers(maxBots, numGenes) {
         numOffspringDeltaSab: new SharedArrayBuffer(maxBots * Int32Array.BYTES_PER_ELEMENT),
         flagsSab: new SharedArrayBuffer(maxBots * Int32Array.BYTES_PER_ELEMENT),
         genomeSab: new SharedArrayBuffer(maxBots * numGenes),                          // Uint8 per-bot genome (birth)
+        // Newborn list for THIS tick: worker 0 appends (count + records); owners read next tick, construct the
+        // ones with newId % W == workerIndex, then it's reset by worker 0's next resolve. Sized to maxBots.
+        newbornCountSab: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
+        newbornRecSab: new SharedArrayBuffer(maxBots * NB_STRIDE * Float64Array.BYTES_PER_ELEMENT),
     };
 }
+
+// Newborn record fields (Float64; newId fits exactly). Genes live in the genome SoA at newId.
+export const NB_ID = 0;
+export const NB_X = 1;
+export const NB_Y = 2;
+export const NB_ANGLE = 3;
+export const NB_ENERGY = 4;
+export const NB_STRIDE = 5;
 
 // flag bits (flagsSab per bot): what the owner applies in phase 1.
 export const FLAG_ENERGY_SET = 1;   // _energy = resolvedEnergy[id]  (eat gain and/or mate/parent contribution)
