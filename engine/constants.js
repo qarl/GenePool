@@ -68,13 +68,28 @@ export const BRAIN_STATE_LOOKING_FOR_FOOD = 3;
 export const BRAIN_STATE_PURSUING_FOOD = 4;
 export const NUM_BRAIN_STATES = 8;
 
-// Default world bounds (JJ's fixed pool; P3 makes these arbitrary via config).
+// Default world bounds (JJ's fixed 8000x8000 pool). P3 makes bounds arbitrary via config.pool; these are
+// the faithful DEFAULTS used whenever a caller supplies no bounds (so pre-P3 code paths are byte-identical).
 export const POOL_LEFT = 0.0;
 export const POOL_RIGHT = 8000.0;
 export const POOL_TOP = 0.0;
 export const POOL_BOTTOM = 8000.0;
 export const POOL_WIDTH = POOL_RIGHT - POOL_LEFT;
 export const POOL_HEIGHT = POOL_BOTTOM - POOL_TOP;
+
+// Resolve an optional (possibly partial) config.pool into a full bounds object. Any missing edge falls back
+// to the JJ default, so resolvePoolBounds(undefined) == the fixed 8000x8000 pool (byte-identical to pre-P3).
+// `margin` is the food-spawn boundary inset, scaled to width (JJ: POOL_WIDTH*0.01) so it tracks arbitrary
+// sizes. Bounds are user config, not an engine-imposed limit (North Star -- see the RETIRED caps below).
+export function resolvePoolBounds(pool) {
+    const left = pool?.left ?? POOL_LEFT;
+    const top = pool?.top ?? POOL_TOP;
+    const right = pool?.right ?? POOL_RIGHT;
+    const bottom = pool?.bottom ?? POOL_BOTTOM;
+    const width = right - left;
+    const height = bottom - top;
+    return { left, top, right, bottom, width, height, margin: width * 0.01 };
+}
 
 // Food ecology. FOOD_BIT_BOUNDARY_MARGIN keeps spawned food off the walls (JJ: POOL_WIDTH*0.01).
 // The spawn radius / energy defaults are GlobalTweakers defaults, overridable via config (foodSpread /

@@ -37,7 +37,7 @@ import {
     TOO_UGLY_TO_CHOOSE,
     BRAIN_STATE_PURSUING_FOOD, BRAIN_STATE_PURSUING_MATE,
     BRAIN_STATE_LOOKING_FOR_FOOD, BRAIN_STATE_LOOKING_FOR_MATE,
-    POOL_LEFT, POOL_RIGHT, POOL_TOP, POOL_BOTTOM,
+    resolvePoolBounds,
     SWIMBOT_VIEW_RADIUS, GREATEST_POSSIBLE_SWIMBOT_MASS, GREATEST_POSSIBLE_SWIMBOT_LENGTH,
     ATTRACTION_COLORFUL, ATTRACTION_BIG, ATTRACTION_HYPER, ATTRACTION_LONG, ATTRACTION_STRAIGHT,
     ATTRACTION_NO_COLOR, ATTRACTION_SMALL, ATTRACTION_STILL, ATTRACTION_SHORT, ATTRACTION_CROOKED,
@@ -55,6 +55,9 @@ export class Swimbot {
         this._life = ctx.life;
         this._matePref = ctx.matePref;
         this._config = ctx.config;
+        // Pool bounds for wall collisions -- from config.pool (P3), defaulting to JJ's 8000x8000 when absent
+        // (so a swimbot built without bounds, e.g. the fidelity tests, behaves byte-identically to pre-P3).
+        this._pool = resolvePoolBounds(ctx.config && ctx.config.pool);
         this._embryology = ctx.embryology;
         this._onDeath = ctx.onDeath || null;
 
@@ -529,6 +532,7 @@ export class Swimbot {
     }
 
     updateWallCollisions() {
+        const { left: POOL_LEFT, right: POOL_RIGHT, top: POOL_TOP, bottom: POOL_BOTTOM } = this._pool;
         if (this._position.x < POOL_LEFT + this._phenotype.sumPartLengths * ONE_HALF) {
             for (let p = 1; p < this._phenotype.numParts; p++) {
                 const radius = this._phenotype.parts[p].length + this._phenotype.parts[p].width;

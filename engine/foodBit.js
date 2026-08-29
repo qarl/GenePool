@@ -8,8 +8,7 @@
 
 import {
     NULL_INDEX, ZERO, ONE, ONE_HALF,
-    POOL_LEFT, POOL_RIGHT, POOL_TOP, POOL_BOTTOM,
-    FOOD_BIT_BOUNDARY_MARGIN, DEFAULT_FOOD_BIT_MAX_SPAWN_RADIUS,
+    resolvePoolBounds, DEFAULT_FOOD_BIT_MAX_SPAWN_RADIUS,
 } from './constants.js';
 import { Vector2D } from './vector2d.js';
 
@@ -20,6 +19,8 @@ export class FoodBit {
         this._type = 0;
         this._index = NULL_INDEX;
         this._maxSpawnRadius = DEFAULT_FOOD_BIT_MAX_SPAWN_RADIUS;
+        // Pool bounds for spawn clamping -- default JJ 8000x8000; World overrides via setPoolBounds (P3).
+        this._pool = resolvePoolBounds(undefined);
     }
 
     setPosition(p) { this._position.set(p); }
@@ -27,6 +28,7 @@ export class FoodBit {
     setType(n) { this._type = n; }
     setIndex(i) { this._index = i; }
     setMaxSpawnRadius(r) { this._maxSpawnRadius = r; }
+    setPoolBounds(pool) { this._pool = resolvePoolBounds(pool); }
     kill() { this._index = NULL_INDEX; }
 
     getPosition() { return this._position; }
@@ -60,10 +62,10 @@ export class FoodBit {
         this._position.x += xx * this._maxSpawnRadius;
         this._position.y += yy * this._maxSpawnRadius;
 
-        const pb = POOL_TOP + FOOD_BIT_BOUNDARY_MARGIN;
-        const pt = POOL_BOTTOM - FOOD_BIT_BOUNDARY_MARGIN;
-        const pl = POOL_LEFT + FOOD_BIT_BOUNDARY_MARGIN;
-        const pr = POOL_RIGHT - FOOD_BIT_BOUNDARY_MARGIN;
+        const pb = this._pool.top + this._pool.margin;
+        const pt = this._pool.bottom - this._pool.margin;
+        const pl = this._pool.left + this._pool.margin;
+        const pr = this._pool.right - this._pool.margin;
 
         if (this._position.y < pb) { this._position.y += ((pb - this._position.y) * 2); } else if (this._position.y > pt) { this._position.y += ((pt - this._position.y) * 2); }
         if (this._position.x > pr) { this._position.x += ((pr - this._position.x) * 2); } else if (this._position.x < pl) { this._position.x += ((pl - this._position.x) * 2); }

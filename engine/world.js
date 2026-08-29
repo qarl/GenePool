@@ -33,7 +33,7 @@ import { SpatialGrid } from './spatialGrid.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
     MAX_FOODBITS_PER_TYPE, NON_REPRODUCING_JUNK_DNA_LIMIT,
-    BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS, SWIMBOT_VIEW_RADIUS,
+    BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS, SWIMBOT_VIEW_RADIUS, resolvePoolBounds,
 } from './constants.js';
 
 export class World {
@@ -60,7 +60,15 @@ export class World {
         this._nextSwimbotId = 0;
         this._nextFoodId = 0;
         this._pendingBirths = []; // T+1: newborns created this tick, added after it
+
+        // P3: arbitrary world bounds. config.pool = {left,top,right,bottom} (any missing edge -> JJ default);
+        // omit it entirely for the faithful 8000x8000 pool. Swimbots read config.pool for wall bounce (via
+        // their ctx.config, which IS this._config); food + obstacle are given the bounds explicitly below.
+        // MAX_FOODBITS_PER_TYPE (a per-type 2-food regen BALANCE hint, not a hard cap) is also config now.
+        this._pool = resolvePoolBounds(config.pool);
+        this._maxFoodBitsPerType = config.maxFoodBitsPerType ?? MAX_FOODBITS_PER_TYPE;
         this._obstacle = new Obstacle();
+        this._obstacle.setPoolBounds(config.pool);
 
         // P2 spatial grid: a BEHAVIOR-PRESERVING acceleration of the O(n^2) perception scans. cellSize ==
         // the view radius, so the 3x3 neighborhood of any query point covers the whole view circle -- the
@@ -123,6 +131,7 @@ export class World {
         f.setType(type);
         f.setEnergy(energy);
         f.setMaxSpawnRadius(this._config.foodSpread);
+        f.setPoolBounds(this._config.pool);
         this._foodBits.set(id, f);
         if (this._useSpatialGrid) { const p = f.getPosition(); this._foodGrid.insert(f, p.x, p.y); }
         if (id >= this._nextFoodId) this._nextFoodId = id + 1;
@@ -131,6 +140,7 @@ export class World {
     setObstacle(e1, e2) { this._obstacle.setEndpointPositions(e1, e2); }
 
     getClock() { return this._clock; }
+    getPoolBounds() { return this._pool; } // {left,top,right,bottom,width,height,margin} (P3)
     getNextSwimbotId() { return this._nextSwimbotId; }
     getNextFoodId() { return this._nextFoodId; }
     getNumDeadSwimbots() { return this._numDeadSwimbots; }
@@ -344,7 +354,7 @@ export class World {
                 // >= (JJ used ==, which was safe under the hard total cap; without it, use >= so the
                 // per-type balance can't be skipped past). MAX_FOODBITS_PER_TYPE stays a per-type balance
                 // hint, not a hard ceiling.
-                if (numType0 >= MAX_FOODBITS_PER_TYPE) newFoodType = 1; else if (numType1 >= MAX_FOODBITS_PER_TYPE) newFoodType = 0;
+                if (numType0 >= this._maxFoodBitsPerType) newFoodType = 1; else if (numType1 >= this._maxFoodBitsPerType) newFoodType = 0;
                 parent = this._findRandomLivingFoodOfType(newFoodType);
                 if (numType0 === 0) { newFoodType = 0; parent = this._findRandomLivingFoodOfType(1); }
                 if (numType1 === 0) { newFoodType = 1; parent = this._findRandomLivingFoodOfType(0); }
@@ -354,6 +364,7 @@ export class World {
                 const childId = this._nextFoodId++;
                 const child = new FoodBit();
                 child.setMaxSpawnRadius(this._config.foodSpread);
+                child.setPoolBounds(this._config.pool); // before spawnFromParent -> randomizeSpawnPosition clamps to bounds
                 child.spawnFromParent(parent, childId, newFoodType, this._foodRegenRng);
 
                 let looking = true;

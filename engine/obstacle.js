@@ -3,7 +3,7 @@
 // (getObstruction). RNG-free. The UI-only bits (hover/move/render) are dropped; the sim reads only
 // endpoints, collision, and obstruction. Faithful arithmetic (the pool tick is bit-exact against JJ).
 
-import { ZERO, ONE, ONE_HALF, POOL_LEFT, POOL_RIGHT, POOL_TOP, POOL_BOTTOM } from './constants.js';
+import { ZERO, ONE, ONE_HALF, resolvePoolBounds } from './constants.js';
 import { Vector2D } from './vector2d.js';
 
 const END_RADIUS = 20;
@@ -19,7 +19,11 @@ export class Obstacle {
         this._testVector = new Vector2D();
         this._collisionForce = new Vector2D();
         this._length = ZERO;
+        // Pool bounds for endpoint clamping -- default JJ 8000x8000; World overrides via setPoolBounds (P3).
+        this._pool = resolvePoolBounds(undefined);
     }
+
+    setPoolBounds(pool) { this._pool = resolvePoolBounds(pool); }
 
     setEndpointPositions(e1, e2) {
         this._end1.set(e1);
@@ -62,10 +66,10 @@ export class Obstacle {
         }
 
         // clamp endpoints to the pool walls (again, without recomputing mid/length -- faithful to JJ)
-        const left = POOL_LEFT + END_RADIUS;
-        const right = POOL_RIGHT - END_RADIUS;
-        const bottom = POOL_BOTTOM - END_RADIUS;
-        const top = POOL_TOP + END_RADIUS;
+        const left = this._pool.left + END_RADIUS;
+        const right = this._pool.right - END_RADIUS;
+        const bottom = this._pool.bottom - END_RADIUS;
+        const top = this._pool.top + END_RADIUS;
 
         if (this._end1.x > right) { this._end1.x = right; } else if (this._end1.x < left) { this._end1.x = left; }
         if (this._end1.y > bottom) { this._end1.y = bottom; } else if (this._end1.y < top) { this._end1.y = top; }
