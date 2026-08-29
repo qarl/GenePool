@@ -26,3 +26,26 @@ export function writePostUpdate(pu64, id, alive, energy, gx, gy) {
     pu64[o + PU_GX] = gx;
     pu64[o + PU_GY] = gy;
 }
+
+// Cross-worker resolution buffers. STAGING: each owner writes its bots' intents in phase 5 (foodId/mateId, or -1).
+// RESULTS: worker 0 computes ecology outcomes in the resolve tail; each owner applies to its bots in phase 1 of
+// the next tick, then clears them. ENERGY is written as the FINAL value to SET (not a delta) -- float
+// non-associativity means `start + (final-start) != final`, so the owner must take worker 0's exact final to stay
+// bit-identical. Integer counts use deltas (exact). Sized to maxBots (id-indexed).
+export function makeResolutionBuffers(maxBots, numGenes) {
+    return {
+        wantsEatSab: new SharedArrayBuffer(maxBots * Int32Array.BYTES_PER_ELEMENT),   // foodId this bot is eating, or -1
+        wantsMateSab: new SharedArrayBuffer(maxBots * Int32Array.BYTES_PER_ELEMENT),  // mateId this bot chose, or -1
+        resolvedEnergySab: new SharedArrayBuffer(maxBots * Float64Array.BYTES_PER_ELEMENT), // FINAL energy to SET (flag-gated)
+        numFoodEatenDeltaSab: new SharedArrayBuffer(maxBots * Int32Array.BYTES_PER_ELEMENT),
+        numOffspringDeltaSab: new SharedArrayBuffer(maxBots * Int32Array.BYTES_PER_ELEMENT),
+        flagsSab: new SharedArrayBuffer(maxBots * Int32Array.BYTES_PER_ELEMENT),
+        genomeSab: new SharedArrayBuffer(maxBots * numGenes),                          // Uint8 per-bot genome (birth)
+    };
+}
+
+// flag bits (flagsSab per bot): what the owner applies in phase 1.
+export const FLAG_ENERGY_SET = 1;   // _energy = resolvedEnergy[id]  (eat gain and/or mate/parent contribution)
+export const FLAG_TIMER_RESET = 2;  // _timerDelta = 0               (eat winner OR mated)
+export const FLAG_CLEAR_EAT = 4;    // _tryingToEat = false          (eat winner only; losers keep trying, per world.js)
+export const FLAG_CLEAR_MATE = 8;   // contributeToOffspring's mate-clear (parent or mate role)

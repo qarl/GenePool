@@ -24,6 +24,12 @@ export function makeConfig(poolSize) {
     };
 }
 
+// Full-ecology config: keeps the fixture's REAL metabolism / swim cost / lifespan (so bots forage, eat, age, die)
+// -- unlike makeConfig which zeroes them for a stable perf probe. Used by the ecology determinism / G1 runs.
+export function makeEcologyConfig(poolSize) {
+    return { ...FIX.config, pool: { left: 0, top: 0, right: poolSize, bottom: poolSize } };
+}
+
 // Deterministic per-id founder data (same regardless of how the ids are later partitioned across workers).
 export function makeFounders(n, poolSize, seed = 1234) {
     const rng = mulberry32(seed);

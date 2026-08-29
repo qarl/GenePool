@@ -726,6 +726,25 @@ export class Swimbot {
         return energyToContribute;
     }
 
+    // Parallel-mode resolution apply: set the between-tick state that eatChosenFoodBit + contributeToOffspring
+    // would have mutated, as decided by the serial cross-worker resolver. Energy is SET to the resolver's exact
+    // final value (a delta would lose bit-identity to float non-associativity); counts are integer deltas (exact);
+    // the flags mirror the exact mutations (winner eat resets tryingToEat + timerDelta; a mater's contribution
+    // clears mate state + timerDelta). Additive; single-thread behavior is unaffected (never called there).
+    applyResolution(setEnergy, energy, numFoodEatenDelta, numOffspringDelta, timerReset, clearEat, clearMate) {
+        if (setEnergy) this._energy = energy;
+        if (numFoodEatenDelta) this._numFoodBitsEaten += numFoodEatenDelta;
+        if (numOffspringDelta) this._numOffspring += numOffspringDelta;
+        if (timerReset) this._timerDelta = ZERO;
+        if (clearEat) this._tryingToEat = false;
+        if (clearMate) {
+            this._tryingToMate = false;
+            this._chosenMate = null;
+            this._chosenMateIndex = NULL_INDEX;
+            this._brain.setFoundSwimbot(false);
+        }
+    }
+
     // --- mate attraction (rung 2). getAttractiveness draws gpRandom() ONCE at the top (the mate-scan
     // draw that MUST be preserved), then overwrites it per the brain's criterion (ATTRACTION_RANDOM draws
     // a second time). `judge` is the swimbot doing the judging (for the "similar-to-me" criteria). All

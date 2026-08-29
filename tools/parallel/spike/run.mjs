@@ -13,8 +13,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeFrozenBuffer } from './frozen-layout.mjs';
 import { setupFood } from './food-layout.mjs';
-import { makePostUpdateBuffer } from './resolution-layout.mjs';
+import { makePostUpdateBuffer, makeResolutionBuffers } from './resolution-layout.mjs';
 import { allocCoopGrid } from './coop-grid.mjs';
+
+const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_SIZE } from './barrier.mjs';
 import { makeConfig, makeFounders, makeWallFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
 import { runBaseline } from './baseline.mjs';
@@ -22,12 +24,15 @@ import { runBaseline } from './baseline.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS (config leaves viewRadius default)
 
-async function runParallel(N, ticks, W, poolSize, founders, config, food) {
+export async function runParallel(N, ticks, W, poolSize, founders, config, food) {
     const frozenSab = makeFrozenBuffer(N);
     const gridSpec = allocCoopGrid(config.pool, CELL_SIZE, N);
     // Food SoA + food grid built ONCE (static positions); workers reconstruct read-only views over the same SABs.
     const { foodSab, foodGridSpec, numFood } = setupFood(food, config.pool, CELL_SIZE, food.length);
     const puSab = makePostUpdateBuffer(N); // post-update SoA (workers publish; worker 0 resolves from it)
+    const resSabs = makeResolutionBuffers(N, NUM_GENES);
+    new Int32Array(resSabs.wantsEatSab).fill(-1);  // 0 is a valid foodId; -1 = "not eating"
+    new Int32Array(resSabs.wantsMateSab).fill(-1);
     const ctrlSab = new SharedArrayBuffer(CTL_SIZE * Int32Array.BYTES_PER_ELEMENT);
     const ctrl = new Int32Array(ctrlSab);
 
@@ -45,7 +50,7 @@ async function runParallel(N, ticks, W, poolSize, founders, config, food) {
             workerData: {
                 frozenSab, ctrlSab, gridSpec, maxBots: N, masterSeed: MASTER_SEED, config,
                 founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle: OBSTACLE, W, workerIndex: w,
-                foodGridSpec, foodSab, numFood, puSab,
+                foodGridSpec, foodSab, numFood, puSab, resSabs, numBotIds: N,
             },
         });
         worker.on('message', (m) => {
@@ -90,6 +95,7 @@ async function runParallel(N, ticks, W, poolSize, founders, config, food) {
     return { ms, tps: Math.round(ticks / (ms / 1000)), hash };
 }
 
+if (import.meta.url === `file://${process.argv[1]}`) await (async () => {
 const N = Number(process.argv[2] || 5000);
 const ticks = Number(process.argv[3] || 200);
 const W = Number(process.argv[4] || 8);
@@ -120,3 +126,4 @@ const wallFood = makeFood(wallN * 4, wallPool);
 const wallBase = runBaseline(wallN, 300, wallPool, wallFounders, wallCfg, wallFood);
 const wallPar = await runParallel(wallN, 300, Math.min(W, 6), wallPool, wallFounders, wallCfg, wallFood);
 console.log(`  wall-hugging A/B (N=${wallN}, pool=${wallPool}): coop ${wallPar.hash === wallBase.hash ? 'matches JS grid at the walls ✓' : 'DIFFERS AT WALLS ✗ (clamp/skip bug)'}`);
+})();

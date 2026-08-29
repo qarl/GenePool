@@ -10,7 +10,7 @@ import { CoopGrid } from './coop-grid.mjs';
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, barrier } from './barrier.mjs';
 
 const { frozenSab, ctrlSab, gridSpec, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, W, workerIndex,
-        foodGridSpec, foodSab, numFood, puSab } = workerData;
+        foodGridSpec, foodSab, numFood, puSab, resSabs, numBotIds } = workerData;
 const f64 = new Float64Array(frozenSab);
 const ctrl = new Int32Array(ctrlSab);
 const coopGrid = new CoopGrid(gridSpec);
@@ -18,7 +18,16 @@ const coopGrid = new CoopGrid(gridSpec);
 const foodF64 = foodSab ? new Float64Array(foodSab) : null;
 const foodGrid = foodGridSpec ? new CoopGrid(foodGridSpec) : null;
 const puF64 = puSab ? new Float64Array(puSab) : null; // post-update SoA (published in phase 5, read in resolve)
-const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood, puF64);
+const res = resSabs ? {
+    wantsEat: new Int32Array(resSabs.wantsEatSab),
+    wantsMate: new Int32Array(resSabs.wantsMateSab),
+    resolvedEnergy: new Float64Array(resSabs.resolvedEnergySab),
+    numFoodEatenDelta: new Int32Array(resSabs.numFoodEatenDeltaSab),
+    numOffspringDelta: new Int32Array(resSabs.numOffspringDeltaSab),
+    flags: new Int32Array(resSabs.flagsSab),
+    genome: new Uint8Array(resSabs.genomeSab),
+} : null;
+const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood, puF64, res);
 
 parentPort.postMessage({ type: 'ready', idStart });
 
@@ -50,8 +59,8 @@ for (;;) {
     part.updatePerceive(tick);          // phase 5: update + perceive + publish post-update SoA
     barrier(ctrl, W);                   // B5: all post-update state visible before worker 0 resolves
 
-    if (workerIndex === 0) {            // phase 6: serial cross-worker resolution (S2a: no-op) -> tick done
-        part.resolve(tick);
+    if (workerIndex === 0) {            // phase 6: serial cross-worker resolution -> deltas -> tick done
+        part.resolve(tick, numBotIds);
         Atomics.add(ctrl, CTL_DONEGEN, 1);
         Atomics.notify(ctrl, CTL_DONEGEN);
     }
