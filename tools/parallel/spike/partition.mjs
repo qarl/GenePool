@@ -148,8 +148,9 @@ export class Partition {
 
     // --- COOP MODE phases (worker.mjs orchestrates these with barriers between them) ---
 
-    // Phase 1a: apply last tick's resolution results to my bots (energy SET, count deltas, timer/eat/mate clears),
-    // then clear the per-bot result slots for next tick. (Newborn construction + dead-drop land in S3/S4.)
+    // Phase 1: apply last tick's resolution results to my bots (energy SET, count deltas, timer/eat/mate clears),
+    // clear the per-bot result slots, construct my newborns, and SWEEP dead bots so per-tick work stays O(living)
+    // (else every corpse is re-iterated forever -> tick rate decays with run length).
     applyDeltas() {
         const res = this._res;
         if (!res) return;
@@ -179,6 +180,18 @@ export class Partition {
                     genome.subarray(newId * NUM_GENES, newId * NUM_GENES + NUM_GENES)));
             }
         }
+        // SWEEP (in-place, no alloc): drop a dead bot ONLY after its ghost (alive=0) has been published to the
+        // frozen SoA -- i.e. keep it while alive OR while its frozen slot still reads alive=1 (died this tick, not
+        // yet ghost-written). This reproduces world.js's one-tick ghost (a pursuer reads the dead mate's frozen
+        // slot for one tick) and is bit-identity-safe: swept bots are inert (filtered from grid/perception/resolve
+        // everywhere), so removing them changes no living-bot result -- it only bounds work to O(living).
+        const f64 = this._f64, bots = this._bots;
+        let keep = 0;
+        for (let i = 0; i < bots.length; i++) {
+            const sb = bots[i];
+            if (sb.getAlive() || f64[sb.getIndex() * STRIDE + F_ALIVE] === 1) bots[keep++] = sb;
+        }
+        bots.length = keep;
     }
 
     // Phase 1b: zero this worker's cell-range slice of the shared count[]/cursor[].

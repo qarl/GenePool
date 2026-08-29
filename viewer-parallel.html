@@ -49,8 +49,8 @@
       </div>
       <div style="margin-top:12px">
         <label class="row"><span style="width:74px">speed</span>
-          <input type="range" id="speed" min="1" max="40" value="8">
-          <span class="v" id="s-speed" style="width:64px; text-align:right">8 / frame</span>
+          <input type="range" id="speed" min="1" max="500" value="120">
+          <span class="v" id="s-speed" style="width:64px; text-align:right">120</span>
         </label>
       </div>
     </div>
@@ -68,7 +68,7 @@ import { setupFood, FD_STRIDE, FD_POSX, FD_POSY, FD_ALIVE } from './tools/parall
 import { makePostUpdateBuffer, makeResolutionBuffers } from './tools/parallel/spike/resolution-layout.mjs';
 import { makeRenderBuffer, R_X, R_Y, R_ANGLE, R_ENERGY, R_HUE, R_ALIVE, R_STRIDE } from './tools/parallel/spike/render-layout.mjs';
 import { allocCoopGrid } from './tools/parallel/spike/coop-grid.mjs';
-import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_SIZE } from './tools/parallel/spike/barrier.mjs';
+import { CTL_TICK, CTL_SHUTDOWN, CTL_RUN, CTL_DELAY, CTL_SIZE } from './tools/parallel/spike/barrier.mjs';
 import { Genotype } from './engine/genotype.js';
 
 const noteEl = document.getElementById('note');
@@ -81,12 +81,16 @@ if (typeof SharedArrayBuffer === 'undefined' || !self.crossOriginIsolated) {
 }
 
 // --- config: EXACTLY viewer.html's proven CONFIG + pool bounds (viewRadius left default = 300 = CELL_SIZE) ---
-const POOL = 10000;
-const N = 2500;                 // founders
+const POOL = 8000;              // matches the standard viewer.html pool
+const N = 400;                  // founders (a "normal" pool, like viewer.html's default)
 const CELL_SIZE = 300;          // == SWIMBOT_VIEW_RADIUS (the P2 grid invariant)
 const NUM_GENES = 256, NUM_GENES_USED = 112;
-const maxBots = N * 8;          // capacity ceiling (ids never reused; worker 0 stops minting here)
-const maxFood = N * 4 + 30000;  // initial food + generous regen headroom for a long session
+// Capacity ceilings. Ids are NEVER reused (monotonic), so these bound LIFETIME births / food, not the living
+// count -- and at high speed they exhaust fast, after which minting/regen stop and the pool starves out (the
+// single-thread viewer has no cap). Generous fixed ceilings buy a long session; slot-recycling is the real
+// unbounded fix (deferred). Sized large but bounded (SAB memory): ~genome 256B/bot dominates.
+const maxBots = Math.max(N * 8, 120000);
+const maxFood = Math.max(N * 3 + 20000, 120000);
 const CONFIG = {
     maximumLifeSpan: 40000, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
     crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: 4000,
@@ -107,7 +111,7 @@ for (let i = 0; i < N; i++) {
     for (let k = NUM_GENES_USED; k < NUM_GENES; k++) genes[k] = 0;
     founders[i] = { genes, age: Math.floor(rng() * 20000), x: rng() * POOL, y: rng() * POOL, angle: rng() * 360 - 180, energy: 80 };
 }
-const food = new Array(N * 4);
+const food = new Array(N * 3);
 for (let i = 0; i < food.length; i++) food[i] = { x: rng() * POOL, y: rng() * POOL, type: 0, energy: 50 };
 
 // --- allocate the shared buffers (mirrors runParallel + the render buffer the viewer needs) ---
@@ -155,22 +159,12 @@ const ready = new Promise((resolve) => {
     }
 });
 
-// --- the tick pump (main-paced, driven from requestAnimationFrame so ticks + paint interleave) ---
-let curTick = 0;
-function releaseTick() {
-    Atomics.store(ctrl, CTL_TICK, ++curTick);
-    const before = Atomics.load(ctrl, CTL_DONEGEN);
-    Atomics.add(ctrl, CTL_TICKGEN, 1);
-    Atomics.notify(ctrl, CTL_TICKGEN);
-    return before;
-}
-async function awaitTickDone(before) {
-    // Loop with a timeout so a stall (a thrown worker) can't hang the pump forever; running is re-checked.
-    while (Atomics.load(ctrl, CTL_DONEGEN) === before) {
-        if (stopped) return;
-        const r = Atomics.waitAsync(ctrl, CTL_DONEGEN, before, 2000);
-        if (r.async) await r.value; // 'ok' or 'timed-out' -> re-check the condition + stopped
-    }
+// --- FREE-RUN: the workers self-advance ticks flat-out; main only reads state + toggles RUN/DELAY. No per-tick
+// main handshake (that was the small-pool bottleneck). curTick is read from the ctrl block (worker 0 writes it). ---
+function setRun(on) { Atomics.store(ctrl, CTL_RUN, on ? 1 : 0); Atomics.notify(ctrl, CTL_RUN); }
+function setDelayFromSpeed(speed) {
+    // speed 500 (max) = flat out; lower = a per-tick sleep on worker 0 -> throttles the whole (barrier-synced) sim.
+    Atomics.store(ctrl, CTL_DELAY, speed >= 500 ? 0 : Math.max(1, Math.round(1000 / speed)));
 }
 
 const canvas = document.getElementById('c');
@@ -206,8 +200,9 @@ function render() {
     cx2d.beginPath(); cx2d.moveTo(OBSTACLE[0].x * SCALE, OBSTACLE[0].y * SCALE); cx2d.lineTo(OBSTACLE[1].x * SCALE, OBSTACLE[1].y * SCALE); cx2d.stroke();
 }
 
-let ticksSinceHud = 0, lastHud = performance.now();
+let lastHud = performance.now(), lastTick = 0;
 function hud() {
+    const curTick = Atomics.load(ctrl, CTL_TICK); // worker 0 writes this each tick
     let pop = 0; for (let id = 0; id < maxBots; id++) if (renderF32[id * R_STRIDE + R_ALIVE] === 1) pop++;
     let fc = 0; for (let id = 0; id < maxFood; id++) if (foodF64[id * FD_STRIDE + FD_ALIVE] === 1) fc++;
     document.getElementById('s-tick').textContent = curTick.toLocaleString();
@@ -215,30 +210,30 @@ function hud() {
     document.getElementById('s-food').textContent = fc.toLocaleString();
     const now = performance.now();
     if (now - lastHud > 500) {
-        document.getElementById('s-tps').textContent = Math.round(ticksSinceHud / ((now - lastHud) / 1000)).toLocaleString();
-        ticksSinceHud = 0; lastHud = now;
+        document.getElementById('s-tps').textContent = Math.round((curTick - lastTick) / ((now - lastHud) / 1000)).toLocaleString();
+        lastTick = curTick; lastHud = now;
     }
 }
 
 const speedInput = document.getElementById('speed');
-speedInput.oninput = () => document.getElementById('s-speed').textContent = speedInput.value + ' / frame';
+speedInput.oninput = () => { document.getElementById('s-speed').textContent = speedInput.value + (speedInput.value >= 500 ? ' (max)' : ''); setDelayFromSpeed(+speedInput.value); };
 
-async function frame() {
-    if (running && !stopped) {
-        const speed = +speedInput.value;
-        for (let i = 0; i < speed && running && !stopped; i++) { await awaitTickDone(releaseTick()); ticksSinceHud++; }
-    }
+// Render loop is pure requestAnimationFrame — it only READS the shared render/food buffers (the workers advance
+// the sim on their own threads). Draw at ~60fps regardless of how fast the sim ticks.
+function frame() {
     render();
     hud();
     if (!stopped) requestAnimationFrame(frame);
 }
 
 const playBtn = document.getElementById('playBtn');
-playBtn.onclick = () => { if (stopped) return; running = !running; playBtn.textContent = running ? 'Pause' : 'Play'; };
+playBtn.onclick = () => { if (stopped) return; running = !running; setRun(running); playBtn.textContent = running ? 'Pause' : 'Play'; };
 
 await ready;
-noteEl.textContent = `${W} workers running the real parallel engine. Founders share a species tag (junk DNA = 0) so they interbreed — evolution needs generations; crank speed and watch the pop climb.`;
+noteEl.textContent = `${W} workers running the real parallel engine, flat out. Founders share a species tag (junk DNA = 0) so they interbreed — evolution needs generations; the pop should climb.`;
 running = true;
+setDelayFromSpeed(+speedInput.value); // seed the throttle from the slider
+setRun(true);                          // start the workers free-running
 playBtn.disabled = false;
 requestAnimationFrame(frame);
 </script>

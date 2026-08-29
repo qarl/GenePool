@@ -16,7 +16,13 @@ export const CTL_DONECOUNT = 16; // workers that finished this tick (reset by th
 export const CTL_DONEGEN = 32;   // bumped by the last finisher; main waits on it -- own line
 export const CTL_BAR_COUNT = 48; // inter-worker barrier: arrivals (hottest, 4x/tick) -- own line
 export const CTL_BAR_GEN = 64;   // inter-worker barrier: generation (spun on by all waiters) -- own line
-export const CTL_SIZE = 80;
+// FREE-RUN mode (browser viewer): workers self-advance ticks (no per-tick main handshake); main only flips RUN
+// to pause/resume and reads CTL_TICK. Low-contention (only worker 0 reads RUN/DELAY each tick). CTL_PARK is a
+// never-changing slot worker 0 Atomics.waits on to sleep DELAY ms/tick (the speed throttle).
+export const CTL_RUN = 80;       // 1 = run, 0 = paused (worker 0 gates on it; B1 makes the pause unanimous)
+export const CTL_DELAY = 81;     // per-tick sleep in ms (worker 0); 0 = flat out
+export const CTL_PARK = 96;      // dummy slot for worker 0's throttle sleep (main never changes it)
+export const CTL_SIZE = 112;
 
 // Reusable centralized generation barrier across W workers. The last arrival resets the count, bumps the
 // generation, and notifies; everyone else waits for the generation to change. Correct for repeated use (4x/tick

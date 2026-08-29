@@ -6,7 +6,7 @@
 
 import { Partition } from './partition.mjs';
 import { CoopGrid } from './coop-grid.mjs';
-import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, barrier } from './barrier.mjs';
+import { CTL_TICK, CTL_SHUTDOWN, CTL_RUN, CTL_DELAY, CTL_PARK, barrier } from './barrier.mjs';
 
 self.onmessage = (e) => {
     const d = e.data;
@@ -32,33 +32,36 @@ self.onmessage = (e) => {
 
     self.postMessage({ type: 'ready' });
 
-    // Blocking tick loop (dedicated worker thread). Waits for main to release each tick via the ctrl SAB.
-    // tickGenSeen is PERSISTENT across iterations (init 0) -- exactly like worker.mjs. Re-reading it fresh each
-    // loop would let a worker that raced back after B5 skip a tick the main already released -> barrier deadlock.
-    let tickGenSeen = 0;
+    // FREE-RUN loop: the workers self-advance ticks in lockstep (the 5 barriers keep them aligned) with NO
+    // per-tick handshake to the main thread -- main only flips CTL_RUN (pause) + CTL_DELAY (throttle) and reads
+    // CTL_TICK / the render buffer. This removes the main-thread coordination that dominated small-pool ticks.
+    // localTick is per-worker but stays identical across workers (lockstep via the barriers) -> deterministic.
+    // PAUSE: only worker 0 gates on CTL_RUN; the others block at B1 waiting for it, so the pause is unanimous
+    // (no barrier-width mismatch). Shutdown is main calling terminate() (reliable even inside Atomics.wait).
+    let localTick = 0;
     for (;;) {
-        while (Atomics.load(ctrl, CTL_TICKGEN) === tickGenSeen) {
-            if (Atomics.load(ctrl, CTL_SHUTDOWN) === 1) return;
-            Atomics.wait(ctrl, CTL_TICKGEN, tickGenSeen, 1000);
+        if (workerIndex === 0) {
+            while (Atomics.load(ctrl, CTL_RUN) === 0) {
+                if (Atomics.load(ctrl, CTL_SHUTDOWN) === 1) return;
+                Atomics.wait(ctrl, CTL_RUN, 0, 250);
+            }
+            const delay = Atomics.load(ctrl, CTL_DELAY); // speed throttle: sleep DELAY ms/tick (0 = flat out)
+            if (delay > 0) Atomics.wait(ctrl, CTL_PARK, Atomics.load(ctrl, CTL_PARK), delay); // CTL_PARK never changes -> times out
         }
-        tickGenSeen = Atomics.load(ctrl, CTL_TICKGEN);
         if (Atomics.load(ctrl, CTL_SHUTDOWN) === 1) return;
-        const tick = Atomics.load(ctrl, CTL_TICK);
+        localTick++;
+        const tick = localTick;
 
         part.applyDeltas(); part.zeroGridCells();
-        barrier(ctrl, W);
+        barrier(ctrl, W); // B1 (also the unanimous pause-sync: worker 0 reaches here only when RUN==1)
         part.writeAndCount();
-        barrier(ctrl, W);
+        barrier(ctrl, W); // B2
         if (workerIndex === 0) part.prefix();
-        barrier(ctrl, W);
+        barrier(ctrl, W); // B3
         part.scatter();
-        barrier(ctrl, W);
+        barrier(ctrl, W); // B4
         part.updatePerceive(tick);
-        barrier(ctrl, W);
-        if (workerIndex === 0) {
-            part.resolve(tick);
-            Atomics.add(ctrl, CTL_DONEGEN, 1);
-            Atomics.notify(ctrl, CTL_DONEGEN);
-        }
+        barrier(ctrl, W); // B5
+        if (workerIndex === 0) { part.resolve(tick); Atomics.store(ctrl, CTL_TICK, tick); }
     }
 };
