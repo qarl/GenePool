@@ -19,7 +19,8 @@ import { Perceiver } from './perceive.mjs';
 export class Partition {
     // coopGrid (a CoopGrid or null): null -> JS-grid mode (writeFrozen+step, the single-thread reference);
     // set -> coop mode (the phased build below). w/W: this worker's index + total, for the cell-range zero.
-    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1) {
+    // foodGrid/foodF64/numFood: the prebuilt read-only food grid + food SoA (S1) for the perceiver's food scan.
+    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1, foodGrid = null, foodF64 = null, numFood = 0) {
         this._f64 = f64;
         this._maxBots = maxBots;
         this._config = config;
@@ -42,7 +43,7 @@ export class Partition {
             sb.create(id, f.age, { x: f.x, y: f.y }, f.angle, f.energy, g);
             this._bots.push(sb);
         }
-        this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle, coopGrid);
+        this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle, coopGrid, config.numFoodTypes ?? 1, foodGrid, foodF64, numFood);
     }
 
     // Phase 1: publish my bots' tick-start frozen view into the shared buffer.

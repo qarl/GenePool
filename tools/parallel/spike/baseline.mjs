@@ -5,15 +5,22 @@
 
 import { createHash } from 'node:crypto';
 import { makeFrozenBuffer, STRIDE } from './frozen-layout.mjs';
+import { setupFood } from './food-layout.mjs';
 import { Partition } from './partition.mjs';
 import { makeConfig, makeFounders, MASTER_SEED, OBSTACLE } from './common.mjs';
 
-export function runBaseline(N, ticks, poolSize, founders = null, config = null) {
+const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS
+
+// food (optional): an array of {x,y,type,energy} records. When given, the baseline perceives food via a prebuilt
+// food grid (identical to the parallel run's), so the A/B stays fair.
+export function runBaseline(N, ticks, poolSize, founders = null, config = null, food = null) {
     config = config || makeConfig(poolSize);
     founders = founders || makeFounders(N, poolSize);
     const sab = makeFrozenBuffer(N);
     const f64 = new Float64Array(sab);
-    const part = new Partition(f64, N, MASTER_SEED, config, founders, 0, N, OBSTACLE);
+    let foodGrid = null, foodF64 = null, numFood = 0;
+    if (food) { const fs = setupFood(food, config.pool, CELL_SIZE, food.length); foodGrid = fs.foodGrid; foodF64 = fs.foodF64; numFood = fs.numFood; }
+    const part = new Partition(f64, N, MASTER_SEED, config, founders, 0, N, OBSTACLE, null, 0, 1, foodGrid, foodF64, numFood);
 
     const warm = Math.min(50, ticks);
     for (let t = 0; t < warm; t++) { part.writeFrozen(); part.step(t + 1); }

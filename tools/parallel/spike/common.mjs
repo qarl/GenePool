@@ -39,6 +39,14 @@ export function makeFounders(n, poolSize, seed = 1234) {
     return founders;
 }
 
+// Deterministic food records (single type). Count defaults to 4x the swimbots (the pools' usual density).
+export function makeFood(numFood, poolSize, seed = 9876) {
+    const rng = mulberry32(seed);
+    const food = new Array(numFood);
+    for (let i = 0; i < numFood; i++) food[i] = { x: rng() * poolSize, y: rng() * poolSize, type: 0, energy: 50 };
+    return food;
+}
+
 // WALL-HUGGING fixture: pack founders into a thin margin around all four edges so genitals routinely land AT /
 // just past the walls -- the ONLY situation that exercises the coop grid's clamp/skip edge handling (the clamp
 // bug is invisible in an interior-only pool). Used by the wall-correctness A/B (coop must match the JS grid here).

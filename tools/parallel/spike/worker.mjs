@@ -9,11 +9,15 @@ import { Partition } from './partition.mjs';
 import { CoopGrid } from './coop-grid.mjs';
 import { CTL_TICKGEN, CTL_TICK, CTL_DONECOUNT, CTL_DONEGEN, CTL_SHUTDOWN, barrier } from './barrier.mjs';
 
-const { frozenSab, ctrlSab, gridSpec, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, W, workerIndex } = workerData;
+const { frozenSab, ctrlSab, gridSpec, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, W, workerIndex,
+        foodGridSpec, foodSab, numFood } = workerData;
 const f64 = new Float64Array(frozenSab);
 const ctrl = new Int32Array(ctrlSab);
 const coopGrid = new CoopGrid(gridSpec);
-const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W);
+// The food SoA + food grid were populated ONCE by main before spawn; the worker just reconstructs read-only views.
+const foodF64 = foodSab ? new Float64Array(foodSab) : null;
+const foodGrid = foodGridSpec ? new CoopGrid(foodGridSpec) : null;
+const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood);
 
 parentPort.postMessage({ type: 'ready', idStart });
 

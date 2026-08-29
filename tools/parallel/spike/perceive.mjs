@@ -7,11 +7,11 @@
 import { Perception } from '../../../engine/perception.js';
 import { SpatialGrid } from '../../../engine/spatialGrid.js';
 import { STRIDE, F_ALIVE, F_GX, F_GY, SlotView } from './frozen-layout.mjs';
-
-const NO_FOOD = () => {}; // enumerateFood no-op until S1
+import { FoodSlotView } from './food-layout.mjs';
 
 export class Perceiver {
-    constructor(f64, maxBots, matePref, viewRadius, obstacle, coopGrid = null, numFoodTypes = 1) {
+    // foodGrid: a prebuilt read-only CoopGrid over the food SoA (foodF64, numFood); enumerateFood queries it.
+    constructor(f64, maxBots, matePref, viewRadius, obstacle, coopGrid = null, numFoodTypes = 1, foodGrid = null, foodF64 = null, numFood = 0) {
         this._f64 = f64;
         this._viewRadius = viewRadius;
         this._obstacle = obstacle;
@@ -20,6 +20,9 @@ export class Perceiver {
         this._grid = coopGrid ? null : new SpatialGrid(viewRadius);
         this._views = new Array(maxBots);
         for (let id = 0; id < maxBots; id++) this._views[id] = new SlotView(f64, id, matePref, viewRadius);
+        this._foodGrid = foodGrid;
+        this._foodViews = new Array(numFood);
+        for (let id = 0; id < numFood; id++) this._foodViews[id] = new FoodSlotView(foodF64, id);
         this._perception = new Perception();             // the SHARED engine selector
     }
 
@@ -41,6 +44,10 @@ export class Perceiver {
         const enumerateSwimbots = this._coopGrid
             ? (gpos, consider) => this._coopGrid.query(gpos.x, gpos.y, (id) => consider(views[id]))
             : (gpos, consider) => this._grid.forEachNear(gpos.x, gpos.y, consider);
-        this._perception.perceive(bot, tick, this._viewRadius, this._obstacle, this._numFoodTypes, enumerateSwimbots, NO_FOOD);
+        const foodViews = this._foodViews;
+        const enumerateFood = this._foodGrid
+            ? (mpos, consider) => this._foodGrid.query(mpos.x, mpos.y, (id) => consider(foodViews[id]))
+            : () => {}; // no food grid (pre-S1 probes)
+        this._perception.perceive(bot, tick, this._viewRadius, this._obstacle, this._numFoodTypes, enumerateSwimbots, enumerateFood);
     }
 }

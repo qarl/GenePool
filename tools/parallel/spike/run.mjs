@@ -12,17 +12,20 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeFrozenBuffer } from './frozen-layout.mjs';
+import { setupFood } from './food-layout.mjs';
 import { allocCoopGrid } from './coop-grid.mjs';
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_SIZE } from './barrier.mjs';
-import { makeConfig, makeFounders, makeWallFounders, MASTER_SEED, OBSTACLE } from './common.mjs';
+import { makeConfig, makeFounders, makeWallFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
 import { runBaseline } from './baseline.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS (config leaves viewRadius default)
 
-async function runParallel(N, ticks, W, poolSize, founders, config) {
+async function runParallel(N, ticks, W, poolSize, founders, config, food) {
     const frozenSab = makeFrozenBuffer(N);
     const gridSpec = allocCoopGrid(config.pool, CELL_SIZE, N);
+    // Food SoA + food grid built ONCE (static positions); workers reconstruct read-only views over the same SABs.
+    const { foodSab, foodGridSpec, numFood } = setupFood(food, config.pool, CELL_SIZE, food.length);
     const ctrlSab = new SharedArrayBuffer(CTL_SIZE * Int32Array.BYTES_PER_ELEMENT);
     const ctrl = new Int32Array(ctrlSab);
 
@@ -40,6 +43,7 @@ async function runParallel(N, ticks, W, poolSize, founders, config) {
             workerData: {
                 frozenSab, ctrlSab, gridSpec, maxBots: N, masterSeed: MASTER_SEED, config,
                 founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle: OBSTACLE, W, workerIndex: w,
+                foodGridSpec, foodSab, numFood,
             },
         });
         worker.on('message', (m) => {
@@ -94,11 +98,12 @@ console.log(`\nGenePool intra-tick parallelism SPIKE — COOPERATIVE GRID  (N=${
 // Main A/B: JS-grid single-thread reference vs coop at W=1 (parallelization-free) vs coop at W.
 const config = makeConfig(pool);
 const founders = makeFounders(N, pool);
-const base = runBaseline(N, ticks, pool, founders, config);
+const food = makeFood(N * 4, pool);
+const base = runBaseline(N, ticks, pool, founders, config, food);
 console.log(`  baseline (JS grid, 1 thread): ${String(base.tps).padStart(6)} tps   hash=${base.hash}`);
-const coop1 = await runParallel(N, ticks, 1, pool, founders, config);
+const coop1 = await runParallel(N, ticks, 1, pool, founders, config, food);
 console.log(`  coop grid (1 worker):         ${String(coop1.tps).padStart(6)} tps   hash=${coop1.hash}  ${coop1.hash === base.hash ? 'matches JS grid ✓' : 'DIFFERS FROM JS GRID ✗'}`);
-const coopW = await runParallel(N, ticks, W, pool, founders, config);
+const coopW = await runParallel(N, ticks, W, pool, founders, config, food);
 console.log(`  coop grid (${W} workers):        ${String(coopW.tps).padStart(6)} tps   hash=${coopW.hash}  ${coopW.hash === coop1.hash ? 'deterministic ✓' : 'NONDETERMINISTIC ✗'}`);
 console.log(`  speedup vs baseline: ${(base.ms / coopW.ms).toFixed(2)}x   (vs coop-1: ${(coop1.ms / coopW.ms).toFixed(2)}x)`);
 const allOk = coop1.hash === base.hash && coopW.hash === coop1.hash;
@@ -109,6 +114,7 @@ const wallPool = 2500;
 const wallN = Math.min(N, 1500);
 const wallCfg = makeConfig(wallPool);
 const wallFounders = makeWallFounders(wallN, wallPool);
-const wallBase = runBaseline(wallN, 300, wallPool, wallFounders, wallCfg);
-const wallPar = await runParallel(wallN, 300, Math.min(W, 6), wallPool, wallFounders, wallCfg);
+const wallFood = makeFood(wallN * 4, wallPool);
+const wallBase = runBaseline(wallN, 300, wallPool, wallFounders, wallCfg, wallFood);
+const wallPar = await runParallel(wallN, 300, Math.min(W, 6), wallPool, wallFounders, wallCfg, wallFood);
 console.log(`  wall-hugging A/B (N=${wallN}, pool=${wallPool}): coop ${wallPar.hash === wallBase.hash ? 'matches JS grid at the walls ✓' : 'DIFFERS AT WALLS ✗ (clamp/skip bug)'}`);
