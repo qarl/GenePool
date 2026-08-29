@@ -90,6 +90,10 @@ export class World {
         // SWIMBOT_VIEW_RADIUS); the swimbot closeness normalizer reads the same config.viewRadius, so the
         // perception filter and the normalizer stay consistent.
         this._viewRadius = config.viewRadius ?? SWIMBOT_VIEW_RADIUS;
+        // L5 carrying-capacity knob (D-f): OPT-IN population bound for long/hosted runs. Default = no cap
+        // (Infinity) -> births are never suppressed -> byte-identical to pre-cap (North Star: bounds are user
+        // config, NOT an engine default -- unlike JJ's always-on 2000-slot cap we removed at P1b).
+        this._maxPopulation = config.maxPopulation ?? Infinity;
         this._useSpatialGrid = options.useSpatialGrid !== false;
         this._swimbotGrid = new SpatialGrid(this._viewRadius);
         this._foodGrid = new SpatialGrid(this._viewRadius);
@@ -322,6 +326,9 @@ export class World {
     }
 
     _handleBirth(parent) {
+        // L5 carrying capacity (opt-in): suppress births once the projected population reaches the cap.
+        // Default Infinity -> never true. Consumes no id/RNG for a suppressed birth (checked before minting).
+        if (this._livingSwimbotCount + this._pendingBirths.length >= this._maxPopulation) return;
         if (parent.getChosenMateIndex() === NULL_INDEX) return;
         const mate = this._swimbots.get(parent.getChosenMateIndex());
         // NEVER-REUSED ids: `mate` is either the exact chosen individual (alive/dead) or gone -- it can
