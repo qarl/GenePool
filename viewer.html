@@ -38,6 +38,7 @@
   <canvas id="c" width="760" height="760"></canvas>
   <div class="panel">
     <div class="card">
+      <div class="stat"><span class="k">seed</span><span class="v" id="s-seed">—</span></div>
       <div class="stat"><span class="k">tick</span><span class="v" id="s-tick">0</span></div>
       <div class="stat"><span class="k">swimbots (live)</span><span class="v" id="s-pop">0</span></div>
       <div class="stat"><span class="k">food (live)</span><span class="v" id="s-food">0</span></div>
@@ -92,15 +93,25 @@ const SCALE = canvas.width / POOL;       // pool coords -> canvas px
 // small seedable PRNG so Reset is repeatable-ish
 function mulberry32(seed) { let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
-let world, nFounders, rng, seedCounter = 1;
+let world, nFounders, rng, currentSeed;
 
 const NUM_GENES = 256, NUM_GENES_USED = 112; // genes[USED..NUM) are junk DNA — a reproductive-isolation marker
+
+// Seed: ?seed=N in the URL pins a specific (reproducible) world; otherwise seed by the wall clock, so each
+// load AND each Reset is a fresh pool. The one seed drives BOTH the founder placement/genomes AND the
+// engine's masterSeed, so a given seed is a fully reproducible run (open ?seed=<the shown number> to replay).
+function pickSeed() {
+  const p = new URLSearchParams(location.search).get('seed');
+  if (p !== null && p.trim() !== '' && Number.isFinite(Number(p))) return Number(p) >>> 0;
+  return Date.now() >>> 0;
+}
 
 function build() {
   const useGrid = document.getElementById('grid').checked;
   nFounders = +document.getElementById('founders').value;
-  rng = mulberry32(0xA11FE + (seedCounter++));
-  world = new World(CONFIG, 1, { useSpatialGrid: useGrid });
+  currentSeed = pickSeed();
+  rng = mulberry32(currentSeed);
+  world = new World(CONFIG, currentSeed, { useSpatialGrid: useGrid });
   for (let i = 0; i < nFounders; i++) {
     const g = new Genotype(); g.randomize(rng);
     const genes = g.getGenes().slice();
@@ -118,6 +129,7 @@ function build() {
   const nFood = nFounders * 3;
   for (let i = 0; i < nFood; i++) world.loadFood(i, { x: rng() * POOL, y: rng() * POOL, type: 0, energy: 50 });
   world.setObstacle({ x: 40, y: 40 }, { x: 80, y: 40 });
+  document.getElementById('s-seed').textContent = currentSeed; // shown so a run can be replayed via ?seed=
 }
 
 // derive a stable vivid color from a genome (a few gene bytes -> hue)
