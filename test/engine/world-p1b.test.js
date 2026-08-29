@@ -205,9 +205,9 @@ test('P1c closest-20: perception picks the 20 CLOSEST swimbots, not the first-20
     world._rebuildGrids(); // this drives perception directly (no tick()); tick() would have built the grid
     world._giveSwimbotNearbyEnvironmentalStimuli(looker);
 
-    assert.equal(world._numNearby, 20, 'perception must cap at the 20 closest');
+    assert.equal(world._perception._numNearby, 20, 'perception must cap at the 20 closest');
     const chosenIds = new Set();
-    for (let i = 0; i < world._numNearby; i++) chosenIds.add(world._nearbyArray[i].getIndex());
+    for (let i = 0; i < world._perception._numNearby; i++) chosenIds.add(world._perception._nearbyArray[i].getIndex());
     // the 20 closest are k=0..19 (distances 10..200), whose ids are 24..5.
     for (let id = 5; id <= 24; id++) assert.ok(chosenIds.has(id), `closest-20 must include id ${id}`);
     // the 5 farthest (k=20..24, distances 210..250) have ids 4..0 and must be EXCLUDED.

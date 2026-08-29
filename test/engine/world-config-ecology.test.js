@@ -26,7 +26,7 @@ test('config.viewRadius gates perception range (grid + filter both honor it)', (
         world.loadSwimbot(1, { age: 5000, x: 4250, y: 4000, angle: 0, energy: 80, genes });
         world._rebuildGrids();
         world._giveSwimbotNearbyEnvironmentalStimuli(world._swimbots.get(0));
-        return world._numNearby;
+        return world._perception._numNearby;
     }
     assert.equal(numPerceived(100), 0, 'candidate at 250 should be OUT of a 100 view radius');
     assert.equal(numPerceived(500), 1, 'candidate at 250 should be IN a 500 view radius');

@@ -44,7 +44,7 @@ test('perception closest-20: heap + lazy obstruction == independent brute filter
     const looker = world._swimbots.get(1000);
     world._giveSwimbotNearbyEnvironmentalStimuli(looker);
     const selected = [];
-    for (let i = 0; i < world._numNearby; i++) selected.push(world._nearbyArray[i].getIndex());
+    for (let i = 0; i < world._perception._numNearby; i++) selected.push(world._perception._nearbyArray[i].getIndex());
 
     // INDEPENDENT reference (does not touch the engine's selection code)
     const lg = looker.getGenitalPosition();

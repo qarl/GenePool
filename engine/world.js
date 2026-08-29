@@ -31,10 +31,11 @@ import { Vector2D } from './vector2d.js';
 import { draw, makeStream, DOMAIN } from './rng.js';
 import { SpatialGrid } from './spatialGrid.js';
 import { FrozenSwimbot } from './snapshotView.js';
+import { Perception } from './perception.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
     MAX_FOODBITS_PER_TYPE, NON_REPRODUCING_JUNK_DNA_LIMIT,
-    BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS, SWIMBOT_VIEW_RADIUS, resolvePoolBounds,
+    SWIMBOT_VIEW_RADIUS, resolvePoolBounds,
 } from './constants.js';
 
 export class World {
@@ -132,9 +133,9 @@ export class World {
         this._childGenotype = new Genotype();
         this._birthPos = new Vector2D();
         this._collisionForce = new Vector2D();
-        this._nearbyArray = new Array(BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS);
-        this._nearbyCandidates = []; // scratch: all in-view candidates {other, d2, id}, ranked for closest-20
-        this._numNearby = 0;
+        // Shared perception selection (closest-20 + food scan + setEnvironmentalStimuli). Holds its own scratch;
+        // the same class backs the worker-parallel path so both produce identical selections.
+        this._perception = new Perception();
     }
 
     // Each swimbot gets its OWN per-life SWIMBOT_LIFE stream keyed on its never-reused id, plus the shared
@@ -367,111 +368,28 @@ export class World {
         }
     }
 
-    // Min-heap sift-down over the candidate array in [0, n), ordered by (d2 asc, id asc) -- the SAME strict
-    // total order as the old `.sort((a,b)=>(a.d2-b.d2)||(a.id-b.id))`, so heap-pop order == sort order.
-    _siftDownCandidates(heap, i, n) {
-        for (;;) {
-            let smallest = i;
-            const l = 2 * i + 1, r = 2 * i + 2;
-            let s = heap[smallest];
-            if (l < n) { const c = heap[l]; if (c.d2 < s.d2 || (c.d2 === s.d2 && c.id < s.id)) { smallest = l; s = c; } }
-            if (r < n) { const c = heap[r]; if (c.d2 < s.d2 || (c.d2 === s.d2 && c.id < s.id)) { smallest = r; s = c; } }
-            if (smallest === i) return;
-            heap[smallest] = heap[i]; heap[i] = s;
-            i = smallest;
-        }
-    }
-
+    // Perception (closest-20 swimbots + closest food) is done by the SHARED Perception selector; World only
+    // supplies HOW to enumerate candidates near a point (which differs by mode: snapshot frozen views/grid, the
+    // live swimbot grid, or a brute-force Map scan; food via its grid or a Map scan). The selection + the
+    // setEnvironmentalStimuli call live in engine/perception.js, shared bit-for-bit with the worker-parallel path.
     _giveSwimbotNearbyEnvironmentalStimuli(bot) {
-        // nearby visible swimbots -- the CLOSEST-20 (D-b), replacing JJ's first-20-in-array-order (the last
-        // slot/id-order artifact). Collect all in-view, non-obstructed candidates, rank by genital
-        // distance^2 (tiebreak by stableID for determinism), take the closest BRAIN_MAX_PERCEIVED. Fully
-        // order-independent now that the mate-pref rng is addressed (P1b-ii).
-        this._nearbyCandidates.length = 0;
-        const gpos = bot.getGenitalPosition(); // stable per-instance vector (a body part), not shared scratch
-        const considerSwimbot = (other) => {
-            if (other === bot || !other.getAlive()) return;
-            const distanceSquared = gpos.getDistanceSquaredTo(other.getGenitalPosition());
-            if (distanceSquared < this._viewRadius * this._viewRadius) {
-                // NOTE: obstruction is checked LAZILY during selection (below), not here.
-                this._nearbyCandidates.push({ other, d2: distanceSquared, id: other.getIndex() });
-            }
-        };
-        if (this._snapshotMode) {
-            // SNAPSHOT: candidates are the FROZEN views (tick-start), not live bots. setEnvironmentalStimuli
-            // duck-types them (getIndex/getAlive/getAge/getEnergy/getGenitalPosition/getAttractiveness). Self is
-            // skipped by id (the looker is live; its own frozen view is a different object); ghosts (alive=false)
-            // are filtered. The looker's OWN gpos stays LIVE -- its own position doesn't depend on any other bot,
-            // so perception is order-independent. The grid (cellSize==viewRadius) returns EXACTLY the brute-force
-            // in-radius set (P2 invariant); useSpatialGrid:false keeps the brute-force scan for the A/B.
-            const considerSnapshotView = (view) => {
-                if (view.getIndex() === bot.getIndex() || !view.getAlive()) return;
-                const distanceSquared = gpos.getDistanceSquaredTo(view.getGenitalPosition());
-                if (distanceSquared < this._viewRadius * this._viewRadius) {
-                    this._nearbyCandidates.push({ other: view, d2: distanceSquared, id: view.getIndex() });
-                }
-            };
-            if (this._snapshotGrid) {
-                this._snapshotGrid.forEachNear(gpos.x, gpos.y, considerSnapshotView); // 3x3 superset; filtered above
+        const enumerateSwimbots = (gpos, consider) => {
+            if (this._snapshotMode) {
+                // SNAPSHOT: candidates are the FROZEN views (tick-start). The grid (cellSize==viewRadius) returns
+                // exactly the brute-force in-radius set (P2 invariant); useSpatialGrid:false keeps brute force.
+                if (this._snapshotGrid) this._snapshotGrid.forEachNear(gpos.x, gpos.y, consider);
+                else for (const view of this._snapshotViews.values()) consider(view);
+            } else if (this._useSpatialGrid) {
+                this._swimbotGrid.forEachNear(gpos.x, gpos.y, consider);
             } else {
-                for (const view of this._snapshotViews.values()) considerSnapshotView(view);
-            }
-        } else if (this._useSpatialGrid) {
-            this._swimbotGrid.forEachNear(gpos.x, gpos.y, considerSwimbot); // 3x3 superset; filtered above
-        } else {
-            for (const other of this._swimbots.values()) considerSwimbot(other);
-        }
-        // CLOSEST-20 via min-heap PARTIAL SELECT + LAZY obstruction: (d2,id) is a strict total order (ids
-        // unique), so popping the heap yields candidates in exactly the old full-sort order; applying the
-        // obstruction test only to popped candidates and taking the first BRAIN_MAX_PERCEIVED that pass gives
-        // the identical selected set AND order as the old "filter-obstruction -> sort -> take 20", for
-        // O(m + 20 log m) instead of O(m log m) + m obstruction calls (getObstruction is pure). Bit-identical.
-        const cands = this._nearbyCandidates;
-        let heapSize = cands.length;
-        for (let i = (heapSize >> 1) - 1; i >= 0; i--) this._siftDownCandidates(cands, i, heapSize); // Floyd heapify
-        this._numNearby = 0;
-        while (heapSize > 0 && this._numNearby < BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS) {
-            const top = cands[0];                         // current minimum (d2, id)
-            heapSize--;
-            if (heapSize > 0) { cands[0] = cands[heapSize]; this._siftDownCandidates(cands, 0, heapSize); }
-            if (!this._obstacle.getObstruction(gpos, top.other.getGenitalPosition())) {
-                this._nearbyArray[this._numNearby++] = top.other;
-            }
-        }
-
-        // closest visible food (of the preferred type, when 2 food types). GRID-SAFE: an id tiebreak on
-        // exactly-equal distance makes the choice independent of iteration order (P2 grid buckets).
-        let foundFoodBit = false;
-        let chosenFoodBit = null;
-        let smallestDistance = Number.MAX_SAFE_INTEGER;
-        let chosenFoodId = Infinity;
-        const mpos = bot.getMouthPosition(); // stable per-instance vector (a body part), not shared scratch
-        const considerFood = (food) => {
-            if (!food.getAlive()) return;
-            if (this._config.numFoodTypes === 2 && food.getType() !== bot.getPreferredFoodType()) return;
-            const viewDistance = mpos.getDistanceTo(food.getPosition());
-            if (viewDistance < this._viewRadius) {
-                const distance = viewDistance / this._viewRadius;
-                const id = food.getIndex();
-                if ((distance < smallestDistance) || (distance === smallestDistance && id < chosenFoodId)) {
-                    if (!this._obstacle.getObstruction(mpos, food.getPosition())) {
-                        smallestDistance = distance;
-                        chosenFoodId = id;
-                        chosenFoodBit = food;
-                        foundFoodBit = true;
-                    }
-                }
+                for (const other of this._swimbots.values()) consider(other);
             }
         };
-        if (this._useSpatialGrid) {
-            this._foodGrid.forEachNear(mpos.x, mpos.y, considerFood); // 3x3 superset; filtered above
-        } else {
-            for (const food of this._foodBits.values()) considerFood(food);
-        }
-
-        // The tick is threaded to the mate scan so getAttractiveness can address MATE_PREF(looker,
-        // candidate, tick) -- decoupling the mate-pref draw from the scan order.
-        bot.setEnvironmentalStimuli(this._numNearby, this._nearbyArray, foundFoodBit, chosenFoodBit, this._clock);
+        const enumerateFood = (mpos, consider) => {
+            if (this._useSpatialGrid) this._foodGrid.forEachNear(mpos.x, mpos.y, consider);
+            else for (const food of this._foodBits.values()) consider(food);
+        };
+        this._perception.perceive(bot, this._clock, this._viewRadius, this._obstacle, this._config.numFoodTypes, enumerateSwimbots, enumerateFood);
     }
 
     _handleBirth(parent) {
