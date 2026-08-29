@@ -94,6 +94,11 @@ export class World {
         // (Infinity) -> births are never suppressed -> byte-identical to pre-cap (North Star: bounds are user
         // config, NOT an engine default -- unlike JJ's always-on 2000-slot cap we removed at P1b).
         this._maxPopulation = config.maxPopulation ?? Infinity;
+        // Optional event sink (observability foundation for P5 events->DB). When set, the engine calls it with
+        // {type, tick, ...} for births/deaths/eats + a per-tick summary. Default null -> zero overhead, and the
+        // sink is a pure OBSERVER (must not mutate the world), so an event-instrumented run is byte-identical
+        // to a plain one. Guarded at each call site so nothing is allocated when off.
+        this._onEvent = options.onEvent || null;
         this._useSpatialGrid = options.useSpatialGrid !== false;
         this._swimbotGrid = new SpatialGrid(this._viewRadius);
         this._foodGrid = new SpatialGrid(this._viewRadius);
@@ -115,7 +120,10 @@ export class World {
             life: makeStream(this._masterSeed, DOMAIN.SWIMBOT_LIFE, id),
             matePref: this._matePref,
             config: this._config, embryology: this._embryology,
-            onDeath: (deadId) => { this._numDeadSwimbots++; this._deadSwimbotIds.push(deadId); this._livingSwimbotCount--; },
+            onDeath: (deadId) => {
+                this._numDeadSwimbots++; this._deadSwimbotIds.push(deadId); this._livingSwimbotCount--;
+                if (this._onEvent) this._onEvent({ type: 'death', tick: this._clock, id: deadId });
+            },
         });
     }
 
@@ -180,6 +188,7 @@ export class World {
         this._updateFood();
         this._applyPendingBirths();
         this._sweepDead();
+        if (this._onEvent) this._onEvent({ type: 'tick', tick: this._clock, pop: this._livingSwimbotCount, food: this._livingFoodCount });
     }
 
     // The grids are maintained INCREMENTALLY (insert on load/birth/regen, move on update, remove on sweep) --
@@ -227,8 +236,12 @@ export class World {
             }
 
             if (bot.getIsTryingToEat()) {
+                const eatenBefore = this._onEvent ? bot.getNumFoodBitsEaten() : 0;
                 const eatenId = bot.eatChosenFoodBit(); // returns the chosen food's index (NULL_INDEX if none)
                 if (eatenId !== NULL_INDEX) this._eatenFoodIds.add(eatenId); // dedups two-bots-one-food; swept below
+                if (this._onEvent && bot.getNumFoodBitsEaten() > eatenBefore) { // an actual eat (not a guard-skip)
+                    this._onEvent({ type: 'eat', tick: this._clock, id: bot.getIndex(), foodId: eatenId });
+                }
             }
 
             if (bot.getIsTryingToMate()) {
@@ -365,6 +378,7 @@ export class World {
         child.create(newBornId, 0, this._birthPos, initialAngle, energyToOffspring, this._childGenotype);
         // T+1: stage the newborn; it joins the collection AFTER this tick and first acts next tick.
         this._pendingBirths.push(child);
+        if (this._onEvent) this._onEvent({ type: 'birth', tick: this._clock, id: newBornId, parentId: parent.getIndex(), mateId: mate.getIndex(), x: this._birthPos.x, y: this._birthPos.y });
     }
 
     // Pick a random LIVING food of the given type (JJ's slot-index rejection sampling doesn't survive the
