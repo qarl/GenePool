@@ -30,6 +30,7 @@ import { Embryology } from './embryology.js';
 import { Vector2D } from './vector2d.js';
 import { draw, makeStream, DOMAIN } from './rng.js';
 import { SpatialGrid } from './spatialGrid.js';
+import { FrozenSwimbot } from './snapshotView.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
     MAX_FOODBITS_PER_TYPE, NON_REPRODUCING_JUNK_DNA_LIMIT,
@@ -103,6 +104,18 @@ export class World {
         this._swimbotGrid = new SpatialGrid(this._viewRadius);
         this._foodGrid = new SpatialGrid(this._viewRadius);
 
+        // PERCEPTION MODE (Parallelism Step 1). 'mixed-live' (default) is the order-DEPENDENT, bit-for-bit-
+        // faithful path: a bot reinserted into the grid mid-loop is perceived at its new position by later bots.
+        // 'snapshot' instead freezes a tick-start view of every bot, so every bot perceives the SAME frozen set
+        // regardless of processing order -> the tick is order-INDEPENDENT (the prerequisite for intra-tick
+        // parallelism). It is a different but deterministic trajectory ("consistent, not identical"), NOT
+        // bit-for-bit -- it has its own baseline. Everything below is gated by _snapshotMode; default false ->
+        // ZERO behavior change (the whole golden suite stays green). _snapshotViews persists across ticks with
+        // ONE FrozenSwimbot per id, refreshed in place (stable identity is safe: ids are never reused -> no ABA).
+        this._perceptionMode = config.perceptionMode || 'mixed-live';
+        this._snapshotMode = this._perceptionMode === 'snapshot';
+        this._snapshotViews = new Map(); // id -> FrozenSwimbot (persistent)
+
         // scratch genotypes / vectors (mirroring JJ's shared scratch in GenePool)
         this._myGenotype = new Genotype();
         this._childGenotype = new Genotype();
@@ -143,7 +156,8 @@ export class World {
         sb.setNumFoodBitsEaten(numFoodBitsEaten);
         this._swimbots.set(id, sb);
         this._livingSwimbotCount++;
-        if (this._useSpatialGrid) { const gp = sb.getGenitalPosition(); this._swimbotGrid.insert(sb, gp.x, gp.y); }
+        // Snapshot mode scans the frozen views, never the swimbot grid, so don't build it there.
+        if (this._useSpatialGrid && !this._snapshotMode) { const gp = sb.getGenitalPosition(); this._swimbotGrid.insert(sb, gp.x, gp.y); }
         if (id >= this._nextSwimbotId) this._nextSwimbotId = id + 1;
     }
 
@@ -210,6 +224,10 @@ export class World {
     }
 
     _updateSwimbots() {
+        // SNAPSHOT: capture the frozen tick-start view of every bot ONCE, before the loop, so all bots perceive
+        // the same set regardless of processing order (order-independence). Mixed-live builds nothing.
+        if (this._snapshotMode) this._buildSnapshot();
+
         // Iterate a snapshot of the current live swimbots (staged births are NOT in it -> they act next
         // tick). Structural mutation (staging/sweeping) happens outside this loop.
         for (const bot of this._swimbots.values()) {
@@ -220,7 +238,8 @@ export class World {
             // MIXED-LIVE perception (matches P1): update() moved this bot, so reinsert it at its new genital
             // position BEFORE later bots perceive. When bot #k perceives, the grid holds bots <k at their new
             // positions and bots >k at last tick's -- exactly what the brute-force scan of the live Map saw.
-            if (this._useSpatialGrid) {
+            // SNAPSHOT never reads the live swimbot grid (it scans the frozen views), so skip the move.
+            if (this._useSpatialGrid && !this._snapshotMode) {
                 const gp = bot.getGenitalPosition();
                 this._swimbotGrid.move(bot, gp.x, gp.y);
             }
@@ -235,18 +254,80 @@ export class World {
                 bot.addForce(this._collisionForce);
             }
 
-            if (bot.getIsTryingToEat()) {
-                const eatenBefore = this._onEvent ? bot.getNumFoodBitsEaten() : 0;
-                const eatenId = bot.eatChosenFoodBit(); // returns the chosen food's index (NULL_INDEX if none)
-                if (eatenId !== NULL_INDEX) this._eatenFoodIds.add(eatenId); // dedups two-bots-one-food; swept below
-                if (this._onEvent && bot.getNumFoodBitsEaten() > eatenBefore) { // an actual eat (not a guard-skip)
-                    this._onEvent({ type: 'eat', tick: this._clock, id: bot.getIndex(), foodId: eatenId });
+            // SNAPSHOT defers eating + birth to deterministic post-loop, id-ordered passes so that NO food is
+            // killed and NO mate energy is spent DURING the loop -> the loop performs no cross-bot writes ->
+            // order-independent. Mixed-live resolves both inline here (its faithful order-dependent behavior).
+            if (!this._snapshotMode) {
+                if (bot.getIsTryingToEat()) {
+                    const eatenBefore = this._onEvent ? bot.getNumFoodBitsEaten() : 0;
+                    const eatenId = bot.eatChosenFoodBit(); // returns the chosen food's index (NULL_INDEX if none)
+                    if (eatenId !== NULL_INDEX) this._eatenFoodIds.add(eatenId); // dedups two-bots-one-food; swept below
+                    if (this._onEvent && bot.getNumFoodBitsEaten() > eatenBefore) { // an actual eat (not a guard-skip)
+                        this._onEvent({ type: 'eat', tick: this._clock, id: bot.getIndex(), foodId: eatenId });
+                    }
+                }
+
+                if (bot.getIsTryingToMate()) {
+                    this._handleBirth(bot);
                 }
             }
+        }
 
-            if (bot.getIsTryingToMate()) {
-                this._handleBirth(bot);
+        if (this._snapshotMode) { this._resolveStagedEats(); this._resolveStagedBirths(); }
+    }
+
+    // SNAPSHOT: build the tick-start frozen view of every bot. ONE FrozenSwimbot per id, refreshed IN PLACE
+    // (stable identity across ticks). A view not refreshed this build (its bot died + was swept) becomes a
+    // one-tick GHOST (alive=false, last position kept) so a lingering chosenMate ref reads a stable dead marker
+    // this tick; a view that was ALREADY a ghost last tick is pruned. REQUIRED: reset _seen on every view before
+    // the refresh sweep, or markDead() never fires and dead bots stay phantom-alive in the snapshot.
+    _buildSnapshot() {
+        const views = this._snapshotViews;
+        for (const v of views.values()) v._seen = false;
+        for (const sb of this._swimbots.values()) {
+            if (!sb.getAlive()) continue;
+            let v = views.get(sb.getIndex());
+            if (v === undefined) { v = new FrozenSwimbot(this._matePref, this._viewRadius); views.set(sb.getIndex(), v); }
+            v.refresh(sb); // sets _seen = true
+        }
+        for (const [id, v] of views) {
+            if (v._seen) continue;
+            if (v._alive) v.markDead(); // just died -> one-tick ghost
+            else views.delete(id);      // already a ghost last tick -> prune
+        }
+    }
+
+    // SNAPSHOT eat resolution: eats were deferred, so the perception loop killed no food. Resolve them in
+    // ASCENDING BOT-ID order -- NOT Map/insertion order, which is not guaranteed ascending (loadSwimbot can be
+    // called with descending ids). Two bots that chose the SAME food (the same live object, from the same frozen
+    // scan): the lowest id eats it (kill()); higher ids find it dead via eatChosenFoodBit's getAlive() guard and
+    // no-op -- exactly the faithful loser behavior, no custom award/energy logic. Bookkeeping mirrors mixed-live.
+    _resolveStagedEats() {
+        const ids = [...this._swimbots.keys()].sort((a, b) => a - b);
+        for (const id of ids) {
+            const bot = this._swimbots.get(id);
+            if (!bot.getAlive() || !bot.getIsTryingToEat()) continue;
+            const eatenBefore = this._onEvent ? bot.getNumFoodBitsEaten() : 0;
+            const eatenId = bot.eatChosenFoodBit();
+            if (eatenId !== NULL_INDEX) this._eatenFoodIds.add(eatenId); // Set dedups; _sweepDead guards !getAlive()
+            if (this._onEvent && bot.getNumFoodBitsEaten() > eatenBefore) {
+                this._onEvent({ type: 'eat', tick: this._clock, id: bot.getIndex(), foodId: eatenId });
             }
+        }
+    }
+
+    // SNAPSHOT birth resolution: births were deferred, so no mate energy was spent during the loop. Resolve in
+    // ASCENDING PARENT-ID order (again: sorted keys, not insertion order). Two consequences make this the
+    // fixed-key resolution the parallelism plan needs: (1) newborn ids are minted in a deterministic order, so
+    // OFFSPRING_GENOME (addressed by newborn id) is order-independent; (2) contributeToOffspring clearing a
+    // consumed mate's _tryingToMate suppresses that bot's own mating -- mirroring mixed-live, which also resolves
+    // inline in ascending order. _handleBirth resolves the mate's genital from its FROZEN view in snapshot mode.
+    _resolveStagedBirths() {
+        const ids = [...this._swimbots.keys()].sort((a, b) => a - b);
+        for (const id of ids) {
+            const parent = this._swimbots.get(id);
+            if (!parent.getAlive() || !parent.getIsTryingToMate()) continue;
+            this._handleBirth(parent);
         }
     }
 
@@ -280,7 +361,21 @@ export class World {
                 this._nearbyCandidates.push({ other, d2: distanceSquared, id: other.getIndex() });
             }
         };
-        if (this._useSpatialGrid) {
+        if (this._snapshotMode) {
+            // SNAPSHOT: scan the FROZEN views (tick-start), not the live grid (which is never maintained here).
+            // The candidates pushed are FrozenSwimbot views; setEnvironmentalStimuli duck-types them (getIndex/
+            // getAlive/getAge/getEnergy/getGenitalPosition/getAttractiveness). Self is skipped by id (the looker
+            // is live; its own frozen view is a different object). The looker's OWN gpos stays LIVE -- its own
+            // position doesn't depend on any other bot, so perception is order-independent. Ghosts (alive=false)
+            // are filtered. (Direct scan of the view map; a snapshot grid is a Step-2/SoA perf detail.)
+            for (const view of this._snapshotViews.values()) {
+                if (view.getIndex() === bot.getIndex() || !view.getAlive()) continue;
+                const distanceSquared = gpos.getDistanceSquaredTo(view.getGenitalPosition());
+                if (distanceSquared < this._viewRadius * this._viewRadius) {
+                    this._nearbyCandidates.push({ other: view, d2: distanceSquared, id: view.getIndex() });
+                }
+            }
+        } else if (this._useSpatialGrid) {
             this._swimbotGrid.forEachNear(gpos.x, gpos.y, considerSwimbot); // 3x3 superset; filtered above
         } else {
             for (const other of this._swimbots.values()) considerSwimbot(other);
@@ -342,11 +437,29 @@ export class World {
         // L5 carrying capacity (opt-in): suppress births once the projected population reaches the cap.
         // Default Infinity -> never true. Consumes no id/RNG for a suppressed birth (checked before minting).
         if (this._livingSwimbotCount + this._pendingBirths.length >= this._maxPopulation) return;
-        if (parent.getChosenMateIndex() === NULL_INDEX) return;
-        const mate = this._swimbots.get(parent.getChosenMateIndex());
+        const mateId = parent.getChosenMateIndex();
+        if (mateId === NULL_INDEX) return;
+        const mate = this._swimbots.get(mateId);
         // NEVER-REUSED ids: `mate` is either the exact chosen individual (alive/dead) or gone -- it can
-        // never be a DIFFERENT swimbot that reused the id. This is where the ABA used to live.
-        if (!mate || !mate.getAlive()) return;
+        // never be a DIFFERENT swimbot that reused the id. This is where the ABA used to live. The LIVE mate
+        // object is still needed for its genotype (static) and contributeToOffspring, even in snapshot mode.
+        if (!mate) return;
+
+        // MIXED-LIVE reads the mate's genital + aliveness LIVE (as it is when the parent processes -> order-
+        // dependent, faithful). SNAPSHOT reads the mate's FROZEN tick-start view so birthPos + the gate are
+        // order-independent. Baseline note: in snapshot a mate alive at tick-start but dead by resolution can
+        // still parent (contributeToOffspring is energy-clamp-safe -> no assert, no negative energy).
+        let mateGenX, mateGenY;
+        if (this._snapshotMode) {
+            const mv = this._snapshotViews.get(mateId);
+            if (!mv || !mv.getAlive()) return;
+            const mg = mv.getGenitalPosition();
+            mateGenX = mg.x; mateGenY = mg.y;
+        } else {
+            if (!mate.getAlive()) return;
+            const mg = mate.getGenitalPosition();
+            mateGenX = mg.x; mateGenY = mg.y;
+        }
 
         this._myGenotype.copyFromGenotype(parent.getGenotype());
         const mateGenotype = mate.getGenotype();
@@ -367,10 +480,16 @@ export class World {
         const mateEnergyContribution = mate.contributeToOffspring();
         const energyToOffspring = myEnergyContribution + mateEnergyContribution;
 
-        const diffX = mate.getGenitalPosition().x - parent.getGenitalPosition().x;
-        const diffY = mate.getGenitalPosition().y - parent.getGenitalPosition().y;
-        this._birthPos.x = parent.getGenitalPosition().x + diffX * ONE_HALF;
-        this._birthPos.y = parent.getGenitalPosition().y + diffY * ONE_HALF;
+        // birthPos: parent genital (live -- its own end-of-tick position, both modes) midpoint-to the mate
+        // genital (live in mixed-live, frozen tick-start in snapshot). Reading parent.getGenitalPosition().x
+        // into a local and using it twice is the identical arithmetic as the original (same Vector2D, same
+        // value) -> mixed-live stays bit-for-bit.
+        const parentGenX = parent.getGenitalPosition().x;
+        const parentGenY = parent.getGenitalPosition().y;
+        const diffX = mateGenX - parentGenX;
+        const diffY = mateGenY - parentGenY;
+        this._birthPos.x = parentGenX + diffX * ONE_HALF;
+        this._birthPos.y = parentGenY + diffY * ONE_HALF;
 
         const initialAngle = -180.0 + genomeRng() * 360.0; // from the same stream, AFTER the genome
 
@@ -451,7 +570,8 @@ export class World {
             this._swimbots.set(child.getIndex(), child);
             this._livingSwimbotCount++;
             // Newborn joins the grid at its birth position; it first acts (and is first perceived) next tick.
-            if (this._useSpatialGrid) { const gp = child.getGenitalPosition(); this._swimbotGrid.insert(child, gp.x, gp.y); }
+            // Snapshot mode never reads the swimbot grid (it will appear in next tick's frozen view via _swimbots).
+            if (this._useSpatialGrid && !this._snapshotMode) { const gp = child.getGenitalPosition(); this._swimbotGrid.insert(child, gp.x, gp.y); }
         }
         this._pendingBirths.length = 0;
     }
@@ -468,8 +588,9 @@ export class World {
             const bot = this._swimbots.get(id);
             if (bot !== undefined && !bot.getAlive()) {
                 this._swimbots.delete(id);
-                if (this._useSpatialGrid) this._swimbotGrid.remove(bot);
+                if (this._useSpatialGrid && !this._snapshotMode) this._swimbotGrid.remove(bot);
                 // (living count already decremented in the onDeath hook, once per death)
+                // (snapshot mode: the frozen view is ghosted/pruned by _buildSnapshot, not the grid)
             }
         }
         this._deadSwimbotIds.length = 0;
@@ -519,6 +640,10 @@ export class World {
     // dereferences a dead ref's frozen position (only the eat/mate test guards on getAlive). Dropping them
     // would diverge. (config is NOT serialized -- the caller re-supplies the same config to restore.)
     serialize() {
+        // H1 checkpoint does not yet support snapshot mode: a bot's _chosenMate is a FrozenSwimbot (no
+        // serializeCheckpoint), and the frozen-view/ghost state would need its own persistence contract. Fail
+        // loudly rather than crash cryptically. (Checkpoint a mixed-live world; snapshot checkpointing is future work.)
+        if (this._snapshotMode) throw new Error('World.serialize(): checkpoint is not supported in snapshot perception mode yet.');
         const swimbots = [];
         const ghostSwimbots = new Map(); // id -> serialized dead swimbot referenced as a chosenMate
         const ghostFood = new Map();     // id -> {id,x,y,type,energy} of an eaten food referenced as chosenFood
