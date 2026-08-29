@@ -24,15 +24,17 @@ import { runBaseline } from './baseline.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS (config leaves viewRadius default)
 
-export async function runParallel(N, ticks, W, poolSize, founders, config, food) {
+export async function runParallel(N, ticks, W, poolSize, founders, config, food, warmup = 50) {
     // Ids are never reused + monotonic, so buffers are sized to a CAPACITY CEILING (founders + birth headroom),
     // not the living count. maxBots caps LIFETIME births -> worker 0 stops minting at the ceiling (a documented
     // stopgap for the never-reused-id overflow; slot-recycling is the real fix, review required #7).
     const maxBots = N * 8;
     const frozenSab = makeFrozenBuffer(maxBots);
     const gridSpec = allocCoopGrid(config.pool, CELL_SIZE, maxBots);
-    // Food SoA + food grid built ONCE (static positions); workers reconstruct read-only views over the same SABs.
-    const { foodSab, foodGridSpec, numFood } = setupFood(food, config.pool, CELL_SIZE, food.length);
+    // Food SoA + food grid built ONCE; workers reconstruct read-only views. Capacity includes regen headroom
+    // (food ids never reused: 1 regen per foodRegenerationPeriod over the run + warmup).
+    const maxFood = food.length + Math.ceil((ticks + 100) / (config.foodRegenerationPeriod || 20)) + 16;
+    const { foodSab, foodGridSpec, numFood } = setupFood(food, config.pool, CELL_SIZE, maxFood);
     const puSab = makePostUpdateBuffer(maxBots); // post-update SoA (workers publish; worker 0 resolves from it)
     const resSabs = makeResolutionBuffers(maxBots, NUM_GENES);
     new Int32Array(resSabs.wantsEatSab).fill(-1);  // 0 is a valid foodId; -1 = "not eating"
@@ -80,7 +82,7 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food)
         }
     };
 
-    const warm = Math.min(50, ticks);
+    const warm = Math.min(warmup, ticks); // untimed warmup (perf runs); 0 for bit-identity comparisons vs world.js
     for (let t = 0; t < warm; t++) await awaitTickDone(releaseTick(t + 1));
     const t0 = performance.now();
     for (let t = 0; t < ticks; t++) await awaitTickDone(releaseTick(warm + t + 1));

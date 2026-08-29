@@ -10,8 +10,9 @@ import { STRIDE, F_ALIVE, F_GX, F_GY, SlotView } from './frozen-layout.mjs';
 import { FoodSlotView } from './food-layout.mjs';
 
 export class Perceiver {
-    // foodGrid: a prebuilt read-only CoopGrid over the food SoA (foodF64, numFood); enumerateFood queries it.
-    constructor(f64, maxBots, matePref, viewRadius, obstacle, coopGrid = null, numFoodTypes = 1, foodGrid = null, foodF64 = null, numFood = 0) {
+    // foodGrid: a prebuilt read-only CoopGrid over the food SoA (foodF64); foodCapacity = max food ids (regen
+    // grows the id space, so views must cover the CAPACITY, not just the initial count). enumerateFood queries it.
+    constructor(f64, maxBots, matePref, viewRadius, obstacle, coopGrid = null, numFoodTypes = 1, foodGrid = null, foodF64 = null, foodCapacity = 0) {
         this._f64 = f64;
         this._viewRadius = viewRadius;
         this._obstacle = obstacle;
@@ -21,8 +22,8 @@ export class Perceiver {
         this._views = new Array(maxBots);
         for (let id = 0; id < maxBots; id++) this._views[id] = new SlotView(f64, id, matePref, viewRadius);
         this._foodGrid = foodGrid;
-        this._foodViews = new Array(numFood);
-        for (let id = 0; id < numFood; id++) this._foodViews[id] = new FoodSlotView(foodF64, id);
+        this._foodViews = new Array(foodCapacity);
+        for (let id = 0; id < foodCapacity; id++) this._foodViews[id] = new FoodSlotView(foodF64, id);
         this._perception = new Perception();             // the SHARED engine selector
     }
 

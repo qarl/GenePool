@@ -43,7 +43,8 @@ for (;;) {
     tickGenSeen = Atomics.load(ctrl, CTL_TICKGEN);
 
     if (Atomics.load(ctrl, CTL_SHUTDOWN) === 1) {
-        parentPort.postMessage({ type: 'fingerprint', idStart, fp: part.fingerprint() });
+        part.applyDeltas(); // flush the LAST tick's resolution (normally applied at the next tick's start) so the
+        parentPort.postMessage({ type: 'fingerprint', idStart, fp: part.fingerprint() }); // fingerprint is fully resolved
         break;
     }
 

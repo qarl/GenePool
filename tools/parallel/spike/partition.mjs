@@ -9,12 +9,13 @@ import { Swimbot } from '../../../engine/swimbot.js';
 import { Genotype } from '../../../engine/genotype.js';
 import { Embryology } from '../../../engine/embryology.js';
 import { Obstacle } from '../../../engine/obstacle.js';
+import { FoodBit } from '../../../engine/foodBit.js';
 import { Vector2D } from '../../../engine/vector2d.js';
 import { makeStream, draw, DOMAIN } from '../../../engine/rng.js';
 import { computeMetricForCriterion } from '../../../engine/attraction.js';
 import { SWIMBOT_VIEW_RADIUS, ONE_HALF, ONE, NUM_GENES, NUM_GENES_USED, BYTE_SIZE, NON_REPRODUCING_JUNK_DNA_LIMIT } from '../../../engine/constants.js';
 import { writeSlot, F_ALIVE, F_GX, F_GY, STRIDE } from './frozen-layout.mjs';
-import { FD_STRIDE, FD_ALIVE, FD_ENERGY } from './food-layout.mjs';
+import { FD_STRIDE, FD_ALIVE, FD_ENERGY, FD_POSX, FD_POSY, FD_TYPE, writeFood, buildFoodGridOnce } from './food-layout.mjs';
 import { writePostUpdate, PU_STRIDE, PU_ALIVE, PU_ENERGY, PU_GX, PU_GY, FLAG_ENERGY_SET, FLAG_TIMER_RESET, FLAG_CLEAR_EAT, FLAG_CLEAR_MATE,
          NB_ID, NB_X, NB_Y, NB_ANGLE, NB_ENERGY, NB_STRIDE } from './resolution-layout.mjs';
 import { Perceiver } from './perceive.mjs';
@@ -43,6 +44,27 @@ export class Partition {
         this._res = res;     // cross-worker resolution buffers (null in the ecology-off / JS-baseline paths)
         this._foodF64 = foodF64;
         this._numFood = numFood;
+        this._foodGrid = foodGrid;
+        // Worker 0 owns the AUTHORITATIVE food (real FoodBits) for bit-identical regen (world.js _updateFood):
+        // real FoodBit.spawnFromParent/randomizeSpawnPosition + a POOL_FOOD_REGEN stream. Built from the food SoA.
+        // Other workers only READ the food SoA/grid for perception, so they skip this.
+        if (w === 0 && res) {
+            this._foodBits = new Map();
+            for (let id = 0; id < numFood; id++) {
+                const fb = new FoodBit();
+                fb.setIndex(id);
+                fb.setPosition({ x: foodF64[id * FD_STRIDE + FD_POSX], y: foodF64[id * FD_STRIDE + FD_POSY] });
+                fb.setType(foodF64[id * FD_STRIDE + FD_TYPE]);
+                fb.setEnergy(foodF64[id * FD_STRIDE + FD_ENERGY]);
+                fb.setMaxSpawnRadius(config.foodSpread);
+                fb.setPoolBounds(config.pool);
+                this._foodBits.set(id, fb);
+            }
+            this._nextFoodId = numFood;
+            this._maxFood = foodF64.length / FD_STRIDE;
+            this._foodRegenStream = makeStream(masterSeed, DOMAIN.POOL_FOOD_REGEN);
+            this._foodRegenRng = () => this._foodRegenStream.next();
+        }
         // Birth-resolution state (worker 0): the monotonic newborn-id counter, config rates, and scratch genotypes
         // + a shared genome view. Founders write their genomes into the shared SoA so worker 0 can read any
         // parent/mate genome for the junk-DNA gate + setAsOffspring. (All workers hold these; only w0 mints.)
@@ -65,7 +87,8 @@ export class Partition {
             this._bots.push(this._makeBot(id, f.age, f.x, f.y, f.angle, f.energy, f.genes));
             if (this._genomeU8) this._genomeU8.set(f.genes, id * NUM_GENES); // publish founder genome for worker 0
         }
-        this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle, coopGrid, config.numFoodTypes ?? 1, foodGrid, foodF64, numFood);
+        const foodCapacity = foodF64 ? (foodF64.length / FD_STRIDE) : 0; // views must cover regen-grown food ids
+        this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle, coopGrid, config.numFoodTypes ?? 1, foodGrid, foodF64, foodCapacity);
     }
 
     // Construct one real Swimbot (founder or newborn). Same ctx wiring as world.js#_makeSwimbot: a per-id
@@ -245,6 +268,7 @@ export class Partition {
             numFoodEatenDelta[id] += 1;
             flags[id] |= FLAG_ENERGY_SET | FLAG_TIMER_RESET | FLAG_CLEAR_EAT;
             food[fo + FD_ALIVE] = 0; // kill the food (SoA); the static grid still lists it, filtered by alive
+            this._foodBits.get(foodId).kill(); // keep worker 0's authoritative FoodBit in sync (for regen parent picks)
         }
 
         // --- BIRTHS: ascending PARENT id (_resolveStagedBirths / _handleBirth) with working energy + trying arrays.
@@ -285,13 +309,57 @@ export class Partition {
             rec[no + NB_ID] = newBornId; rec[no + NB_X] = bx; rec[no + NB_Y] = by;
             rec[no + NB_ANGLE] = initialAngle; rec[no + NB_ENERGY] = energyToOffspring;
         }
+
+        // --- FOOD REGEN (world.js _updateFood, 1-type) on the authoritative FoodBits + POOL_FOOD_REGEN stream ---
+        if (tick % this._config.foodRegenerationPeriod === 0) this._regenFood();
     }
 
-    // For the correctness A/B: a canonical fingerprint of this partition's bots' state.
+    // Pick a random living food of a type (world.js _findRandomLivingFoodOfType): candidates sorted by id, one
+    // POOL_FOOD_REGEN draw. Sorted -> the pick is independent of Map iteration order.
+    _findRandomLivingFoodOfType(foodType) {
+        const candidates = [];
+        for (const f of this._foodBits.values()) if (f.getAlive() && f.getType() === foodType) candidates.push(f);
+        if (candidates.length === 0) return null;
+        candidates.sort((a, b) => a.getIndex() - b.getIndex());
+        return candidates[Math.floor(this._foodRegenRng() * candidates.length)];
+    }
+
+    // One regen event (1 food type) -- byte-for-byte the world.js _updateFood 1-type path (same draw order:
+    // parent pick, spawnFromParent, the up-to-10 obstruction-rejection randomizeSpawnPosition loop), then publish
+    // the new food to the SoA and rebuild the food grid so it is perceivable next tick.
+    _regenFood() {
+        if (this._nextFoodId >= this._maxFood) return; // capacity ceiling (food ids never reused)
+        const parent = this._findRandomLivingFoodOfType(0);
+        if (!parent) return;
+        const childId = this._nextFoodId++;
+        const child = new FoodBit();
+        child.setMaxSpawnRadius(this._config.foodSpread);
+        child.setPoolBounds(this._config.pool);
+        child.spawnFromParent(parent, childId, 0, this._foodRegenRng);
+        let looking = true, num = 0;
+        while (looking) {
+            child.randomizeSpawnPosition(parent, this._foodRegenRng);
+            if (!this._obstacle.getObstruction(parent.getPosition(), child.getPosition())) looking = false;
+            num++;
+            if (num > 10) looking = false;
+        }
+        this._foodBits.set(childId, child);
+        const cp = child.getPosition();
+        writeFood(this._foodF64, childId, { x: cp.x, y: cp.y, type: 0, alive: true, energy: child.getEnergy() });
+        buildFoodGridOnce(this._foodGrid, this._foodF64, this._nextFoodId); // re-index (new food perceivable next tick)
+    }
+
+    // Canonical fingerprint of this partition's LIVING bots' full state -- comparable field-for-field to
+    // world.js dumpSwimbots (id, pos, angle, energy, age, numOffspring, numFoodBitsEaten, brainState), so the
+    // parallel run can be checked BIT-IDENTICAL to the single-thread engine. Dead bots are excluded (world.js
+    // sweeps them; the parallel leaves them inert -> both fingerprint living only).
     fingerprint() {
-        return this._bots.map(sb => {
+        const out = [];
+        for (const sb of this._bots) {
+            if (!sb.getAlive()) continue;
             const p = sb.getPosition();
-            return `${sb.getIndex()}:${p.x},${p.y},${sb.getAngle()},${sb.getEnergy()},${sb.getBrainState()},${sb.getChosenMateIndex()}`;
-        });
+            out.push(`${sb.getIndex()}:${p.x},${p.y},${sb.getAngle()},${sb.getEnergy()},${sb.getAge()},${sb.getNumOffspring()},${sb.getNumFoodBitsEaten()},${sb.getBrainState()}`);
+        }
+        return out;
     }
 }
