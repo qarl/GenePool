@@ -950,6 +950,10 @@ export class Swimbot {
     setNumOffspring(n) { this._numOffspring = n; }
     setNumFoodBitsEaten(n) { this._numFoodBitsEaten = n; }
     getBrainState() { return this._brain.getState(); }
+    // The candidate's own attraction criterion (what getAttractiveness reads off this._brain). Public read so
+    // snapshot-perception mode can FREEZE it per bot at tick start and score frozen candidates via
+    // attraction.js#attractivenessOf -- getAttractiveness stays untouched. Pure; no mixed-live effect.
+    getAttractionCriterion() { return this._brain.getAttractionCriterion(); }
     getGenotype() { return this._genotype; }
     getSelectRadius() { return this._selectRadius; }
     getPreferredFoodType() { return this._phenotype.preferredFoodType; }
