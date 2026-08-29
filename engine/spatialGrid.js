@@ -8,20 +8,38 @@
 // Entities are opaque; the grid tracks each one's current cell so it can be moved (a swimbot that moved
 // this tick) or removed cheaply. cellSize should be >= the largest query radius (SWIMBOT_VIEW_RADIUS),
 // so a circle of that radius is fully covered by the 3x3 neighborhood of the query point's cell.
+//
+// PERF (P2 follow-up): cells are keyed by a PACKED NUMERIC key (was a "cx,cy" string, allocated on every
+// move() -- once per bot per tick). The packed int avoids ~one string allocation per bot per tick and
+// hashes faster as a Map key. Cells are plain Arrays (swap-pop removal; each entity is in exactly one cell
+// so there is no dup risk) iterated with indexed loops (faster than Set/for-of in the hot query path).
+// Cell assignment uses exact Math.floor division -> bit-identical membership to the string-key version.
+
+// Pack signed cell coords into one non-negative integer key. Injective for coords in [-CELL_OFFSET,
+// CELL_OFFSET): ~+/-2M cells per axis = +/-600M world units at cellSize 300 -- generous for any sane pool.
+// Out-of-range coords throw (loud failure) rather than silently colliding (the arbitrary-worlds guard the
+// P2/P3 notes call for; a truly unbounded pool would need a nested-Map keying instead).
+const CELL_OFFSET = 1 << 21;            // 2097152
+const CELL_STRIDE = 1 << 22;            // > 2*CELL_OFFSET, so (cx,cy) packs uniquely; key max ~2^44 (safe int)
 
 export class SpatialGrid {
     constructor(cellSize) {
         if (!(cellSize > 0)) throw new Error('SpatialGrid: cellSize must be > 0');
         this._cellSize = cellSize;
-        this._cells = new Map();       // cellKey -> Set(entity)
-        this._entityCell = new Map();  // entity -> cellKey (for move/remove)
+        this._cells = new Map();       // packedKey -> Array(entity)
+        this._entityCell = new Map();  // entity -> packedKey (for move/remove)
     }
 
-    // Integer cell coords (floor); handles negative positions (an entity nudged past a wall).
-    _cellKey(x, y) {
-        const cx = Math.floor(x / this._cellSize);
-        const cy = Math.floor(y / this._cellSize);
-        return cx + ',' + cy;
+    _packCell(cx, cy) {
+        if (cx < -CELL_OFFSET || cx >= CELL_OFFSET || cy < -CELL_OFFSET || cy >= CELL_OFFSET) {
+            throw new Error('SpatialGrid: cell coord out of packable range (pool too large for the grid key)');
+        }
+        return (cx + CELL_OFFSET) * CELL_STRIDE + (cy + CELL_OFFSET);
+    }
+
+    // Integer cell key from a position (floor; handles negatives, e.g. an entity nudged past a wall).
+    _key(x, y) {
+        return this._packCell(Math.floor(x / this._cellSize), Math.floor(y / this._cellSize));
     }
 
     clear() {
@@ -30,33 +48,43 @@ export class SpatialGrid {
     }
 
     insert(entity, x, y) {
-        const key = this._cellKey(x, y);
+        const key = this._key(x, y);
         let cell = this._cells.get(key);
-        if (!cell) { cell = new Set(); this._cells.set(key, cell); }
-        cell.add(entity);
+        if (cell === undefined) { cell = []; this._cells.set(key, cell); }
+        cell.push(entity);
         this._entityCell.set(entity, key);
     }
 
+    // Remove entity from the cell at `key` via swap-pop (each entity is in exactly one cell). Deletes the
+    // cell array when it empties. Assumes the entity IS in that cell.
+    _removeFromCell(entity, key) {
+        const cell = this._cells.get(key);
+        if (cell === undefined) return;
+        const i = cell.indexOf(entity);
+        if (i !== -1) {
+            const last = cell.pop();
+            if (i < cell.length) cell[i] = last; // move the former last element into the hole
+        }
+        if (cell.length === 0) this._cells.delete(key);
+    }
+
     // Reinsert an entity at a new position (no-op if it stays in the same cell). Used when a swimbot moves.
+    // The same-cell fast path (99%+ of calls) does zero allocation -- just two floors, a pack, and a compare.
     move(entity, x, y) {
-        const newKey = this._cellKey(x, y);
+        const newKey = this._key(x, y);
         const oldKey = this._entityCell.get(entity);
         if (oldKey === newKey) return;
-        if (oldKey !== undefined) {
-            const oldCell = this._cells.get(oldKey);
-            if (oldCell) { oldCell.delete(entity); if (oldCell.size === 0) this._cells.delete(oldKey); }
-        }
+        if (oldKey !== undefined) this._removeFromCell(entity, oldKey);
         let cell = this._cells.get(newKey);
-        if (!cell) { cell = new Set(); this._cells.set(newKey, cell); }
-        cell.add(entity);
+        if (cell === undefined) { cell = []; this._cells.set(newKey, cell); }
+        cell.push(entity);
         this._entityCell.set(entity, newKey);
     }
 
     remove(entity) {
         const key = this._entityCell.get(entity);
         if (key === undefined) return;
-        const cell = this._cells.get(key);
-        if (cell) { cell.delete(entity); if (cell.size === 0) this._cells.delete(key); }
+        this._removeFromCell(entity, key);
         this._entityCell.delete(entity);
     }
 
@@ -68,8 +96,10 @@ export class SpatialGrid {
         const cy = Math.floor(y / this._cellSize);
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
-                const cell = this._cells.get((cx + dx) + ',' + (cy + dy));
-                if (cell) for (const e of cell) fn(e);
+                const cell = this._cells.get(this._packCell(cx + dx, cy + dy));
+                if (cell !== undefined) {
+                    for (let i = 0; i < cell.length; i++) fn(cell[i]);
+                }
             }
         }
     }
