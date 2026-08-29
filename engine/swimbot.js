@@ -58,6 +58,11 @@ export class Swimbot {
         // Pool bounds for wall collisions -- from config.pool (P3), defaulting to JJ's 8000x8000 when absent
         // (so a swimbot built without bounds, e.g. the fidelity tests, behaves byte-identically to pre-P3).
         this._pool = resolvePoolBounds(ctx.config && ctx.config.pool);
+        // Config-driven ecology knobs (faithful defaults when absent -> byte-identical to pre-config code).
+        // viewRadius must match the World's perception filter (both read config.viewRadius); it also normalizes
+        // getCloseness. sensoryPeriod is the every-Nth-tick perception cadence.
+        this._viewRadius = (ctx.config && ctx.config.viewRadius) || SWIMBOT_VIEW_RADIUS;
+        this._sensoryPeriod = (ctx.config && ctx.config.sensoryPeriod) || BRAIN_SENSORY_UPDATE_PERIOD;
         this._embryology = ctx.embryology;
         this._onDeath = ctx.onDeath || null;
 
@@ -371,7 +376,7 @@ export class Swimbot {
     update() {
         this._age++;
 
-        if (this._age % BRAIN_SENSORY_UPDATE_PERIOD === 0) {
+        if (this._age % this._sensoryPeriod === 0) {
             this._readyforSensoryInputToBrain = true;
         }
 
@@ -776,12 +781,12 @@ export class Swimbot {
     }
 
     getCloseness(judge) {
-        let closest = SWIMBOT_VIEW_RADIUS;
+        let closest = this._viewRadius;
         const distance = this._position.getDistanceTo(judge.getPosition());
         if (distance < closest) {
             closest = distance;
         }
-        return ONE - (closest / SWIMBOT_VIEW_RADIUS);
+        return ONE - (closest / this._viewRadius);
     }
 
     getSimilarity(judge) {

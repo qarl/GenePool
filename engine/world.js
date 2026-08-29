@@ -85,12 +85,14 @@ export class World {
         // GENITAL position (the swimbot scan's metric), food by its own position (the food scan's target);
         // the query points are the looker's genital / mouth position respectively. Default ON.
         // INVARIANT: cellSize MUST be >= every perception query radius, or the grid silently misses in-range
-        // entities (test/engine/spatial-grid.test.js documents that failure). Both perception scans use
-        // SWIMBOT_VIEW_RADIUS, so cellSize == SWIMBOT_VIEW_RADIUS satisfies it. When P3 makes the view radius
-        // config-driven, set cellSize from max(query radii) here -- do NOT let the radius exceed it.
+        // entities (test/engine/spatial-grid.test.js documents that failure). Both perception scans use the
+        // view radius, so cellSize == viewRadius satisfies it. viewRadius is now config-driven (default
+        // SWIMBOT_VIEW_RADIUS); the swimbot closeness normalizer reads the same config.viewRadius, so the
+        // perception filter and the normalizer stay consistent.
+        this._viewRadius = config.viewRadius ?? SWIMBOT_VIEW_RADIUS;
         this._useSpatialGrid = options.useSpatialGrid !== false;
-        this._swimbotGrid = new SpatialGrid(SWIMBOT_VIEW_RADIUS);
-        this._foodGrid = new SpatialGrid(SWIMBOT_VIEW_RADIUS);
+        this._swimbotGrid = new SpatialGrid(this._viewRadius);
+        this._foodGrid = new SpatialGrid(this._viewRadius);
 
         // scratch genotypes / vectors (mirroring JJ's shared scratch in GenePool)
         this._myGenotype = new Genotype();
@@ -256,7 +258,7 @@ export class World {
         const considerSwimbot = (other) => {
             if (other === bot || !other.getAlive()) return;
             const distanceSquared = gpos.getDistanceSquaredTo(other.getGenitalPosition());
-            if (distanceSquared < SWIMBOT_VIEW_RADIUS * SWIMBOT_VIEW_RADIUS) {
+            if (distanceSquared < this._viewRadius * this._viewRadius) {
                 // NOTE: obstruction is checked LAZILY during selection (below), not here.
                 this._nearbyCandidates.push({ other, d2: distanceSquared, id: other.getIndex() });
             }
@@ -295,8 +297,8 @@ export class World {
             if (!food.getAlive()) return;
             if (this._config.numFoodTypes === 2 && food.getType() !== bot.getPreferredFoodType()) return;
             const viewDistance = mpos.getDistanceTo(food.getPosition());
-            if (viewDistance < SWIMBOT_VIEW_RADIUS) {
-                const distance = viewDistance / SWIMBOT_VIEW_RADIUS;
+            if (viewDistance < this._viewRadius) {
+                const distance = viewDistance / this._viewRadius;
                 const id = food.getIndex();
                 if ((distance < smallestDistance) || (distance === smallestDistance && id < chosenFoodId)) {
                     if (!this._obstacle.getObstruction(mpos, food.getPosition())) {
