@@ -115,6 +115,13 @@ export class World {
         this._perceptionMode = config.perceptionMode || 'mixed-live';
         this._snapshotMode = this._perceptionMode === 'snapshot';
         this._snapshotViews = new Map(); // id -> FrozenSwimbot (persistent)
+        // Snapshot mode gets its OWN spatial grid, REBUILT from the frozen tick-start positions each
+        // _buildSnapshot -- NOT the live _swimbotGrid (which is moved mid-loop -> order-dependent). cellSize ==
+        // viewRadius (the P2 invariant: the 3x3 neighborhood covers the whole view circle, so the grid returns
+        // EXACTLY the brute-force in-radius set). Built once, never moved mid-loop -> order-independent, and turns
+        // the swimbot nearby-scan from O(n) brute force into O(neighbors). Only allocated when snapshot+grid are
+        // both on; useSpatialGrid:false keeps the brute-force scan (kept for the grid-vs-brute-force A/B).
+        this._snapshotGrid = (this._snapshotMode && this._useSpatialGrid) ? new SpatialGrid(this._viewRadius) : null;
 
         // scratch genotypes / vectors (mirroring JJ's shared scratch in GenePool)
         this._myGenotype = new Genotype();
@@ -295,6 +302,17 @@ export class World {
             if (v._alive) v.markDead(); // just died -> one-tick ghost
             else views.delete(id);      // already a ghost last tick -> prune
         }
+        // Rebuild the snapshot grid from the LIVE frozen views (tick-start positions). Ghosts are not
+        // perceivable, so they are not inserted. Built here, before the loop -> never mutated mid-loop.
+        if (this._snapshotGrid) {
+            const grid = this._snapshotGrid;
+            grid.clear();
+            for (const v of views.values()) {
+                if (!v.getAlive()) continue;
+                const g = v.getGenitalPosition();
+                grid.insert(v, g.x, g.y);
+            }
+        }
     }
 
     // SNAPSHOT eat resolution: eats were deferred, so the perception loop killed no food. Resolve them in
@@ -362,18 +380,23 @@ export class World {
             }
         };
         if (this._snapshotMode) {
-            // SNAPSHOT: scan the FROZEN views (tick-start), not the live grid (which is never maintained here).
-            // The candidates pushed are FrozenSwimbot views; setEnvironmentalStimuli duck-types them (getIndex/
-            // getAlive/getAge/getEnergy/getGenitalPosition/getAttractiveness). Self is skipped by id (the looker
-            // is live; its own frozen view is a different object). The looker's OWN gpos stays LIVE -- its own
-            // position doesn't depend on any other bot, so perception is order-independent. Ghosts (alive=false)
-            // are filtered. (Direct scan of the view map; a snapshot grid is a Step-2/SoA perf detail.)
-            for (const view of this._snapshotViews.values()) {
-                if (view.getIndex() === bot.getIndex() || !view.getAlive()) continue;
+            // SNAPSHOT: candidates are the FROZEN views (tick-start), not live bots. setEnvironmentalStimuli
+            // duck-types them (getIndex/getAlive/getAge/getEnergy/getGenitalPosition/getAttractiveness). Self is
+            // skipped by id (the looker is live; its own frozen view is a different object); ghosts (alive=false)
+            // are filtered. The looker's OWN gpos stays LIVE -- its own position doesn't depend on any other bot,
+            // so perception is order-independent. The grid (cellSize==viewRadius) returns EXACTLY the brute-force
+            // in-radius set (P2 invariant); useSpatialGrid:false keeps the brute-force scan for the A/B.
+            const considerSnapshotView = (view) => {
+                if (view.getIndex() === bot.getIndex() || !view.getAlive()) return;
                 const distanceSquared = gpos.getDistanceSquaredTo(view.getGenitalPosition());
                 if (distanceSquared < this._viewRadius * this._viewRadius) {
                     this._nearbyCandidates.push({ other: view, d2: distanceSquared, id: view.getIndex() });
                 }
+            };
+            if (this._snapshotGrid) {
+                this._snapshotGrid.forEachNear(gpos.x, gpos.y, considerSnapshotView); // 3x3 superset; filtered above
+            } else {
+                for (const view of this._snapshotViews.values()) considerSnapshotView(view);
             }
         } else if (this._useSpatialGrid) {
             this._swimbotGrid.forEachNear(gpos.x, gpos.y, considerSwimbot); // 3x3 superset; filtered above

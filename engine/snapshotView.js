@@ -14,7 +14,9 @@
 // a distance/obstruction test), getGenotype (genes are static within a tick), and getAttractiveness. The JUDGE
 // (looker) stays LIVE -- its own metrics are order-independent; only the CANDIDATE is frozen.
 
-import { computeAttractionMetrics, attractivenessOf } from './attraction.js';
+import { computeMetricForCriterion, CRITERIA_NEEDING_JUDGE_METRIC, attractivenessOf } from './attraction.js';
+
+const NO_METRIC = {}; // shared empty judge-metrics for criteria that read no judge metric (no per-call alloc)
 
 export class FrozenSwimbot {
     constructor(matePref, viewRadius) {
@@ -32,6 +34,8 @@ export class FrozenSwimbot {
     }
 
     // Capture the swimbot's tick-start state. Called once per live swimbot at the start of each snapshot tick.
+    // Only the metric this bot's OWN criterion needs is computed (a bot always advertises on its own criterion),
+    // not the full six-field struct -- that is the snapshot's hot cost. Read the criterion FIRST.
     refresh(sb) {
         this._index = sb.getIndex();
         this._alive = true;
@@ -39,8 +43,8 @@ export class FrozenSwimbot {
         this._energy = sb.getEnergy();
         const gp = sb.getGenitalPosition();
         this._genital.x = gp.x; this._genital.y = gp.y;
-        this._metrics = computeAttractionMetrics(sb);
         this._criterion = sb.getAttractionCriterion();
+        this._metrics = computeMetricForCriterion(sb, this._criterion);
         this._genotype = sb.getGenotype();
         this._seen = true;
     }
@@ -57,10 +61,14 @@ export class FrozenSwimbot {
     getGenitalPosition() { return this._genital; }
     getGenotype() { return this._genotype; }
 
-    // Bit-for-bit the same score as Swimbot.getAttractiveness (proven in attraction-parity.test.js), computed
-    // from the FROZEN candidate metrics + the LIVE judge's metrics. criterion/candId/metrics are all frozen.
+    // Bit-for-bit the same score as Swimbot.getAttractiveness (proven in snapshot-view.test.js), computed from
+    // the FROZEN candidate metric + the LIVE judge's metric. Only the ONE metric this criterion reads is computed
+    // on each side (the judge's only for the similar-to-me/closest family; skipped otherwise) -- attractivenessOf
+    // touches no other field for this criterion, so the result is identical to passing full metrics structs.
     getAttractiveness(judge, tick) {
-        return attractivenessOf(this._metrics, computeAttractionMetrics(judge), this._criterion, tick,
+        const judgeMetric = CRITERIA_NEEDING_JUDGE_METRIC.has(this._criterion)
+            ? computeMetricForCriterion(judge, this._criterion) : NO_METRIC;
+        return attractivenessOf(this._metrics, judgeMetric, this._criterion, tick,
             this._matePref, this._index, judge.getIndex(), this._viewRadius);
     }
 }

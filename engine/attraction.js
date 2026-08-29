@@ -30,6 +30,32 @@ export function computeAttractionMetrics(sb) {
     };
 }
 
+// The metric a criterion ACTUALLY reads -- so snapshot mode computes ONLY that one per bot per tick, not the
+// whole six-field struct (getCurrentBodyLongness/Straightness are O(parts^2) and Straightness allocates, so
+// computing all six for every bot every tick dominated the snapshot cost). attractivenessOf's if-chain touches
+// exactly cand.<oneField> (and, for the similarity/closest criteria, judge.<sameField>) for a given criterion;
+// every other field is untouched, so a PARTIAL metrics object holding just that field yields a BIT-IDENTICAL
+// result to the full computeAttractionMetrics (proven by the same parity tests). RANDOM reads no metric.
+export function computeMetricForCriterion(sb, criterion) {
+    switch (criterion) {
+        case ATTRACTION_COLORFUL: case ATTRACTION_NO_COLOR: return { colorSaturation: sb.getColorSaturation() };
+        case ATTRACTION_BIG: case ATTRACTION_SMALL: case ATTRACTION_SIMILAR_SIZE: return { bigness: sb.getCurrentBodyBigness() };
+        case ATTRACTION_HYPER: case ATTRACTION_STILL: case ATTRACTION_SIMILAR_HYPER: return { hyperness: sb.getCurrentBodyHyperness() };
+        case ATTRACTION_LONG: case ATTRACTION_SHORT: case ATTRACTION_SIMILAR_LENGTH: return { longness: sb.getCurrentBodyLongness() };
+        case ATTRACTION_STRAIGHT: case ATTRACTION_CROOKED: case ATTRACTION_SIMILAR_STRAIGHT: return { straightness: sb.getCurrentBodyStraightness() };
+        case ATTRACTION_SIMILAR_COLOR: return { avgColor: sb.getAverageColor() };
+        case ATTRACTION_CLOSEST: { const p = sb.getPosition(); return { rootX: p.x, rootY: p.y }; }
+        default: return {}; // ATTRACTION_RANDOM (and any out-of-range) -> matePref only, no metric read
+    }
+}
+
+// The criteria whose score reads a JUDGE metric too (the "similar-to-me" family + closest). For every other
+// criterion the judge's metrics are never read, so snapshot mode can skip computing them entirely.
+export const CRITERIA_NEEDING_JUDGE_METRIC = new Set([
+    ATTRACTION_SIMILAR_COLOR, ATTRACTION_SIMILAR_SIZE, ATTRACTION_SIMILAR_HYPER,
+    ATTRACTION_SIMILAR_LENGTH, ATTRACTION_SIMILAR_STRAIGHT, ATTRACTION_CLOSEST,
+]);
+
 // colorSimilarity(cand, judge) -- mirrors Swimbot.getColorSimilarity (this=cand c2, judge=c1).
 function colorSimilarity(cand, judge) {
     const rDiff = Math.abs(cand.red - judge.red);
