@@ -947,4 +947,72 @@ export class Swimbot {
     getDigestibleFoodType() { return this._phenotype.digestibleFoodType; }
     getPhenotype() { return this._phenotype; }
     setHungerThreshold(t) { this._brain.setHungerThreshold(t); }
+    getChosenMate() { return this._chosenMate; }             // the OBJECT ref (may be a swept/dead swimbot)
+    getChosenFoodBit() { return this._chosenFoodBit; }       // the OBJECT ref (may be a swept/dead food bit)
+
+    // --- checkpoint (H1): the FULL between-tick mutable state so a restore resumes bit-identically.
+    // Captures the accumulated scalars/vectors (which create() would reset to fresh values), the brain FSM,
+    // the per-life RNG stream position, and the per-part carried geometry (previousMid/midPosition drive next
+    // tick's velocity). Chosen mate/food are stored as INDICES; the World relinks the objects on restore
+    // (including "ghost" refs to swept-but-still-referenced entities -- the steering at update():404/411 uses
+    // a dead ref's frozen position, so it must be preserved).
+    serializeCheckpoint() {
+        const parts = [];
+        for (let p = 0; p < this._phenotype.numParts; p++) {
+            const pt = this._phenotype.parts[p];
+            parts.push([
+                pt.position.x, pt.position.y, pt.midPosition.x, pt.midPosition.y,
+                pt.previousMid.x, pt.previousMid.y, pt.velocity.x, pt.velocity.y,
+                pt.axis.x, pt.axis.y, pt.perpendicular.x, pt.perpendicular.y,
+                pt.currentAngle, pt.bendingAngle,
+            ]);
+        }
+        return {
+            index: this._index, age: this._age, energy: this._energy, angle: this._angle, alive: this._alive,
+            genes: Array.from(this._genotype.getGenes()),
+            pos: [this._position.x, this._position.y], vel: [this._velocity.x, this._velocity.y],
+            spin: this._spin, timer: this._timer, timerDelta: this._timerDelta, growthScale: this._growthScale,
+            torque: this._torque, energyEfficiency: this._energyEfficiency, selectRadius: this._selectRadius,
+            focus: [this._focusDirection.x, this._focusDirection.y],
+            goal: [this._directionToGoal.x, this._directionToGoal.y],
+            lastPos: [this._lastPositionForEfficiencyMeasurement.x, this._lastPositionForEfficiencyMeasurement.y],
+            lastEnergy: this._lastEnergyForEfficiencyMeasurement,
+            numOffspring: this._numOffspring, numFoodBitsEaten: this._numFoodBitsEaten,
+            chosenMateIndex: this._chosenMateIndex, chosenFoodBitIndex: this._chosenFoodBitIndex,
+            tryingToMate: this._tryingToMate, tryingToEat: this._tryingToEat,
+            readyForSensory: this._readyforSensoryInputToBrain,
+            brain: this._brain.serializeCheckpoint(), lifePosition: this._life.position, parts,
+        };
+    }
+
+    // Called AFTER create(index, age, pos, angle, energy, genotype) rebuilt the phenotype (from genes) -- this
+    // overwrites the fresh state with the checkpointed accumulated state + carried part geometry.
+    restoreCheckpointState(d) {
+        this._age = d.age; this._energy = d.energy; this._angle = d.angle; this._alive = d.alive;
+        this._position.setXY(d.pos[0], d.pos[1]); this._velocity.setXY(d.vel[0], d.vel[1]);
+        this._spin = d.spin; this._timer = d.timer; this._timerDelta = d.timerDelta; this._growthScale = d.growthScale;
+        this._torque = d.torque; this._energyEfficiency = d.energyEfficiency; this._selectRadius = d.selectRadius;
+        this._focusDirection.setXY(d.focus[0], d.focus[1]); this._directionToGoal.setXY(d.goal[0], d.goal[1]);
+        this._lastPositionForEfficiencyMeasurement.setXY(d.lastPos[0], d.lastPos[1]);
+        this._lastEnergyForEfficiencyMeasurement = d.lastEnergy;
+        this._numOffspring = d.numOffspring; this._numFoodBitsEaten = d.numFoodBitsEaten;
+        this._chosenMateIndex = d.chosenMateIndex; this._chosenFoodBitIndex = d.chosenFoodBitIndex;
+        this._tryingToMate = d.tryingToMate; this._tryingToEat = d.tryingToEat;
+        this._readyforSensoryInputToBrain = d.readyForSensory;
+        this._brain.restoreCheckpoint(d.brain);
+        if (this._life && 'position' in this._life) this._life.position = d.lifePosition;
+        for (let p = 0; p < this._phenotype.numParts; p++) {
+            const pt = this._phenotype.parts[p], s = d.parts[p];
+            pt.position.setXY(s[0], s[1]); pt.midPosition.setXY(s[2], s[3]); pt.previousMid.setXY(s[4], s[5]);
+            pt.velocity.setXY(s[6], s[7]); pt.axis.setXY(s[8], s[9]); pt.perpendicular.setXY(s[10], s[11]);
+            pt.currentAngle = s[12]; pt.bendingAngle = s[13];
+        }
+    }
+
+    // Relink chosen mate/food OBJECT refs from the stored indices. resolve(id) returns the entity object
+    // (live OR ghost) or undefined; a missing ref becomes null (matches a chosenIndex of NULL_INDEX).
+    relinkChosen(resolveSwimbot, resolveFood) {
+        this._chosenMate = this._chosenMateIndex === NULL_INDEX ? null : (resolveSwimbot(this._chosenMateIndex) || null);
+        this._chosenFoodBit = this._chosenFoodBitIndex === NULL_INDEX ? null : (resolveFood(this._chosenFoodBitIndex) || null);
+    }
 }

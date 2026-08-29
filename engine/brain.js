@@ -80,4 +80,18 @@ export class Brain {
     getHungerThreshold() { return this._hungerThreshold; }
     getAttractionCriterion() { return this._attractionCriterion; }
     getState() { return this._state; }
+
+    // --- checkpoint (H1): the full mutable FSM state so a restore resumes bit-identically ---
+    serializeCheckpoint() {
+        return {
+            state: this._state, energy: this._energy, foundFoodBit: this._foundFoodBit,
+            foundSwimbot: this._foundSwimbot, hungerThreshold: this._hungerThreshold,
+            attractionCriterion: this._attractionCriterion,
+        };
+    }
+    restoreCheckpoint(d) {
+        this._state = d.state; this._energy = d.energy; this._foundFoodBit = d.foundFoodBit;
+        this._foundSwimbot = d.foundSwimbot; this._hungerThreshold = d.hungerThreshold;
+        this._attractionCriterion = d.attractionCriterion;
+    }
 }

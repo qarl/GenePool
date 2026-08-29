@@ -488,4 +488,91 @@ export class World {
         }
         return out;
     }
+
+    // --- checkpoint (H1): serialize the FULL world so World.restore(config, data) resumes bit-identically.
+    // Serialize BETWEEN ticks (pendingBirths is empty then). Beyond the live entities + clock + never-reused
+    // id high-water marks + stream counters, we also capture "GHOST" entities: swept/eaten entities still
+    // referenced as some live bot's chosenMate/chosenFood, because the steering code (swimbot.update)
+    // dereferences a dead ref's frozen position (only the eat/mate test guards on getAlive). Dropping them
+    // would diverge. (config is NOT serialized -- the caller re-supplies the same config to restore.)
+    serialize() {
+        const swimbots = [];
+        const ghostSwimbots = new Map(); // id -> serialized dead swimbot referenced as a chosenMate
+        const ghostFood = new Map();     // id -> {id,x,y,type,energy} of an eaten food referenced as chosenFood
+        for (const bot of this._swimbots.values()) {
+            swimbots.push(bot.serializeCheckpoint());
+            const cm = bot.getChosenMate(); // dead swimbots keep their _index (die() doesn't clear it)
+            if (cm && !this._swimbots.has(cm.getIndex()) && !ghostSwimbots.has(cm.getIndex())) {
+                ghostSwimbots.set(cm.getIndex(), cm.serializeCheckpoint());
+            }
+            const cfIdx = bot.getChosenFoodBitIndex(); // eaten food's kill() clears its index -> use the stored id
+            if (cfIdx !== NULL_INDEX && !this._foodBits.has(cfIdx) && !ghostFood.has(cfIdx)) {
+                const cf = bot.getChosenFoodBit();
+                if (cf) ghostFood.set(cfIdx, { id: cfIdx, x: cf.getPosition().x, y: cf.getPosition().y, type: cf.getType(), energy: cf.getEnergy() });
+            }
+        }
+        const food = [];
+        for (const f of this._foodBits.values()) {
+            food.push({ id: f.getIndex(), x: f.getPosition().x, y: f.getPosition().y, type: f.getType(), energy: f.getEnergy() });
+        }
+        return {
+            masterSeed: this._masterSeed, clock: this._clock,
+            nextSwimbotId: this._nextSwimbotId, nextFoodId: this._nextFoodId,
+            numDeadSwimbots: this._numDeadSwimbots,
+            livingSwimbotCount: this._livingSwimbotCount, livingFoodCount: this._livingFoodCount,
+            foodRegenPosition: this._foodRegenStream.position,
+            obstacle: this._obstacle.getEndpoints(),
+            swimbots, food,
+            ghostSwimbots: [...ghostSwimbots.values()],
+            ghostFood: [...ghostFood.values()],
+        };
+    }
+
+    static restore(config, data) {
+        const world = new World(config, data.masterSeed);
+        world._clock = data.clock;
+        world._nextSwimbotId = data.nextSwimbotId;
+        world._nextFoodId = data.nextFoodId;
+        world._numDeadSwimbots = data.numDeadSwimbots;
+        world._foodRegenStream.position = data.foodRegenPosition;
+        world.setObstacle(data.obstacle[0], data.obstacle[1]);
+
+        const makeFood = (fd, alive) => {
+            const f = new FoodBit();
+            if (alive) f.setIndex(fd.id); // dead ghost food keeps NULL_INDEX (getAlive false); keyed by id in the side map
+            f.setPosition({ x: fd.x, y: fd.y }); f.setType(fd.type); f.setEnergy(fd.energy);
+            f.setMaxSpawnRadius(config.foodSpread); f.setPoolBounds(config.pool);
+            return f;
+        };
+        for (const fd of data.food) {
+            const f = makeFood(fd, true);
+            world._foodBits.set(fd.id, f);
+            if (world._useSpatialGrid) world._foodGrid.insert(f, fd.x, fd.y);
+        }
+        const ghostFood = new Map();
+        for (const fd of data.ghostFood) ghostFood.set(fd.id, makeFood(fd, false));
+
+        const makeBot = (sd) => {
+            const sb = world._makeSwimbot(sd.index);
+            const g = new Genotype(); g.setGenes(sd.genes);
+            sb.create(sd.index, sd.age, { x: sd.pos[0], y: sd.pos[1] }, sd.angle, sd.energy, g); // RNG-free rebuild
+            sb.restoreCheckpointState(sd); // overwrite fresh state with the checkpointed accumulated state
+            return sb;
+        };
+        for (const sd of data.swimbots) {
+            const sb = makeBot(sd);
+            world._swimbots.set(sd.index, sb);
+            if (world._useSpatialGrid) { const gp = sb.getGenitalPosition(); world._swimbotGrid.insert(sb, gp.x, gp.y); }
+        }
+        const ghostSwimbots = new Map();
+        for (const sd of data.ghostSwimbots) ghostSwimbots.set(sd.index, makeBot(sd)); // dead; not in _swimbots, not ticked
+
+        const resolveSwimbot = (id) => world._swimbots.get(id) || ghostSwimbots.get(id);
+        const resolveFood = (id) => world._foodBits.get(id) || ghostFood.get(id);
+        for (const sb of world._swimbots.values()) sb.relinkChosen(resolveSwimbot, resolveFood);
+
+        world._livingSwimbotCount = data.livingSwimbotCount;
+        world._livingFoodCount = data.livingFoodCount;
+        return world;
+    }
 }

@@ -25,6 +25,10 @@ export class Obstacle {
 
     setPoolBounds(pool) { this._pool = resolvePoolBounds(pool); }
 
+    // Current (post-clamp) endpoints, for checkpointing. Restoring them via setEndpointPositions re-clamps
+    // idempotently (they are already in-bounds), so a round-trip is exact.
+    getEndpoints() { return [{ x: this._end1.x, y: this._end1.y }, { x: this._end2.x, y: this._end2.y }]; }
+
     setEndpointPositions(e1, e2) {
         this._end1.set(e1);
         this._end2.set(e2);
