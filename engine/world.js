@@ -29,6 +29,7 @@ import { Genotype } from './genotype.js';
 import { Embryology } from './embryology.js';
 import { Vector2D } from './vector2d.js';
 import { draw, makeStream, DOMAIN } from './rng.js';
+import { SpatialGrid } from './spatialGrid.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
     MAX_FOODBITS_PER_TYPE, NON_REPRODUCING_JUNK_DNA_LIMIT,
@@ -37,7 +38,9 @@ import {
 
 export class World {
     // masterSeed is a non-negative safe integer; every draw is addressed off it (§3). No global stream.
-    constructor(config, masterSeed) {
+    // options.useSpatialGrid (default true) picks the P2 spatial-grid perception; false = the brute-force
+    // O(n^2) reference path (kept for the bit-for-bit A/B, and as a fallback).
+    constructor(config, masterSeed, options = {}) {
         this._config = config;
         this._masterSeed = masterSeed;
         this._embryology = new Embryology();
@@ -58,6 +61,20 @@ export class World {
         this._nextFoodId = 0;
         this._pendingBirths = []; // T+1: newborns created this tick, added after it
         this._obstacle = new Obstacle();
+
+        // P2 spatial grid: a BEHAVIOR-PRESERVING acceleration of the O(n^2) perception scans. cellSize ==
+        // the view radius, so the 3x3 neighborhood of any query point covers the whole view circle -- the
+        // grid then returns EXACTLY the brute-force in-radius set (proven in test/engine/spatial-grid.test.js
+        // and A/B'd tick-for-tick against the brute-force path in world-p2.test.js). Swimbots are indexed by
+        // GENITAL position (the swimbot scan's metric), food by its own position (the food scan's target);
+        // the query points are the looker's genital / mouth position respectively. Default ON.
+        // INVARIANT: cellSize MUST be >= every perception query radius, or the grid silently misses in-range
+        // entities (test/engine/spatial-grid.test.js documents that failure). Both perception scans use
+        // SWIMBOT_VIEW_RADIUS, so cellSize == SWIMBOT_VIEW_RADIUS satisfies it. When P3 makes the view radius
+        // config-driven, set cellSize from max(query radii) here -- do NOT let the radius exceed it.
+        this._useSpatialGrid = options.useSpatialGrid !== false;
+        this._swimbotGrid = new SpatialGrid(SWIMBOT_VIEW_RADIUS);
+        this._foodGrid = new SpatialGrid(SWIMBOT_VIEW_RADIUS);
 
         // scratch genotypes / vectors (mirroring JJ's shared scratch in GenePool)
         this._myGenotype = new Genotype();
@@ -95,6 +112,7 @@ export class World {
         sb.setNumOffspring(numOffspring);
         sb.setNumFoodBitsEaten(numFoodBitsEaten);
         this._swimbots.set(id, sb);
+        if (this._useSpatialGrid) { const gp = sb.getGenitalPosition(); this._swimbotGrid.insert(sb, gp.x, gp.y); }
         if (id >= this._nextSwimbotId) this._nextSwimbotId = id + 1;
     }
 
@@ -106,6 +124,7 @@ export class World {
         f.setEnergy(energy);
         f.setMaxSpawnRadius(this._config.foodSpread);
         this._foodBits.set(id, f);
+        if (this._useSpatialGrid) { const p = f.getPosition(); this._foodGrid.insert(f, p.x, p.y); }
         if (id >= this._nextFoodId) this._nextFoodId = id + 1;
     }
 
@@ -137,6 +156,24 @@ export class World {
         this._sweepDead();
     }
 
+    // The grids are maintained INCREMENTALLY (insert on load/birth/regen, move on update, remove on sweep) --
+    // NOT rebuilt each tick, which cost as much as the perception it accelerated. This resync helper rebuilds
+    // from scratch; it is for test setup and future load/restore, not the hot path. No-op when the grid is
+    // off, so a brute-force World never grows grids it will not read (matters for the P5 load/restore path).
+    _rebuildGrids() {
+        if (!this._useSpatialGrid) return;
+        this._swimbotGrid.clear();
+        for (const bot of this._swimbots.values()) {
+            const gp = bot.getGenitalPosition();
+            this._swimbotGrid.insert(bot, gp.x, gp.y);
+        }
+        this._foodGrid.clear();
+        for (const food of this._foodBits.values()) {
+            const p = food.getPosition();
+            this._foodGrid.insert(food, p.x, p.y);
+        }
+    }
+
     _updateSwimbots() {
         // Iterate a snapshot of the current live swimbots (staged births are NOT in it -> they act next
         // tick). Structural mutation (staging/sweeping) happens outside this loop.
@@ -144,6 +181,14 @@ export class World {
             if (!bot.getAlive()) continue;
             bot.update();
             if (!bot.getAlive()) continue; // H-a: update() can kill it (old age / starvation)
+
+            // MIXED-LIVE perception (matches P1): update() moved this bot, so reinsert it at its new genital
+            // position BEFORE later bots perceive. When bot #k perceives, the grid holds bots <k at their new
+            // positions and bots >k at last tick's -- exactly what the brute-force scan of the live Map saw.
+            if (this._useSpatialGrid) {
+                const gp = bot.getGenitalPosition();
+                this._swimbotGrid.move(bot, gp.x, gp.y);
+            }
 
             if (bot.getIsLookingForSensoryInput()) {
                 this._giveSwimbotNearbyEnvironmentalStimuli(bot);
@@ -171,14 +216,20 @@ export class World {
         // distance^2 (tiebreak by stableID for determinism), take the closest BRAIN_MAX_PERCEIVED. Fully
         // order-independent now that the mate-pref rng is addressed (P1b-ii).
         this._nearbyCandidates.length = 0;
-        for (const other of this._swimbots.values()) {
-            if (other === bot || !other.getAlive()) continue;
-            const distanceSquared = bot.getGenitalPosition().getDistanceSquaredTo(other.getGenitalPosition());
+        const gpos = bot.getGenitalPosition(); // stable per-instance vector (a body part), not shared scratch
+        const considerSwimbot = (other) => {
+            if (other === bot || !other.getAlive()) return;
+            const distanceSquared = gpos.getDistanceSquaredTo(other.getGenitalPosition());
             if (distanceSquared < SWIMBOT_VIEW_RADIUS * SWIMBOT_VIEW_RADIUS) {
-                if (!this._obstacle.getObstruction(bot.getGenitalPosition(), other.getGenitalPosition())) {
+                if (!this._obstacle.getObstruction(gpos, other.getGenitalPosition())) {
                     this._nearbyCandidates.push({ other, d2: distanceSquared, id: other.getIndex() });
                 }
             }
+        };
+        if (this._useSpatialGrid) {
+            this._swimbotGrid.forEachNear(gpos.x, gpos.y, considerSwimbot); // 3x3 superset; filtered above
+        } else {
+            for (const other of this._swimbots.values()) considerSwimbot(other);
         }
         this._nearbyCandidates.sort((a, b) => (a.d2 - b.d2) || (a.id - b.id));
         this._numNearby = Math.min(this._nearbyCandidates.length, BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS);
@@ -190,15 +241,16 @@ export class World {
         let chosenFoodBit = null;
         let smallestDistance = Number.MAX_SAFE_INTEGER;
         let chosenFoodId = Infinity;
-        for (const food of this._foodBits.values()) {
-            if (!food.getAlive()) continue;
-            if (this._config.numFoodTypes === 2 && food.getType() !== bot.getPreferredFoodType()) continue;
-            const viewDistance = bot.getMouthPosition().getDistanceTo(food.getPosition());
+        const mpos = bot.getMouthPosition(); // stable per-instance vector (a body part), not shared scratch
+        const considerFood = (food) => {
+            if (!food.getAlive()) return;
+            if (this._config.numFoodTypes === 2 && food.getType() !== bot.getPreferredFoodType()) return;
+            const viewDistance = mpos.getDistanceTo(food.getPosition());
             if (viewDistance < SWIMBOT_VIEW_RADIUS) {
                 const distance = viewDistance / SWIMBOT_VIEW_RADIUS;
                 const id = food.getIndex();
                 if ((distance < smallestDistance) || (distance === smallestDistance && id < chosenFoodId)) {
-                    if (!this._obstacle.getObstruction(bot.getMouthPosition(), food.getPosition())) {
+                    if (!this._obstacle.getObstruction(mpos, food.getPosition())) {
                         smallestDistance = distance;
                         chosenFoodId = id;
                         chosenFoodBit = food;
@@ -206,6 +258,11 @@ export class World {
                     }
                 }
             }
+        };
+        if (this._useSpatialGrid) {
+            this._foodGrid.forEachNear(mpos.x, mpos.y, considerFood); // 3x3 superset; filtered above
+        } else {
+            for (const food of this._foodBits.values()) considerFood(food);
         }
 
         // The tick is threaded to the mate scan so getAttractiveness can address MATE_PREF(looker,
@@ -308,6 +365,9 @@ export class World {
                     if (num > 10) looking = false;
                 }
                 this._foodBits.set(childId, child);
+                // Regen runs AFTER perception, so this food is first perceivable next tick (same as brute
+                // force, which also scans _foodBits only during _updateSwimbots). Add it to the grid now.
+                if (this._useSpatialGrid) { const p = child.getPosition(); this._foodGrid.insert(child, p.x, p.y); }
             }
         }
     }
@@ -315,6 +375,8 @@ export class World {
     _applyPendingBirths() {
         for (const child of this._pendingBirths) {
             this._swimbots.set(child.getIndex(), child);
+            // Newborn joins the grid at its birth position; it first acts (and is first perceived) next tick.
+            if (this._useSpatialGrid) { const gp = child.getGenitalPosition(); this._swimbotGrid.insert(child, gp.x, gp.y); }
         }
         this._pendingBirths.length = 0;
     }
@@ -323,8 +385,12 @@ export class World {
     // monotonic), so a lingering chosenMate/chosenFood reference to a swept entity can only ever resolve
     // to that same (now-gone) individual -- never a new one.
     _sweepDead() {
-        for (const [id, bot] of this._swimbots) if (!bot.getAlive()) this._swimbots.delete(id);
-        for (const [id, food] of this._foodBits) if (!food.getAlive()) this._foodBits.delete(id);
+        for (const [id, bot] of this._swimbots) {
+            if (!bot.getAlive()) { this._swimbots.delete(id); if (this._useSpatialGrid) this._swimbotGrid.remove(bot); }
+        }
+        for (const [id, food] of this._foodBits) {
+            if (!food.getAlive()) { this._foodBits.delete(id); if (this._useSpatialGrid) this._foodGrid.remove(food); }
+        }
     }
 
     // --- snapshot for tests (living entities; content + hidden chosenMate/brainState) ---

@@ -202,6 +202,7 @@ test('P1c closest-20: perception picks the 20 CLOSEST swimbots, not the first-20
         world.loadSwimbot(24 - k, { age: 5000, x: 4000, y: 4000 + 10 * (k + 1), angle: 0, energy: 80, genes });
     }
     const looker = world._swimbots.get(100);
+    world._rebuildGrids(); // this drives perception directly (no tick()); tick() would have built the grid
     world._giveSwimbotNearbyEnvironmentalStimuli(looker);
 
     assert.equal(world._numNearby, 20, 'perception must cap at the 20 closest');

@@ -18,7 +18,10 @@ const { mulberry32 } = require('../helpers/prng');
 
 // --- helpers ----------------------------------------------------------------
 
-// Brute-force reference: the set of entities within (inclusive) radius r of (qx,qy).
+// Brute-force reference: the set of entities within (INCLUSIVE) radius r of (qx,qy). Note the engine's
+// perception filters with a STRICT `<` (world.js), a SUBSET of this inclusive `<=` ball -- so proving the
+// grid is a superset for the inclusive ball implies it for the strict one too. The exact strict-`<` boundary
+// is exercised end-to-end by the world-p2 A/B; keep this test inclusive (don't "fix" it to match the engine).
 function bruteInRadius(entities, qx, qy, r) {
     const r2 = r * r;
     const out = new Set();
