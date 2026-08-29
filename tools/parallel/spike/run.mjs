@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeFrozenBuffer } from './frozen-layout.mjs';
 import { setupFood } from './food-layout.mjs';
+import { makePostUpdateBuffer } from './resolution-layout.mjs';
 import { allocCoopGrid } from './coop-grid.mjs';
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_SIZE } from './barrier.mjs';
 import { makeConfig, makeFounders, makeWallFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
@@ -26,6 +27,7 @@ async function runParallel(N, ticks, W, poolSize, founders, config, food) {
     const gridSpec = allocCoopGrid(config.pool, CELL_SIZE, N);
     // Food SoA + food grid built ONCE (static positions); workers reconstruct read-only views over the same SABs.
     const { foodSab, foodGridSpec, numFood } = setupFood(food, config.pool, CELL_SIZE, food.length);
+    const puSab = makePostUpdateBuffer(N); // post-update SoA (workers publish; worker 0 resolves from it)
     const ctrlSab = new SharedArrayBuffer(CTL_SIZE * Int32Array.BYTES_PER_ELEMENT);
     const ctrl = new Int32Array(ctrlSab);
 
@@ -43,7 +45,7 @@ async function runParallel(N, ticks, W, poolSize, founders, config, food) {
             workerData: {
                 frozenSab, ctrlSab, gridSpec, maxBots: N, masterSeed: MASTER_SEED, config,
                 founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle: OBSTACLE, W, workerIndex: w,
-                foodGridSpec, foodSab, numFood,
+                foodGridSpec, foodSab, numFood, puSab,
             },
         });
         worker.on('message', (m) => {

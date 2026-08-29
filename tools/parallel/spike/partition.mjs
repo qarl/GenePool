@@ -14,13 +14,14 @@ import { makeStream, draw, DOMAIN } from '../../../engine/rng.js';
 import { computeMetricForCriterion } from '../../../engine/attraction.js';
 import { SWIMBOT_VIEW_RADIUS, ONE_HALF } from '../../../engine/constants.js';
 import { writeSlot } from './frozen-layout.mjs';
+import { writePostUpdate } from './resolution-layout.mjs';
 import { Perceiver } from './perceive.mjs';
 
 export class Partition {
     // coopGrid (a CoopGrid or null): null -> JS-grid mode (writeFrozen+step, the single-thread reference);
     // set -> coop mode (the phased build below). w/W: this worker's index + total, for the cell-range zero.
     // foodGrid/foodF64/numFood: the prebuilt read-only food grid + food SoA (S1) for the perceiver's food scan.
-    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1, foodGrid = null, foodF64 = null, numFood = 0) {
+    constructor(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid = null, w = 0, W = 1, foodGrid = null, foodF64 = null, numFood = 0, puF64 = null) {
         this._f64 = f64;
         this._maxBots = maxBots;
         this._config = config;
@@ -33,6 +34,7 @@ export class Partition {
         this._coopGrid = coopGrid;
         this._w = w;
         this._W = W;
+        this._puF64 = puF64; // post-update SoA (written after update(); read by worker 0's resolve)
         this._bots = [];
         // `founders` is indexed for THIS range: founders[id - idStart] is bot `id` (so a worker is handed only
         // its own slice, not all N). The single-thread baseline passes the full array with idStart=0.
@@ -79,7 +81,12 @@ export class Partition {
 
     // --- COOP MODE phases (worker.mjs orchestrates these with barriers between them) ---
 
-    // Phase 1: zero this worker's cell-range slice of the shared count[]/cursor[].
+    // Phase 1a: apply last tick's resolution deltas to my bots (energy/numOffspring/timer resets), construct my
+    // assigned newborns, drop my dead. NO-OP in S2a (deltas land in S2b/S3); the hook exists so the tick shape +
+    // barrier restructure are validated now.
+    applyDeltas() { /* S2a: no-op */ }
+
+    // Phase 1b: zero this worker's cell-range slice of the shared count[]/cursor[].
     zeroGridCells() { this._coopGrid.zeroCellRange(this._w, this._W); }
 
     // Phase 2: publish each of my bots' frozen slot AND count it into its cell. Uses the tick-start genital
@@ -111,20 +118,30 @@ export class Partition {
         }
     }
 
-    // Phase 5: update + perceive (query the shared coop grid) + obstacle collision for my bots.
+    // Phase 5: update + perceive (query the shared coop grid) + obstacle collision for my bots, then PUBLISH each
+    // bot's post-update state (alive/energy/genital) so worker 0's resolve can compute eat/birth deltas from it.
     updatePerceive(tick) {
+        const pu = this._puF64;
         for (const sb of this._bots) {
-            if (!sb.getAlive()) continue;
-            sb.update();
-            if (!sb.getAlive()) continue;
-            if (sb.getIsLookingForSensoryInput()) this._perceiver.perceive(sb, tick);
-            if (this._obstacle.getCollision(sb.getPosition(), sb.getBoundingRadius() * ONE_HALF)) {
-                this._collisionForce.set(this._obstacle.getCurrentCollisionForce());
-                this._collisionForce.scale(1.2);
-                sb.addForce(this._collisionForce);
+            if (!sb.getAlive()) { // dead before this tick (S2a: none, since ecology is off)
+                if (pu) { const gp = sb.getGenitalPosition(); writePostUpdate(pu, sb.getIndex(), false, sb.getEnergy(), gp.x, gp.y); }
+                continue;
             }
+            sb.update();
+            if (sb.getAlive()) {
+                if (sb.getIsLookingForSensoryInput()) this._perceiver.perceive(sb, tick);
+                if (this._obstacle.getCollision(sb.getPosition(), sb.getBoundingRadius() * ONE_HALF)) {
+                    this._collisionForce.set(this._obstacle.getCurrentCollisionForce());
+                    this._collisionForce.scale(1.2);
+                    sb.addForce(this._collisionForce);
+                }
+            }
+            if (pu) { const gp = sb.getGenitalPosition(); writePostUpdate(pu, sb.getIndex(), sb.getAlive(), sb.getEnergy(), gp.x, gp.y); }
         }
     }
+
+    // Phase 6 (worker 0 only): serial cross-worker resolution -> deltas. NO-OP in S2a; S2b (eat)/S3 (birth) fill it.
+    resolve(tick) { /* S2a: no-op */ }
 
     // For the correctness A/B: a canonical fingerprint of this partition's bots' state.
     fingerprint() {
