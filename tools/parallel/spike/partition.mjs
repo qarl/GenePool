@@ -63,7 +63,8 @@ export class Partition {
                 this._foodBits.set(id, fb);
             }
             this._nextFoodId = numFood;
-            this._maxFood = foodF64.length / FD_STRIDE;
+            this._maxFood = foodF64.length / FD_STRIDE;          // SoA buffer capacity (food ids never reused)
+            this._foodCeiling = config.maxFood ?? Infinity;      // JJ's MAX_FOODBITS: living-food ceiling (opt-in)
             this._foodRegenStream = makeStream(masterSeed, DOMAIN.POOL_FOOD_REGEN);
             this._foodRegenRng = () => this._foodRegenStream.next();
         }
@@ -349,7 +350,14 @@ export class Partition {
     // parent pick, spawnFromParent, the up-to-10 obstruction-rejection randomizeSpawnPosition loop), then publish
     // the new food to the SoA and rebuild the food grid so it is perceivable next tick.
     _regenFood() {
-        if (this._nextFoodId >= this._maxFood) return; // capacity ceiling (food ids never reused)
+        if (this._nextFoodId >= this._maxFood) return; // SoA buffer full (food ids never reused)
+        // JJ's food ceiling: if living food is at the cap, spawn nothing + draw no RNG (before the parent pick).
+        // Counts getAlive() at regen time (eaten food already killed in the eat loop) -> matches world.js exactly.
+        if (this._foodCeiling !== Infinity) {
+            let living = 0;
+            for (const f of this._foodBits.values()) if (f.getAlive()) living++;
+            if (living >= this._foodCeiling) return;
+        }
         const parent = this._findRandomLivingFoodOfType(0);
         if (!parent) return;
         const childId = this._nextFoodId++;

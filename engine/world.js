@@ -77,6 +77,10 @@ export class World {
         // MAX_FOODBITS_PER_TYPE (a per-type 2-food regen BALANCE hint, not a hard cap) is also config now.
         this._pool = resolvePoolBounds(config.pool);
         this._maxFoodBitsPerType = config.maxFoodBitsPerType ?? MAX_FOODBITS_PER_TYPE;
+        // OPT-IN total living-food ceiling (JJ's MAX_FOODBITS: regen spawns only when living food < cap, and
+        // draws no RNG when full). Default Infinity -> no cap -> byte-identical to pre-cap (the north star: bounds
+        // are user config, not engine defaults). The viewer sets it to reproduce JJ's standing food level.
+        this._maxFood = config.maxFood ?? Infinity;
         this._obstacle = new Obstacle();
         this._obstacle.setPoolBounds(config.pool);
 
@@ -484,6 +488,13 @@ export class World {
         }
 
         if (this._clock % this._config.foodRegenerationPeriod === 0) {
+            // JJ's food ceiling: if living food is at the cap, spawn nothing this tick AND draw no RNG (JJ's
+            // findLowestDeadFoodBit returns NULL when the array is full, before any draw). Default Infinity -> never.
+            if (this._maxFood !== Infinity) {
+                let living = 0;
+                for (const food of this._foodBits.values()) if (food.getAlive()) living++;
+                if (living >= this._maxFood) return;
+            }
             let newFoodType = 0;
             let parent;
 

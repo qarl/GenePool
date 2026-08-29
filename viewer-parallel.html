@@ -90,11 +90,13 @@ const NUM_GENES = 256, NUM_GENES_USED = 112;
 // single-thread viewer has no cap). Generous fixed ceilings buy a long session; slot-recycling is the real
 // unbounded fix (deferred). Sized large but bounded (SAB memory): ~genome 256B/bot dominates.
 const maxBots = Math.max(N * 8, 120000);
-const maxFood = Math.max(N * 3 + 20000, 120000);
+const foodBufferCap = 120000;   // SoA buffer for the monotonic food ids (food ids are never reused)
+const FOOD_CEILING = 2000;      // JJ's MAX_FOODBITS: standing living-food cap
+const INITIAL_FOOD = 1000;      // JJ's INITIAL_NUM_FOODBITS
 const CONFIG = {
     maximumLifeSpan: 40000, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
     crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: 4000,
-    foodBitEnergy: 50, attractionCriterion: 10,
+    foodBitEnergy: 50, attractionCriterion: 10, maxFood: FOOD_CEILING, // match JJ's food ceiling
     pool: { left: 0, top: 0, right: POOL, bottom: POOL },
 };
 const OBSTACLE = [{ x: 40, y: 40 }, { x: 80, y: 40 }];
@@ -111,13 +113,13 @@ for (let i = 0; i < N; i++) {
     for (let k = NUM_GENES_USED; k < NUM_GENES; k++) genes[k] = 0;
     founders[i] = { genes, age: Math.floor(rng() * 20000), x: rng() * POOL, y: rng() * POOL, angle: rng() * 360 - 180, energy: 80 };
 }
-const food = new Array(N * 3);
+const food = new Array(INITIAL_FOOD);
 for (let i = 0; i < food.length; i++) food[i] = { x: rng() * POOL, y: rng() * POOL, type: 0, energy: 50 };
 
 // --- allocate the shared buffers (mirrors runParallel + the render buffer the viewer needs) ---
 const frozenSab = makeFrozenBuffer(maxBots);
 const gridSpec = allocCoopGrid(CONFIG.pool, CELL_SIZE, maxBots);
-const { foodSab, foodGridSpec, numFood } = setupFood(food, CONFIG.pool, CELL_SIZE, maxFood);
+const { foodSab, foodGridSpec, numFood } = setupFood(food, CONFIG.pool, CELL_SIZE, foodBufferCap);
 const foodF64 = new Float64Array(foodSab); // main reads this to draw food
 const puSab = makePostUpdateBuffer(maxBots);
 const resSabs = makeResolutionBuffers(maxBots, NUM_GENES);
@@ -175,7 +177,7 @@ function render() {
     cx2d.clearRect(0, 0, canvas.width, canvas.height);
     // food (read the food SoA directly)
     cx2d.fillStyle = '#3fb968';
-    for (let id = 0; id < maxFood; id++) {
+    for (let id = 0; id < foodBufferCap; id++) {
         const o = id * FD_STRIDE;
         if (foodF64[o + FD_ALIVE] !== 1) continue;
         cx2d.fillRect(foodF64[o + FD_POSX] * SCALE - 1, foodF64[o + FD_POSY] * SCALE - 1, 2.2, 2.2);
@@ -204,7 +206,7 @@ let lastHud = performance.now(), lastTick = 0;
 function hud() {
     const curTick = Atomics.load(ctrl, CTL_TICK); // worker 0 writes this each tick
     let pop = 0; for (let id = 0; id < maxBots; id++) if (renderF32[id * R_STRIDE + R_ALIVE] === 1) pop++;
-    let fc = 0; for (let id = 0; id < maxFood; id++) if (foodF64[id * FD_STRIDE + FD_ALIVE] === 1) fc++;
+    let fc = 0; for (let id = 0; id < foodBufferCap; id++) if (foodF64[id * FD_STRIDE + FD_ALIVE] === 1) fc++;
     document.getElementById('s-tick').textContent = curTick.toLocaleString();
     document.getElementById('s-pop').textContent = pop.toLocaleString();
     document.getElementById('s-food').textContent = fc.toLocaleString();
