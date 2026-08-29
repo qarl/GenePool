@@ -231,6 +231,21 @@ export class World {
         }
     }
 
+    // Min-heap sift-down over the candidate array in [0, n), ordered by (d2 asc, id asc) -- the SAME strict
+    // total order as the old `.sort((a,b)=>(a.d2-b.d2)||(a.id-b.id))`, so heap-pop order == sort order.
+    _siftDownCandidates(heap, i, n) {
+        for (;;) {
+            let smallest = i;
+            const l = 2 * i + 1, r = 2 * i + 2;
+            let s = heap[smallest];
+            if (l < n) { const c = heap[l]; if (c.d2 < s.d2 || (c.d2 === s.d2 && c.id < s.id)) { smallest = l; s = c; } }
+            if (r < n) { const c = heap[r]; if (c.d2 < s.d2 || (c.d2 === s.d2 && c.id < s.id)) { smallest = r; s = c; } }
+            if (smallest === i) return;
+            heap[smallest] = heap[i]; heap[i] = s;
+            i = smallest;
+        }
+    }
+
     _giveSwimbotNearbyEnvironmentalStimuli(bot) {
         // nearby visible swimbots -- the CLOSEST-20 (D-b), replacing JJ's first-20-in-array-order (the last
         // slot/id-order artifact). Collect all in-view, non-obstructed candidates, rank by genital
@@ -242,9 +257,8 @@ export class World {
             if (other === bot || !other.getAlive()) return;
             const distanceSquared = gpos.getDistanceSquaredTo(other.getGenitalPosition());
             if (distanceSquared < SWIMBOT_VIEW_RADIUS * SWIMBOT_VIEW_RADIUS) {
-                if (!this._obstacle.getObstruction(gpos, other.getGenitalPosition())) {
-                    this._nearbyCandidates.push({ other, d2: distanceSquared, id: other.getIndex() });
-                }
+                // NOTE: obstruction is checked LAZILY during selection (below), not here.
+                this._nearbyCandidates.push({ other, d2: distanceSquared, id: other.getIndex() });
             }
         };
         if (this._useSpatialGrid) {
@@ -252,9 +266,23 @@ export class World {
         } else {
             for (const other of this._swimbots.values()) considerSwimbot(other);
         }
-        this._nearbyCandidates.sort((a, b) => (a.d2 - b.d2) || (a.id - b.id));
-        this._numNearby = Math.min(this._nearbyCandidates.length, BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS);
-        for (let i = 0; i < this._numNearby; i++) this._nearbyArray[i] = this._nearbyCandidates[i].other;
+        // CLOSEST-20 via min-heap PARTIAL SELECT + LAZY obstruction: (d2,id) is a strict total order (ids
+        // unique), so popping the heap yields candidates in exactly the old full-sort order; applying the
+        // obstruction test only to popped candidates and taking the first BRAIN_MAX_PERCEIVED that pass gives
+        // the identical selected set AND order as the old "filter-obstruction -> sort -> take 20", for
+        // O(m + 20 log m) instead of O(m log m) + m obstruction calls (getObstruction is pure). Bit-identical.
+        const cands = this._nearbyCandidates;
+        let heapSize = cands.length;
+        for (let i = (heapSize >> 1) - 1; i >= 0; i--) this._siftDownCandidates(cands, i, heapSize); // Floyd heapify
+        this._numNearby = 0;
+        while (heapSize > 0 && this._numNearby < BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS) {
+            const top = cands[0];                         // current minimum (d2, id)
+            heapSize--;
+            if (heapSize > 0) { cands[0] = cands[heapSize]; this._siftDownCandidates(cands, 0, heapSize); }
+            if (!this._obstacle.getObstruction(gpos, top.other.getGenitalPosition())) {
+                this._nearbyArray[this._numNearby++] = top.other;
+            }
+        }
 
         // closest visible food (of the preferred type, when 2 food types). GRID-SAFE: an id tiebreak on
         // exactly-equal distance makes the choice independent of iteration order (P2 grid buckets).
