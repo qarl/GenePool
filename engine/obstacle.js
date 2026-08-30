@@ -5,6 +5,7 @@
 
 import { ZERO, ONE, ONE_HALF, resolvePoolBounds } from './constants.js';
 import { Vector2D } from './vector2d.js';
+import { FLAT } from './topology.js';
 
 const END_RADIUS = 20;
 
@@ -21,9 +22,16 @@ export class Obstacle {
         this._length = ZERO;
         // Pool bounds for endpoint clamping -- default JJ 8000x8000; World overrides via setPoolBounds (P3).
         this._pool = resolvePoolBounds(undefined);
+        // §7 seam (P4d): on a torus, line-of-sight follows the SHORTEST wrapped path. Default FLAT = walls.
+        this._topology = FLAT;
+        this._losA = { x: 0, y: 0 };   // scratch: canonicalized p1 (wrapped into the base cell)
+        this._losB = { x: 0, y: 0 };   // scratch: near-image target
+        this._e1s = { x: 0, y: 0 };    // scratch: shifted obstacle image endpoints
+        this._e2s = { x: 0, y: 0 };
     }
 
     setPoolBounds(pool) { this._pool = resolvePoolBounds(pool); }
+    setTopology(topology) { this._topology = topology; }
 
     // Current (post-clamp) endpoints, for checkpointing. Restoring them via setEndpointPositions re-clamps
     // idempotently (they are already in-bounds), so a round-trip is exact.
@@ -110,7 +118,38 @@ export class Obstacle {
     getCurrentCollisionForce() { return this._collisionForce; }
 
     getObstruction(p1, p2) {
-        return p1.getSegmentsCrossing(p1, p2, this._end1, this._end2);
+        if (!this._topology.isToroidal()) {
+            return p1.getSegmentsCrossing(p1, p2, this._end1, this._end2);
+        }
+        // TORUS (P4d): test the SHORTEST wrapped path against the obstacle AND its images toward any seam that
+        // short segment crosses. FIRST canonicalize p1 into the base cell -- perception passes RAW body-part
+        // positions (genital/mouth) that overhang a seam when a body straddles it (only _position is wrapped),
+        // and the image-selection below is valid only when the segment STARTS in the base cell. Wrapping p1
+        // shifts the whole segment by a torus period (the obstacle images absorb that); displacement is
+        // wrap-invariant, so b then lands within one cell of base and the single-shift-per-axis logic holds.
+        const t = this._topology, W = t.getWidth(), H = t.getHeight(), L = t.getLeft(), T = t.getTop();
+        const a = this._losA;
+        t.wrap(p1.x, p1.y, a); // canonical segment start
+        const b = this._losB;
+        t.displacement(a.x, a.y, p2.x, p2.y, b);
+        b.x += a.x; b.y += a.y; // near-image of p2 relative to canonical a
+        if (p1.getSegmentsCrossing(a, b, this._end1, this._end2)) return true;
+        const sx = b.x < L ? -W : (b.x > L + W ? W : 0); // seam the short segment exits (0 = none)
+        const sy = b.y < T ? -H : (b.y > T + H ? H : 0);
+        const e1 = this._e1s, e2 = this._e2s;
+        if (sx !== 0) {
+            e1.x = this._end1.x + sx; e1.y = this._end1.y; e2.x = this._end2.x + sx; e2.y = this._end2.y;
+            if (p1.getSegmentsCrossing(a, b, e1, e2)) return true;
+        }
+        if (sy !== 0) {
+            e1.x = this._end1.x; e1.y = this._end1.y + sy; e2.x = this._end2.x; e2.y = this._end2.y + sy;
+            if (p1.getSegmentsCrossing(a, b, e1, e2)) return true;
+        }
+        if (sx !== 0 && sy !== 0) {
+            e1.x = this._end1.x + sx; e1.y = this._end1.y + sy; e2.x = this._end2.x + sx; e2.y = this._end2.y + sy;
+            if (p1.getSegmentsCrossing(a, b, e1, e2)) return true;
+        }
+        return false;
     }
 
     getEnd1Position() { return this._end1; }

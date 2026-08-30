@@ -100,6 +100,7 @@ export class World {
         this._maxFood = config.maxFood ?? Infinity;
         this._obstacle = new Obstacle();
         this._obstacle.setPoolBounds(config.pool);
+        this._obstacle.setTopology(this._topology); // torus: line-of-sight follows the shortest wrapped path (P4d)
 
         // P2 spatial grid: a BEHAVIOR-PRESERVING acceleration of the O(n^2) perception scans. cellSize ==
         // the view radius, so the 3x3 neighborhood of any query point covers the whole view circle -- the
@@ -210,6 +211,7 @@ export class World {
         f.setEnergy(energy);
         f.setMaxSpawnRadius(this._config.foodSpread);
         f.setPoolBounds(this._config.pool);
+        f.setTopology(this._topology);
         this._foodBits.set(id, f);
         this._livingFoodCount++;
         if (this._useSpatialGrid) { const p = f.getPosition(); this._foodGrid.insert(f, p.x, p.y); }
@@ -550,6 +552,7 @@ export class World {
                 const child = new FoodBit();
                 child.setMaxSpawnRadius(this._config.foodSpread);
                 child.setPoolBounds(this._config.pool); // before spawnFromParent -> randomizeSpawnPosition clamps to bounds
+                child.setTopology(this._topology); // torus: spawn wraps instead of reflecting (P4d)
                 child.spawnFromParent(parent, childId, newFoodType, this._foodRegenRng);
 
                 let looking = true;
@@ -693,7 +696,7 @@ export class World {
             const f = new FoodBit();
             if (alive) f.setIndex(fd.id); // dead ghost food keeps NULL_INDEX (getAlive false); keyed by id in the side map
             f.setPosition({ x: fd.x, y: fd.y }); f.setType(fd.type); f.setEnergy(fd.energy);
-            f.setMaxSpawnRadius(config.foodSpread); f.setPoolBounds(config.pool);
+            f.setMaxSpawnRadius(config.foodSpread); f.setPoolBounds(config.pool); f.setTopology(world._topology);
             return f;
         };
         for (const fd of data.food) {

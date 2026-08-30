@@ -11,6 +11,7 @@ import {
     resolvePoolBounds, DEFAULT_FOOD_BIT_MAX_SPAWN_RADIUS,
 } from './constants.js';
 import { Vector2D } from './vector2d.js';
+import { FLAT } from './topology.js';
 
 export class FoodBit {
     constructor() {
@@ -21,6 +22,7 @@ export class FoodBit {
         this._maxSpawnRadius = DEFAULT_FOOD_BIT_MAX_SPAWN_RADIUS;
         // Pool bounds for spawn clamping -- default JJ 8000x8000; World overrides via setPoolBounds (P3).
         this._pool = resolvePoolBounds(undefined);
+        this._topology = FLAT; // §7 seam; torus spawn WRAPS instead of reflecting (P4d). Default FLAT = walls.
     }
 
     setPosition(p) { this._position.set(p); }
@@ -29,6 +31,7 @@ export class FoodBit {
     setIndex(i) { this._index = i; }
     setMaxSpawnRadius(r) { this._maxSpawnRadius = r; }
     setPoolBounds(pool) { this._pool = resolvePoolBounds(pool); }
+    setTopology(topology) { this._topology = topology; }
     kill() { this._index = NULL_INDEX; }
 
     getPosition() { return this._position; }
@@ -61,6 +64,13 @@ export class FoodBit {
 
         this._position.x += xx * this._maxSpawnRadius;
         this._position.y += yy * this._maxSpawnRadius;
+
+        // TORUS (P4d): no walls -> a spawn that overshoots the edge WRAPS to the far side (keeps food evenly
+        // distributed, no edge pile-up). Same 6 draws above -> the draw stream is bit-identical to walls.
+        if (this._topology.isToroidal()) {
+            this._topology.wrap(this._position.x, this._position.y, this._position);
+            return;
+        }
 
         const pb = this._pool.top + this._pool.margin;
         const pt = this._pool.bottom - this._pool.margin;
