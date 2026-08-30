@@ -1,0 +1,194 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GenePool — engine viewer (walls / torus)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0e13; color: #cfd6e0; font: 13px/1.5 system-ui, sans-serif; }
+  header { padding: 8px 14px; background: #11161f; border-bottom: 1px solid #1e2733; }
+  .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .row + .row { margin-top: 8px; }
+  h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 600; letter-spacing: .02em; }
+  label { display: inline-flex; gap: 6px; align-items: center; user-select: none; }
+  input[type=number] { width: 74px; background: #0b0e13; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 3px 6px; }
+  select { background: #0b0e13; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 3px 6px; }
+  button { background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+  button:hover { background: #24344a; }
+  .seg { display: inline-flex; border: 1px solid #2b3a4d; border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button.on { background: #2f6fd0; color: #fff; }
+  .hud { margin-left: auto; font-variant-numeric: tabular-nums; color: #8fa0b5; }
+  .hud b { color: #cfd6e0; font-weight: 600; }
+  .params { color: #8fa0b5; }
+  .params label { font-size: 12px; }
+  #err { color: #ff8f8f; }
+  #wrap { display: flex; justify-content: center; padding: 14px; }
+  canvas { background: #070a0f; border: 1px solid #1e2733; border-radius: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>GenePool · engine viewer</h1>
+    <div class="seg" id="topo">
+      <button data-topo="walls" class="on">Walls</button>
+      <button data-topo="torus">Torus</button>
+    </div>
+    <label>Init <select id="init"></select></label>
+    <button id="play">Pause</button>
+    <button id="reset">Reset (new seed)</button>
+    <label>Seed <input id="seedIn" type="number" min="0" step="1" value="1"></label>
+    <label>Speed <input id="speed" type="range" min="1" max="1000" value="4"> <span id="speedv">4×</span></label>
+    <div class="hud"><b id="topoLabel">walls</b> · tick <b id="tick">0</b> · pop <b id="pop">0</b> · food <b id="food">0</b> · <b id="fps">0</b> fps</div>
+  </div>
+  <div class="row params" id="params"></div>
+  <div class="row"><span id="err"></span></div>
+</header>
+<div id="wrap"><canvas id="cv" width="760" height="760"></canvas></div>
+
+<script type="module">
+import { World } from './engine/world.js';
+import { Genotype } from './engine/genotype.js';
+
+const NUM_GENES = 256, USED = 112, CANVAS = 760, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000;
+
+function mulberry32(seed){let a=seed>>>0;return()=>{a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+function hueOf(genes){ return ((genes[3] + 2*genes[7] + 3*genes[11]) % 256) * 360 / 256; }
+// JJ's setToRandomLocationInDisk: uniform-in-disk (radian, mag = r*sqrt(rand)) around (cx,cy).
+function diskPoint(rng, cx, cy, r){ const rad = 2*Math.PI*rng(); const mag = r*Math.sqrt(rng()); return { x: cx + Math.cos(rad)*mag, y: cy + Math.sin(rad)*mag }; }
+
+// Init patterns. `defaults` seed the parameter panel when the pattern is chosen; `pos(rng, P)` places one
+// founder/food using the CURRENT params P (so placement follows the live pool size). All positions are
+// pool-relative so any pool size works. Add a pattern here and it auto-appears in the menu.
+const INITS = {
+  eden:     { label: 'Garden of Eden (central disk)', defaults: { pool: 8000, n: 500, food: 1000, energy: 50 },
+              pos: (rng, P) => diskPoint(rng, P.pool/2, P.pool/2, P.pool/4) },
+  uniform:  { label: 'Uniform (whole pool)',          defaults: { pool: 4000, n: 400, food: 1200, energy: 80 },
+              pos: (rng, P) => ({ x: rng()*P.pool, y: rng()*P.pool }) },
+  colonies: { label: 'Two colonies',                  defaults: { pool: 8000, n: 500, food: 1000, energy: 50 },
+              pos: (rng, P) => (rng() < 0.5 ? diskPoint(rng, P.pool*0.30, P.pool*0.5, P.pool*0.14) : diskPoint(rng, P.pool*0.70, P.pool*0.5, P.pool*0.14)) },
+  corners:  { label: 'Four corners (torus: all one)', defaults: { pool: 8000, n: 500, food: 1000, energy: 50 },
+              pos: (rng, P) => { const i = Math.floor(rng()*4); const cx = i%2 ? P.pool*0.85 : P.pool*0.15; const cy = i<2 ? P.pool*0.15 : P.pool*0.85; return diskPoint(rng, cx, cy, P.pool*0.10); } },
+  edges:    { label: 'Edge band (torus seam test)',   defaults: { pool: 8000, n: 500, food: 1000, energy: 50 },
+              pos: (rng, P) => { const m = P.pool*0.0625; return rng() < 0.5 ? { x: rng()*P.pool, y: (rng()<0.5 ? rng()*m : P.pool - rng()*m) } : { x: (rng()<0.5 ? rng()*m : P.pool - rng()*m), y: rng()*P.pool }; } },
+};
+
+// Live parameters (start on eden's defaults + the shared knobs). Editable via the panel below.
+const P = { pool: 8000, n: 500, food: 1000, energy: 50, foodRegen: 20, maxFood: 2000, maxPop: 2000 };
+const PARAM_SPEC = [
+  { key: 'pool',      label: 'Pool',        min: 1000, max: 16000, step: 500 },
+  { key: 'n',         label: 'Pop',         min: 0,    max: 4000,  step: 50  },
+  { key: 'food',      label: 'Food',        min: 0,    max: 8000,  step: 100 },
+  { key: 'energy',    label: 'Energy',      min: 1,    max: 200,   step: 5   },
+  { key: 'foodRegen', label: 'Food regen (ticks)', min: 1, max: 400, step: 1 },
+  { key: 'maxFood',   label: 'Max food',    min: 0,    max: 12000, step: 100 },
+  { key: 'maxPop',    label: 'Max pop',     min: 0,    max: 8000,  step: 100 },
+];
+
+let topology = 'walls', initId = 'eden', seed = 1, world = null, running = true, ticksPerFrame = 4, scale = CANVAS / P.pool;
+
+function build() {
+  const err = document.getElementById('err'); err.textContent = '';
+  const config = {
+    maximumLifeSpan: MAX_LIFESPAN, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
+    crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: P.foodRegen, foodSpread: 4000,
+    foodBitEnergy: 50, attractionCriterion: 10, maxPopulation: P.maxPop, maxFood: P.maxFood,
+    pool: { left: 0, top: 0, right: P.pool, bottom: P.pool },
+  };
+  if (topology === 'torus') config.topology = 'torus';
+  try { world = new World(config, seed, {}); }
+  catch (e) { world = null; err.textContent = 'Cannot build: ' + e.message; return; }
+  scale = CANVAS / P.pool;
+  const rng = mulberry32((seed >>> 0) ^ 0x5eed1234);
+  const init = INITS[initId];
+  for (let i = 0; i < P.n; i++) {
+    const g = new Genotype(); g.randomize(rng);
+    const genes = g.getGenes().slice();
+    for (let k = USED; k < NUM_GENES; k++) genes[k] = 0; // junk-zeroed -> one interbreeding species (JJ's rule)
+    const p = init.pos(rng, P);
+    const age = YOUNG_AGE + Math.floor((MAX_LIFESPAN - YOUNG_AGE) * rng());
+    world.loadSwimbot(i, { age, x: p.x, y: p.y, angle: rng()*360-180, energy: P.energy, genes });
+  }
+  for (let i = 0; i < P.food; i++) { const p = init.pos(rng, P); world.loadFood(i, { x: p.x, y: p.y, type: 0, energy: 50 }); }
+  document.getElementById('seedIn').value = seed;
+  document.getElementById('topoLabel').textContent = topology;
+}
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+function render() {
+  ctx.fillStyle = '#070a0f'; ctx.fillRect(0, 0, CANVAS, CANVAS);
+  if (!world) return;
+  ctx.fillStyle = '#2e5b3a';
+  for (const f of world._foodBits.values()) { if (!f.getAlive()) continue; const p = f.getPosition(); ctx.fillRect(p.x*scale - 1, p.y*scale - 1, 2, 2); }
+  const o = world._obstacle, e1 = o.getEnd1Position(), e2 = o.getEnd2Position();
+  if (e1.x !== e2.x || e1.y !== e2.y) { ctx.strokeStyle = '#7089a8'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(e1.x*scale, e1.y*scale); ctx.lineTo(e2.x*scale, e2.y*scale); ctx.stroke(); }
+  const useAngle = world._swimbots.size && typeof [...world._swimbots.values()][0].getAngle === 'function';
+  for (const s of world._swimbots.values()) {
+    if (!s.getAlive()) continue;
+    const p = s.getPosition(), x = p.x*scale, y = p.y*scale;
+    ctx.fillStyle = `hsl(${hueOf(s.getGenotype().getGenes())} 75% 60%)`;
+    if (useAngle) {
+      const a = s.getAngle() * Math.PI / 180;
+      ctx.beginPath();
+      ctx.moveTo(x + Math.sin(a)*4, y + Math.cos(a)*4);
+      ctx.lineTo(x + Math.sin(a+2.5)*3, y + Math.cos(a+2.5)*3);
+      ctx.lineTo(x + Math.sin(a-2.5)*3, y + Math.cos(a-2.5)*3);
+      ctx.closePath(); ctx.fill();
+    } else { ctx.beginPath(); ctx.arc(x, y, 2.6, 0, 6.283); ctx.fill(); }
+  }
+}
+
+let frames = 0, lastFpsT = performance.now();
+function loop() {
+  if (running && world) { for (let i = 0; i < ticksPerFrame; i++) world.tick(); }
+  render();
+  if (world) {
+    document.getElementById('tick').textContent = world.getClock();
+    document.getElementById('pop').textContent = world.getLivingSwimbotCount();
+    document.getElementById('food').textContent = world.getLivingFoodCount();
+  }
+  frames++;
+  const now = performance.now();
+  if (now - lastFpsT > 500) { document.getElementById('fps').textContent = Math.round(frames*1000/(now-lastFpsT)); frames = 0; lastFpsT = now; }
+  requestAnimationFrame(loop);
+}
+
+// --- controls ---
+document.getElementById('topo').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-topo]'); if (!b) return;
+  topology = b.dataset.topo;
+  for (const btn of document.querySelectorAll('#topo button')) btn.classList.toggle('on', btn === b);
+  build();
+});
+document.getElementById('play').addEventListener('click', (e) => { running = !running; e.target.textContent = running ? 'Pause' : 'Play'; });
+document.getElementById('reset').addEventListener('click', () => { seed++; build(); });
+document.getElementById('seedIn').addEventListener('change', (e) => { const v = parseInt(e.target.value, 10); seed = Number.isFinite(v) && v >= 0 ? v : 0; build(); });
+const speed = document.getElementById('speed');
+speed.addEventListener('input', () => { ticksPerFrame = +speed.value; document.getElementById('speedv').textContent = ticksPerFrame + '×'; });
+
+// init pattern menu
+const initSel = document.getElementById('init');
+for (const [id, cfg] of Object.entries(INITS)) { const o = document.createElement('option'); o.value = id; o.textContent = cfg.label; initSel.appendChild(o); }
+initSel.value = initId;
+initSel.addEventListener('change', () => { initId = initSel.value; Object.assign(P, INITS[initId].defaults); syncParams(); build(); });
+
+// parameter panel
+const paramsEl = document.getElementById('params');
+paramsEl.append('Params: ');
+const inputs = {};
+for (const spec of PARAM_SPEC) {
+  const lab = document.createElement('label'); lab.textContent = spec.label + ' ';
+  const inp = document.createElement('input'); inp.type = 'number'; inp.min = spec.min; inp.max = spec.max; inp.step = spec.step; inp.value = P[spec.key];
+  inp.addEventListener('change', () => { const v = Number(inp.value); if (Number.isFinite(v)) { P[spec.key] = v; build(); } });
+  inputs[spec.key] = inp; lab.appendChild(inp); paramsEl.appendChild(lab);
+}
+function syncParams() { for (const spec of PARAM_SPEC) inputs[spec.key].value = P[spec.key]; }
+
+build();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
