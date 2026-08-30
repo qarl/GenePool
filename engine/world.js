@@ -38,6 +38,20 @@ import {
     SWIMBOT_VIEW_RADIUS, resolvePoolBounds,
 } from './constants.js';
 
+// Pack a NUM_GENES-length 0/1 mask into a hex string (LSB-first within each byte): bit g -> byte floor(g/8),
+// bit position g%8. NUM_GENES/8 bytes -> 2 hex chars each. Used for the per-birth gene-inheritance masks.
+// Assumes NUM_GENES is a multiple of 8 (256 today); a non-multiple would drop the partial tail byte.
+export function packMaskHex(mask) {
+    const nBytes = NUM_GENES >> 3;
+    let hex = '';
+    for (let byte = 0; byte < nBytes; byte++) {
+        let b = 0;
+        for (let bit = 0; bit < 8; bit++) if (mask[(byte << 3) + bit]) b |= (1 << bit);
+        hex += b.toString(16).padStart(2, '0');
+    }
+    return hex;
+}
+
 export class World {
     // masterSeed is a non-negative safe integer; every draw is addressed off it (§3). No global stream.
     // options.useSpatialGrid (default true) picks the P2 spatial-grid perception; false = the brute-force
@@ -435,9 +449,17 @@ export class World {
         // in the tick the birth happens.
         const genomeStream = makeStream(this._masterSeed, DOMAIN.OFFSPRING_GENOME, newBornId);
         const genomeRng = () => genomeStream.next();
+        // Capture gene-inheritance (which parent each gene came from + mutations) ONLY when a listener is
+        // attached -- reuse one pair of buffers so births allocate nothing (§13). parentOf bit 0 => the gene
+        // came from parentId, 1 => from mateId (parent0 = this parent's genotype, parent1 = the mate's).
+        let provenance = null;
+        if (this._onEvent) {
+            if (!this._provenance) this._provenance = { parentOf: new Uint8Array(NUM_GENES), mutated: new Uint8Array(NUM_GENES) };
+            provenance = this._provenance;
+        }
         this._childGenotype.setAsOffspring(this._myGenotype, mateGenotype, genomeRng, {
             crossoverRate: this._config.crossoverRate, mutationRate: this._config.mutationRate,
-        });
+        }, provenance);
 
         const myEnergyContribution = parent.contributeToOffspring();
         const mateEnergyContribution = mate.contributeToOffspring();
@@ -460,7 +482,7 @@ export class World {
         child.create(newBornId, 0, this._birthPos, initialAngle, energyToOffspring, this._childGenotype);
         // T+1: stage the newborn; it joins the collection AFTER this tick and first acts next tick.
         this._pendingBirths.push(child);
-        if (this._onEvent) this._onEvent({ type: 'birth', tick: this._clock, id: newBornId, parentId: parent.getIndex(), mateId: mate.getIndex(), x: this._birthPos.x, y: this._birthPos.y });
+        if (this._onEvent) this._onEvent({ type: 'birth', tick: this._clock, id: newBornId, parentId: parent.getIndex(), mateId: mate.getIndex(), x: this._birthPos.x, y: this._birthPos.y, parentMask: packMaskHex(provenance.parentOf), mutationMask: packMaskHex(provenance.mutated) });
     }
 
     // Pick a random LIVING food of the given type (JJ's slot-index rejection sampling doesn't survive the

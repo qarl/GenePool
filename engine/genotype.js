@@ -47,7 +47,13 @@ export class Genotype {
     // Crossover + mutation. Draw order (frozen by the E2 oracle):
     //   1 parent-pick, then per gene: crossover-test, copy, mutation-test, and IF mutating mutateGene()
     //   draws 3 more. rates = { crossoverRate, mutationRate }.
-    setAsOffspring(parent0, parent1, rng, rates) {
+    //
+    // Optional `provenance` = { parentOf: Uint8Array(NUM_GENES), mutated: Uint8Array(NUM_GENES) }: records,
+    // per gene, WHICH parent contributed it (0=parent0, 1=parent1) and whether it mutated -- the gene-
+    // inheritance the run-file/genome-DAG needs (PLAN-restructure.md §13), which is otherwise LOST after
+    // birth. Recording is pure bookkeeping: it draws NO rng and changes NO gene value, so setAsOffspring
+    // stays bit-for-bit (E2 oracle unaffected). Omit it (default) for zero overhead.
+    setAsOffspring(parent0, parent1, rng, rates, provenance = null) {
         const { crossoverRate, mutationRate } = rates;
         let parent = 0;
         if (rng() < ONE_HALF) parent = 1;
@@ -57,7 +63,10 @@ export class Genotype {
 
             this._genes[g] = (parent === 0) ? parent0.getGeneValue(g) : parent1.getGeneValue(g);
 
-            if (rng() < mutationRate) this.mutateGene(g, rng);
+            const didMutate = rng() < mutationRate; // same single draw as before; captured for provenance
+            if (didMutate) this.mutateGene(g, rng);
+
+            if (provenance) { provenance.parentOf[g] = parent; provenance.mutated[g] = didMutate ? 1 : 0; }
 
             assert(this._genes[g] >= 0 && this._genes[g] < BYTE_SIZE, 'setAsOffspring: gene out of range');
         }

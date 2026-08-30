@@ -21,13 +21,15 @@ export function createSqliteSink(path = ':memory:', { batchSize = 5000, runId = 
     const db = new DatabaseSync(path);
     db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
     db.exec(`
-        CREATE TABLE IF NOT EXISTS births (tick INTEGER, id INTEGER, uuid TEXT, parentId INTEGER, parentUuid TEXT, mateId INTEGER, mateUuid TEXT, x REAL, y REAL);
+        -- parentMask/mutationMask: 64 hex chars = 256 bits (one per gene), LSB-first within each byte.
+        -- parentMask bit g: 0 => gene g came from parentId, 1 => from mateId. mutationMask bit g: 1 => gene g mutated.
+        CREATE TABLE IF NOT EXISTS births (tick INTEGER, id INTEGER, uuid TEXT, parentId INTEGER, parentUuid TEXT, mateId INTEGER, mateUuid TEXT, x REAL, y REAL, parentMask TEXT, mutationMask TEXT);
         CREATE TABLE IF NOT EXISTS deaths (tick INTEGER, id INTEGER, uuid TEXT);
         CREATE TABLE IF NOT EXISTS eats   (tick INTEGER, id INTEGER, uuid TEXT, foodId INTEGER);
         CREATE TABLE IF NOT EXISTS ticks  (tick INTEGER PRIMARY KEY, pop INTEGER, food INTEGER);
     `);
     const stmt = {
-        birth: db.prepare('INSERT INTO births (tick,id,uuid,parentId,parentUuid,mateId,mateUuid,x,y) VALUES (?,?,?,?,?,?,?,?,?)'),
+        birth: db.prepare('INSERT INTO births (tick,id,uuid,parentId,parentUuid,mateId,mateUuid,x,y,parentMask,mutationMask) VALUES (?,?,?,?,?,?,?,?,?,?,?)'),
         death: db.prepare('INSERT INTO deaths (tick,id,uuid) VALUES (?,?,?)'),
         eat: db.prepare('INSERT INTO eats (tick,id,uuid,foodId) VALUES (?,?,?,?)'),
         tick: db.prepare('INSERT INTO ticks (tick,pop,food) VALUES (?,?,?)'),
@@ -40,7 +42,7 @@ export function createSqliteSink(path = ':memory:', { batchSize = 5000, runId = 
         db.exec('BEGIN');
         try {
             for (const e of buf) {
-                if (e.type === 'birth') stmt.birth.run(e.tick, e.id, uuid(e.id), e.parentId, uuid(e.parentId), e.mateId, uuid(e.mateId), e.x, e.y);
+                if (e.type === 'birth') stmt.birth.run(e.tick, e.id, uuid(e.id), e.parentId, uuid(e.parentId), e.mateId, uuid(e.mateId), e.x, e.y, e.parentMask ?? null, e.mutationMask ?? null);
                 else if (e.type === 'death') stmt.death.run(e.tick, e.id, uuid(e.id));
                 else if (e.type === 'eat') stmt.eat.run(e.tick, e.id, uuid(e.id), e.foodId);
                 else if (e.type === 'tick') stmt.tick.run(e.tick, e.pop, e.food);
