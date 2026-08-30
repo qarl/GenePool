@@ -14,6 +14,8 @@
 // history shifts with it). Distance/distanceSquared are order-independent (squared); displacement is
 // directional (from a to b, i.e. b - a), matching `dir = goal; dir.subtract(self)`.
 
+import { resolvePoolBounds } from './constants.js';
+
 // Scalar (ax,ay,bx,by) API -- allocation-free, so it fits the mate-selection / perception hot loops (which
 // hold positions as Vector2D .x/.y or SoA rootX/rootY scalars alike) without wrapping objects.
 class FlatTopology {
@@ -32,17 +34,60 @@ class FlatTopology {
     isToroidal() { return false; }
 }
 
+// Positive modulo: JS `%` keeps the sign of the dividend, so a naive `x % n` breaks for x < LEFT. (§7)
+function mod(a, n) { return ((a % n) + n) % n; }
+
+// TORUS (§7): edges wrap. displacement is the per-axis MINIMUM IMAGE (shortest wrapped vector); wrap folds a
+// position back into [LEFT,LEFT+W) x [TOP,TOP+H). Separable -> one round/mod per axis, zero enumeration,
+// deterministic. Distance/distanceSquared are order-independent (squared); displacement is directional (b-a,
+// minimum-imaged). A torus REBASELINES behavior (no walls) -- it is NOT bit-identical to FLAT, by design.
+class TorusTopology {
+    constructor(pool) {
+        this._left = pool.left; this._top = pool.top;
+        this._w = pool.right - pool.left;
+        this._h = pool.bottom - pool.top;
+    }
+
+    displacement(ax, ay, bx, by, out) {
+        let dx = bx - ax; dx -= this._w * Math.round(dx / this._w);
+        let dy = by - ay; dy -= this._h * Math.round(dy / this._h);
+        out.x = dx; out.y = dy; return out;
+    }
+
+    distanceSquared(ax, ay, bx, by) {
+        let dx = bx - ax; dx -= this._w * Math.round(dx / this._w);
+        let dy = by - ay; dy -= this._h * Math.round(dy / this._h);
+        return dx * dx + dy * dy;
+    }
+
+    distance(ax, ay, bx, by) {
+        let dx = bx - ax; dx -= this._w * Math.round(dx / this._w);
+        let dy = by - ay; dy -= this._h * Math.round(dy / this._h);
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // Fold (x,y) back into the pool rectangle. Used by the mover to wrap a body across a seam (P4b).
+    wrap(x, y, out) {
+        out.x = this._left + mod(x - this._left, this._w);
+        out.y = this._top + mod(y - this._top, this._h);
+        return out;
+    }
+
+    getWidth() { return this._w; }
+    getHeight() { return this._h; }
+    isToroidal() { return true; }
+}
+
 // Shared default so callers that don't inject one (the parallel path, standalone Swimbots) behave EXACTLY as
 // before this seam existed -- flat everywhere = the pre-topology engine.
 export const FLAT = new FlatTopology();
 
-// Pick a topology from pool config. Walls (default) -> FLAT. Torus is P4 (a new TorusTopology overriding
-// displacement with per-axis minimum image + wrap with mod) -- deliberately not built yet.
+// Pick a topology from pool config. Walls (default) -> FLAT. Torus -> TorusTopology over the pool bounds.
 export function makeTopology(config) {
     if (config && config.topology === 'torus') {
-        throw new Error('topology "torus" is not implemented yet (P4)');
+        return new TorusTopology(resolvePoolBounds(config.pool));
     }
     return FLAT;
 }
 
-export { FlatTopology };
+export { FlatTopology, TorusTopology };

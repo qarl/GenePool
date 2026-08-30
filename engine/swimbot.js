@@ -73,6 +73,7 @@ export class Swimbot {
         // §7 topology seam for INTER-entity routes (direction-to-goal, closeness). Default FLAT so a swimbot
         // built without one (the parallel path, fidelity tests) is byte-identical to the pre-seam engine.
         this._topology = ctx.topology || FLAT;
+        this._wrapScratch = { x: 0, y: 0 }; // reused out for the torus seam-wrap (P4b)
 
         this._genotype = new Genotype();
         this._phenotype = null; // set by create() via the shared embryology
@@ -559,6 +560,9 @@ export class Swimbot {
     }
 
     updateWallCollisions() {
+        // TORUS (P4): no walls -- the body wraps across the seam as a rigid unit. FLAT falls through to JJ's
+        // soft wall-bounce below, byte-identical (isToroidal() is false).
+        if (this._topology.isToroidal()) { this._wrapToTorus(); return; }
         const { left: POOL_LEFT, right: POOL_RIGHT, top: POOL_TOP, bottom: POOL_BOTTOM } = this._pool;
         if (this._position.x < POOL_LEFT + this._phenotype.sumPartLengths * ONE_HALF) {
             for (let p = 1; p < this._phenotype.numParts; p++) {
@@ -610,6 +614,28 @@ export class Swimbot {
                     this._directionToGoal.normalize();
                 }
             }
+        }
+    }
+
+    // Wrap the body across a torus seam RIGIDLY: fold the reference (_position) back into the pool, then shift
+    // the ENTIRE body + its carried history by the SAME delta. This keeps every intra-body difference continuous
+    // -- per-part velocity (midPosition - previousMid) and own travelled-distance (_position -
+    // _lastPositionForEfficiencyMeasurement) -- so a seam crossing does NOT spike velocity/efficiency by
+    // ~pool-width (§7:102). Only the reference is canonicalized; the body stays in one locally-continuous frame.
+    _wrapToTorus() {
+        const w = this._topology.wrap(this._position.x, this._position.y, this._wrapScratch);
+        const dx = w.x - this._position.x;
+        const dy = w.y - this._position.y;
+        if (dx === 0 && dy === 0) return;
+        this._position.x = w.x; this._position.y = w.y;
+        this._lastPositionForEfficiencyMeasurement.x += dx;
+        this._lastPositionForEfficiencyMeasurement.y += dy;
+        const parts = this._phenotype.parts;
+        for (let p = 0; p < this._phenotype.numParts; p++) {
+            const part = parts[p];
+            part.position.x += dx; part.position.y += dy;
+            part.midPosition.x += dx; part.midPosition.y += dy;
+            part.previousMid.x += dx; part.previousMid.y += dy;
         }
     }
 
