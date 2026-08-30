@@ -123,8 +123,15 @@ export class World {
         // to a plain one. Guarded at each call site so nothing is allocated when off.
         this._onEvent = options.onEvent || null;
         this._useSpatialGrid = options.useSpatialGrid !== false;
-        this._swimbotGrid = new SpatialGrid(this._viewRadius);
-        this._foodGrid = new SpatialGrid(this._viewRadius);
+        this._swimbotGrid = new SpatialGrid(this._viewRadius, this._topology);
+        this._foodGrid = new SpatialGrid(this._viewRadius, this._topology);
+        // TORUS (P4c): the grid finds cross-seam neighbors by querying wrapped opposite-edge images; those image
+        // cell-sets stay disjoint from the base only when each axis spans >= 3 cells (cellSize == viewRadius), else
+        // an entity is double-visited. Guard it -- but ONLY for the GRID path; brute-force images distances (not
+        // cells) and is correct on any size, so it needs no lower bound (faithful-mechanism: no gratuitous limit).
+        if (this._useSpatialGrid && this._topology.isToroidal() && (this._topology.getWidth() < 3 * this._viewRadius || this._topology.getHeight() < 3 * this._viewRadius)) {
+            throw new Error(`torus pool with the spatial grid must be >= 3*viewRadius (${3 * this._viewRadius}) per axis; got ${this._topology.getWidth()}x${this._topology.getHeight()}`);
+        }
 
         // PERCEPTION MODE (Parallelism Step 1). 'mixed-live' (default) is the order-DEPENDENT, bit-for-bit-
         // faithful path: a bot reinserted into the grid mid-loop is perceived at its new position by later bots.
@@ -143,7 +150,7 @@ export class World {
         // EXACTLY the brute-force in-radius set). Built once, never moved mid-loop -> order-independent, and turns
         // the swimbot nearby-scan from O(n) brute force into O(neighbors). Only allocated when snapshot+grid are
         // both on; useSpatialGrid:false keeps the brute-force scan (kept for the grid-vs-brute-force A/B).
-        this._snapshotGrid = (this._snapshotMode && this._useSpatialGrid) ? new SpatialGrid(this._viewRadius) : null;
+        this._snapshotGrid = (this._snapshotMode && this._useSpatialGrid) ? new SpatialGrid(this._viewRadius, this._topology) : null;
         // Opt-in per-phase wall-clock profiling (parallelism ceiling analysis). options.profile = an object;
         // the tick accumulates ms into .build / .loop / .resolve on it. null -> a couple of per-TICK branch
         // checks, no per-bot cost. The loop is the parallelizable phase; build+resolve are the serial Amdahl tax.
@@ -397,8 +404,8 @@ export class World {
     _giveSwimbotNearbyEnvironmentalStimuli(bot) {
         const enumerateSwimbots = (gpos, consider) => {
             if (this._snapshotMode) {
-                // SNAPSHOT: candidates are the FROZEN views (tick-start). The grid (cellSize==viewRadius) returns
-                // exactly the brute-force in-radius set (P2 invariant); useSpatialGrid:false keeps brute force.
+                // SNAPSHOT: candidates are the FROZEN views (tick-start). The grid (cellSize==viewRadius, torus-
+                // aware) returns exactly the brute-force in-radius set (P2 invariant); useSpatialGrid:false = brute.
                 if (this._snapshotGrid) this._snapshotGrid.forEachNear(gpos.x, gpos.y, consider);
                 else for (const view of this._snapshotViews.values()) consider(view);
             } else if (this._useSpatialGrid) {

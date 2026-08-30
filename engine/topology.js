@@ -73,6 +73,8 @@ class TorusTopology {
         return out;
     }
 
+    getLeft() { return this._left; }
+    getTop() { return this._top; }
     getWidth() { return this._w; }
     getHeight() { return this._h; }
     isToroidal() { return true; }

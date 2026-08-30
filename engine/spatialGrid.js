@@ -22,12 +22,23 @@
 const CELL_OFFSET = 1 << 21;            // 2097152
 const CELL_STRIDE = 1 << 22;            // > 2*CELL_OFFSET, so (cx,cy) packs uniquely; key max ~2^44 (safe int)
 
+// Positive modulo (JS % keeps the dividend's sign) -- fold a torus position back into the pool.
+function mod(a, n) { return ((a % n) + n) % n; }
+
 export class SpatialGrid {
-    constructor(cellSize) {
+    constructor(cellSize, topology = null) {
         if (!(cellSize > 0)) throw new Error('SpatialGrid: cellSize must be > 0');
         this._cellSize = cellSize;
         this._cells = new Map();       // packedKey -> Array(entity)
         this._entityCell = new Map();  // entity -> packedKey (for move/remove)
+        // TORUS (P4c): bucket by WRAPPED position so an entity whose part pokes past a seam still lands in an
+        // in-bounds cell, and forEachNear wraps the query + also queries the opposite-edge images. A non-
+        // toroidal topology (or null) leaves every path exactly as before -> walls stay bit-identical.
+        this._toroidal = !!(topology && topology.isToroidal());
+        if (this._toroidal) {
+            this._left = topology.getLeft(); this._top = topology.getTop();
+            this._w = topology.getWidth(); this._h = topology.getHeight();
+        }
     }
 
     _packCell(cx, cy) {
@@ -37,8 +48,13 @@ export class SpatialGrid {
         return (cx + CELL_OFFSET) * CELL_STRIDE + (cy + CELL_OFFSET);
     }
 
-    // Integer cell key from a position (floor; handles negatives, e.g. an entity nudged past a wall).
+    // Integer cell key from a position (floor; handles negatives, e.g. an entity nudged past a wall). On a
+    // torus the position is wrapped into the pool first, so every entity buckets to an in-bounds cell.
     _key(x, y) {
+        if (this._toroidal) {
+            x = this._left + mod(x - this._left, this._w);
+            y = this._top + mod(y - this._top, this._h);
+        }
         return this._packCell(Math.floor(x / this._cellSize), Math.floor(y / this._cellSize));
     }
 
@@ -90,8 +106,26 @@ export class SpatialGrid {
 
     // Call fn(entity) for every entity in the 3x3 cell neighborhood of (x,y). A SUPERSET of the entities
     // within cellSize of (x,y) -- the caller applies the exact-distance test. Order is unspecified (the
-    // caller must impose its own tiebreak); it never double-visits (each entity is in exactly one cell).
+    // caller must impose its own tiebreak). On a torus it also queries the opposite-edge IMAGES so cross-seam
+    // neighbors are found; those image cell-sets are disjoint from the base (pool >= 3*viewRadius, enforced by
+    // World) so no entity is double-visited.
     forEachNear(x, y, fn) {
+        if (this._toroidal) {
+            const L = this._left, T = this._top, W = this._w, H = this._h, r = this._cellSize;
+            const wx = L + mod(x - L, W), wy = T + mod(y - T, H); // wrap the query into the pool
+            this._near3x3(wx, wy, fn);
+            // near a seam -> also query the image just past the OPPOSITE edge (lands next to the far cells)
+            const xi = (wx - L) < r ? wx + W : ((L + W - wx) < r ? wx - W : null);
+            const yi = (wy - T) < r ? wy + H : ((T + H - wy) < r ? wy - H : null);
+            if (xi !== null) this._near3x3(xi, wy, fn);
+            if (yi !== null) this._near3x3(wx, yi, fn);
+            if (xi !== null && yi !== null) this._near3x3(xi, yi, fn); // opposite corner
+            return;
+        }
+        this._near3x3(x, y, fn);
+    }
+
+    _near3x3(x, y, fn) {
         const cx = Math.floor(x / this._cellSize);
         const cy = Math.floor(y / this._cellSize);
         for (let dx = -1; dx <= 1; dx++) {
