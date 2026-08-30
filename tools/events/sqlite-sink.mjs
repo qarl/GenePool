@@ -12,22 +12,27 @@
 // Inserts are batched inside transactions for throughput.
 
 import { DatabaseSync } from 'node:sqlite';
+import { bodyUuid } from './run-identity.mjs';
 
-export function createSqliteSink(path = ':memory:', { batchSize = 5000 } = {}) {
+// `runId` (a content-addressed run identity from run-identity.mjs) turns the engine's never-reused integer ids
+// into REPRODUCIBLE per-body UUIDs (docs/DESIGN-DECISIONS.md §"INDIVIDUAL ID"), stamped here in the observer
+// so the engine stays bit-identical. Omit runId and the uuid columns are simply NULL (back-compat).
+export function createSqliteSink(path = ':memory:', { batchSize = 5000, runId = null } = {}) {
     const db = new DatabaseSync(path);
     db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
     db.exec(`
-        CREATE TABLE IF NOT EXISTS births (tick INTEGER, id INTEGER, parentId INTEGER, mateId INTEGER, x REAL, y REAL);
-        CREATE TABLE IF NOT EXISTS deaths (tick INTEGER, id INTEGER);
-        CREATE TABLE IF NOT EXISTS eats   (tick INTEGER, id INTEGER, foodId INTEGER);
+        CREATE TABLE IF NOT EXISTS births (tick INTEGER, id INTEGER, uuid TEXT, parentId INTEGER, parentUuid TEXT, mateId INTEGER, mateUuid TEXT, x REAL, y REAL);
+        CREATE TABLE IF NOT EXISTS deaths (tick INTEGER, id INTEGER, uuid TEXT);
+        CREATE TABLE IF NOT EXISTS eats   (tick INTEGER, id INTEGER, uuid TEXT, foodId INTEGER);
         CREATE TABLE IF NOT EXISTS ticks  (tick INTEGER PRIMARY KEY, pop INTEGER, food INTEGER);
     `);
     const stmt = {
-        birth: db.prepare('INSERT INTO births (tick,id,parentId,mateId,x,y) VALUES (?,?,?,?,?,?)'),
-        death: db.prepare('INSERT INTO deaths (tick,id) VALUES (?,?)'),
-        eat: db.prepare('INSERT INTO eats (tick,id,foodId) VALUES (?,?,?)'),
+        birth: db.prepare('INSERT INTO births (tick,id,uuid,parentId,parentUuid,mateId,mateUuid,x,y) VALUES (?,?,?,?,?,?,?,?,?)'),
+        death: db.prepare('INSERT INTO deaths (tick,id,uuid) VALUES (?,?,?)'),
+        eat: db.prepare('INSERT INTO eats (tick,id,uuid,foodId) VALUES (?,?,?,?)'),
         tick: db.prepare('INSERT INTO ticks (tick,pop,food) VALUES (?,?,?)'),
     };
+    const uuid = runId ? (id) => bodyUuid(runId, id) : () => null; // deterministic per-body id, or NULL if no runId
 
     let buf = [];
     function flush() {
@@ -35,9 +40,9 @@ export function createSqliteSink(path = ':memory:', { batchSize = 5000 } = {}) {
         db.exec('BEGIN');
         try {
             for (const e of buf) {
-                if (e.type === 'birth') stmt.birth.run(e.tick, e.id, e.parentId, e.mateId, e.x, e.y);
-                else if (e.type === 'death') stmt.death.run(e.tick, e.id);
-                else if (e.type === 'eat') stmt.eat.run(e.tick, e.id, e.foodId);
+                if (e.type === 'birth') stmt.birth.run(e.tick, e.id, uuid(e.id), e.parentId, uuid(e.parentId), e.mateId, uuid(e.mateId), e.x, e.y);
+                else if (e.type === 'death') stmt.death.run(e.tick, e.id, uuid(e.id));
+                else if (e.type === 'eat') stmt.eat.run(e.tick, e.id, uuid(e.id), e.foodId);
                 else if (e.type === 'tick') stmt.tick.run(e.tick, e.pop, e.food);
             }
             db.exec('COMMIT');
@@ -47,6 +52,7 @@ export function createSqliteSink(path = ':memory:', { batchSize = 5000 } = {}) {
 
     return {
         db,
+        runId,
         onEvent(e) { buf.push(e); if (buf.length >= batchSize) flush(); },
         flush,
         close() { flush(); db.close(); },

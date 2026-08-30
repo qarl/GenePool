@@ -11,6 +11,7 @@
 import { World } from '../engine/world.js';
 import { Genotype } from '../engine/genotype.js';
 import { createSqliteSink, writeRunMeta } from './events/sqlite-sink.mjs';
+import { computeRunId } from './events/run-identity.mjs';
 
 const NUM_GENES = 256, NUM_GENES_USED = 112;
 function mulberry32(seed) { let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -37,9 +38,12 @@ if (argv.includes('--viewRadius')) config.viewRadius = num('viewRadius');
 if (argv.includes('--sensoryPeriod')) config.sensoryPeriod = num('sensoryPeriod');
 if (argv.includes('--maxPopulation')) config.maxPopulation = num('maxPopulation');
 
-const sink = createSqliteSink(out);
+// Content-address this run's INITIAL CONDITIONS -> a reproducible runId (NOT tick count: a short run is a
+// prefix of a longer one). Founders here are fully seed-derived, so seed+config+counts+pool defines the run.
+const runId = computeRunId({ seed, config, founders, food }); // config already carries pool
+const sink = createSqliteSink(out, { runId });
 const world = new World(config, seed, { onEvent: sink.onEvent });
-writeRunMeta(sink.db, { seed, founders, food, ticks, config });
+writeRunMeta(sink.db, { seed, founders, food, ticks, config, runId });
 
 const rng = mulberry32((seed >>> 0) ^ 0x5eed1234);
 for (let i = 0; i < founders; i++) {
@@ -59,7 +63,10 @@ const ms = Date.now() - t0;
 const db = sink.db;
 const one = (sql) => db.prepare(sql).get();
 console.log(`recorded ${ticks} ticks in ${ms}ms -> ${out}`);
+console.log(`  runId=${runId} (reproducible: replay this seed+setup -> identical UUIDs)`);
 console.log(`  final: pop=${world.getLivingSwimbotCount()} food=${world.getLivingFoodCount()} births=${one('SELECT count(*) c FROM births').c} deaths=${one('SELECT count(*) c FROM deaths').c} eats=${one('SELECT count(*) c FROM eats').c}`);
+const sampleBirth = db.prepare('SELECT id, uuid FROM births ORDER BY id LIMIT 1').get();
+if (sampleBirth) console.log(`  sample body: id=${sampleBirth.id} uuid=${sampleBirth.uuid}`);
 console.log(`  peak population: ${one('SELECT max(pop) m FROM ticks').m}`);
 const top = db.prepare('SELECT parentId, count(*) n FROM births GROUP BY parentId ORDER BY n DESC LIMIT 3').all();
 console.log(`  most prolific parents: ${top.map((r) => `#${r.parentId}(${r.n})`).join(' ') || '(none)'}`);
