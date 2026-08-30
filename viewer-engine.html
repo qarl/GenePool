@@ -75,15 +75,17 @@ const INITS = {
 };
 
 // Live parameters (start on eden's defaults + the shared knobs). Editable via the panel below.
-const P = { pool: 8000, n: 500, food: 1000, energy: 50, foodRegen: 20, maxFood: 2000, maxPop: 2000 };
+const P = { pool: 8000, n: 500, food: 1000, energy: 50, foodRegen: 20, maxFood: 2000, maxPop: 2000, viewRadius: 300, foodSpread: 4000 };
 const PARAM_SPEC = [
-  { key: 'pool',      label: 'Pool',        min: 1000, max: 16000, step: 500 },
-  { key: 'n',         label: 'Pop',         min: 0,    max: 4000,  step: 50  },
-  { key: 'food',      label: 'Food',        min: 0,    max: 8000,  step: 100 },
-  { key: 'energy',    label: 'Energy',      min: 1,    max: 200,   step: 5   },
-  { key: 'foodRegen', label: 'Food regen (ticks)', min: 1, max: 400, step: 1 },
-  { key: 'maxFood',   label: 'Max food',    min: 0,    max: 12000, step: 100 },
-  { key: 'maxPop',    label: 'Max pop',     min: 0,    max: 8000,  step: 100 },
+  { key: 'pool',       label: 'Pool',        min: 1000, max: 16000, step: 500 },
+  { key: 'n',          label: 'Pop',         min: 0,    max: 4000,  step: 50  },
+  { key: 'food',       label: 'Food',        min: 0,    max: 8000,  step: 100 },
+  { key: 'energy',     label: 'Energy',      min: 1,    max: 200,   step: 5   },
+  { key: 'viewRadius', label: 'View radius', min: 50,   max: 2000,  step: 50  },
+  { key: 'foodSpread', label: 'Food spread', min: 100,  max: 16000, step: 100 },
+  { key: 'foodRegen',  label: 'Food regen (ticks)', min: 1, max: 400, step: 1 },
+  { key: 'maxFood',    label: 'Max food',    min: 0,    max: 12000, step: 100 },
+  { key: 'maxPop',     label: 'Max pop',     min: 0,    max: 8000,  step: 100 },
 ];
 
 let topology = 'walls', initId = 'eden', seed = 1, world = null, running = true, ticksPerFrame = 4, scale = CANVAS / P.pool;
@@ -92,9 +94,9 @@ function build() {
   const err = document.getElementById('err'); err.textContent = '';
   const config = {
     maximumLifeSpan: MAX_LIFESPAN, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
-    crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: P.foodRegen, foodSpread: 4000,
+    crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: P.foodRegen, foodSpread: P.foodSpread,
     foodBitEnergy: 50, attractionCriterion: 10, maxPopulation: P.maxPop, maxFood: P.maxFood,
-    pool: { left: 0, top: 0, right: P.pool, bottom: P.pool },
+    viewRadius: P.viewRadius, pool: { left: 0, top: 0, right: P.pool, bottom: P.pool },
   };
   if (topology === 'torus') config.topology = 'torus';
   try { world = new World(config, seed, {}); }
