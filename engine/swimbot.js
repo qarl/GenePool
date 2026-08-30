@@ -25,6 +25,7 @@
 import { Vector2D } from './vector2d.js';
 import { Genotype } from './genotype.js';
 import { Brain } from './brain.js';
+import { FLAT } from './topology.js';
 import { assert } from './assert.js';
 import {
     ZERO, ONE, ONE_HALF, ONE_THIRD, PI_OVER_180, MAX_PARTS,
@@ -69,6 +70,9 @@ export class Swimbot {
         this._wanderAmount = ctx.config?.wanderAmount ?? BRAIN_WANDER_AMOUNT;          // wander randomness magnitude
         this._embryology = ctx.embryology;
         this._onDeath = ctx.onDeath || null;
+        // §7 topology seam for INTER-entity routes (direction-to-goal, closeness). Default FLAT so a swimbot
+        // built without one (the parallel path, fidelity tests) is byte-identical to the pre-seam engine.
+        this._topology = ctx.topology || FLAT;
 
         this._genotype = new Genotype();
         this._phenotype = null; // set by create() via the shared embryology
@@ -389,18 +393,18 @@ export class Swimbot {
 
         if (this._brain.getState() === BRAIN_STATE_PURSUING_FOOD) {
             if ((this._chosenFoodBit !== null) && (this._chosenFoodBit.getAlive())) {
-                const xx = this._chosenFoodBit.getPosition().x - this.getMouthPosition().x;
-                const yy = this._chosenFoodBit.getPosition().y - this.getMouthPosition().y;
-                const distance = Math.sqrt(xx * xx + yy * yy);
+                // EAT trigger: mouth<->food proximity via the §7 seam (flat == old inline hypot; torus min-images it).
+                const mp = this.getMouthPosition(), fp = this._chosenFoodBit.getPosition();
+                const distance = this._topology.distance(mp.x, mp.y, fp.x, fp.y);
                 if (distance < SWIMBOT_MOUTH_LENGTH) {
                     this._tryingToEat = true;
                 }
             }
         } else if (this._brain.getState() === BRAIN_STATE_PURSUING_MATE) {
             if ((this._chosenMate !== null) && (this._chosenMate.getAlive())) {
-                const xx = this._chosenMate.getGenitalPosition().x - this.getGenitalPosition().x;
-                const yy = this._chosenMate.getGenitalPosition().y - this.getGenitalPosition().y;
-                const distance = Math.sqrt(xx * xx + yy * yy);
+                // MATE trigger: genital<->mate-genital proximity via the §7 seam (flat == old inline hypot).
+                const gp = this.getGenitalPosition(), mgp = this._chosenMate.getGenitalPosition();
+                const distance = this._topology.distance(gp.x, gp.y, mgp.x, mgp.y);
                 if (distance < SWIMBOT_GENITAL_LENGTH) {
                     this._tryingToMate = true;
                 }
@@ -412,14 +416,15 @@ export class Swimbot {
             this.wanderFocus();
         } else if (this._brain.getState() === BRAIN_STATE_PURSUING_MATE) {
             if (this._chosenMate !== null) {
-                this._directionToGoal.set(this._chosenMate.getGenitalPosition());
-                this._directionToGoal.subtract(this._phenotype.parts[GENITAL_INDEX].position);
+                // direction self->mate via the §7 seam (flat: mate - self, identical to set+subtract).
+                const s = this._phenotype.parts[GENITAL_INDEX].position, g = this._chosenMate.getGenitalPosition();
+                this._topology.displacement(s.x, s.y, g.x, g.y, this._directionToGoal);
                 this._directionToGoal.normalize();
             }
         } else if (this._brain.getState() === BRAIN_STATE_PURSUING_FOOD) {
             if (this._chosenFoodBit !== null) {
-                this._directionToGoal.set(this._chosenFoodBit.getPosition());
-                this._directionToGoal.subtract(this._phenotype.parts[MOUTH_INDEX].position);
+                const s = this._phenotype.parts[MOUTH_INDEX].position, g = this._chosenFoodBit.getPosition();
+                this._topology.displacement(s.x, s.y, g.x, g.y, this._directionToGoal);
                 this._directionToGoal.normalize();
             }
         }
@@ -670,9 +675,10 @@ export class Swimbot {
                 if (!((babeFactor > TOO_UGLY_TO_CHOOSE)
                     && (candidate.getAge() > YOUNG_AGE_DURATION)
                     && (candidate.getEnergy() > STARVING))) continue;
-                const dx = candidate.getGenitalPosition().x - this.getGenitalPosition().x;
-                const dy = candidate.getGenitalPosition().y - this.getGenitalPosition().y;
-                const distSq = dx * dx + dy * dy;
+                // mate-argmax tiebreak distance via the §7 seam (flat == old inline; keeps it consistent with
+                // the seam-based closest-20 selection so a torus can't wrap the set but not its tiebreak order).
+                const cgp = candidate.getGenitalPosition(), sgp = this.getGenitalPosition();
+                const distSq = this._topology.distanceSquared(sgp.x, sgp.y, cgp.x, cgp.y);
                 const id = candidate.getIndex();
                 const better = (babeFactor > bestFactor)
                     || (babeFactor === bestFactor && distSq < bestDistSq)
@@ -805,7 +811,8 @@ export class Swimbot {
 
     getCloseness(judge) {
         let closest = this._viewRadius;
-        const distance = this._position.getDistanceTo(judge.getPosition());
+        const jp = judge.getPosition();
+        const distance = this._topology.distance(this._position.x, this._position.y, jp.x, jp.y); // §7 seam (flat == old getDistanceTo)
         if (distance < closest) {
             closest = distance;
         }

@@ -12,6 +12,7 @@ import {
     ATTRACTION_SIMILAR_COLOR, ATTRACTION_SIMILAR_SIZE, ATTRACTION_SIMILAR_HYPER,
     ATTRACTION_SIMILAR_LENGTH, ATTRACTION_SIMILAR_STRAIGHT, ATTRACTION_CLOSEST, ATTRACTION_RANDOM,
 } from './constants.js';
+import { FLAT } from './topology.js';
 
 // A swimbot's attraction-relevant metrics -- the candidate view a judge reads. Calls the swimbot's own
 // getters so it stays consistent with the live methods (parity-tested). STATIC-within-a-tick metrics
@@ -64,11 +65,10 @@ function colorSimilarity(cand, judge) {
     return ONE - ((rDiff + gDiff + bDiff) * ONE_THIRD);
 }
 
-// closeness -- mirrors Swimbot.getCloseness: distance = candRoot.getDistanceTo(judgeRoot) (this=cand).
-function closeness(cand, judge, viewRadius) {
-    const xx = cand.rootX - judge.rootX;
-    const yy = cand.rootY - judge.rootY;
-    const distance = Math.sqrt(xx * xx + yy * yy);
+// closeness -- mirrors Swimbot.getCloseness: distance cand<->judge via the §7 topology seam (flat: plain
+// hypot, bit-identical to the old inline sqrt; torus would minimum-image it at P4).
+function closeness(cand, judge, viewRadius, topology) {
+    const distance = topology.distance(cand.rootX, cand.rootY, judge.rootX, judge.rootY);
     const closest = distance < viewRadius ? distance : viewRadius;
     return ONE - (closest / viewRadius);
 }
@@ -77,7 +77,7 @@ function closeness(cand, judge, viewRadius) {
 // `judge` (both METRICS structs), for `criterion` (the CANDIDATE's own brain criterion). matePref is
 // matePref(judgeId, candId, tick, drawIdx). Same mutually-exclusive if-chain + same draw structure (idx 0
 // always, idx 1 only for RANDOM) as the live method, so it is identical (parity-tested).
-export function attractivenessOf(cand, judge, criterion, tick, matePref, candId, judgeId, viewRadius) {
+export function attractivenessOf(cand, judge, criterion, tick, matePref, candId, judgeId, viewRadius, topology = FLAT) {
     let a = matePref(judgeId, candId, tick, 0);
 
     if (criterion === ATTRACTION_COLORFUL) a = cand.colorSaturation;
@@ -98,7 +98,7 @@ export function attractivenessOf(cand, judge, criterion, tick, matePref, candId,
     if (criterion === ATTRACTION_SIMILAR_LENGTH) a = ONE - Math.abs(judge.longness - cand.longness);
     if (criterion === ATTRACTION_SIMILAR_STRAIGHT) a = ONE - Math.abs(judge.straightness - cand.straightness);
 
-    if (criterion === ATTRACTION_CLOSEST) a = closeness(cand, judge, viewRadius);
+    if (criterion === ATTRACTION_CLOSEST) a = closeness(cand, judge, viewRadius, topology);
     if (criterion === ATTRACTION_RANDOM) a = matePref(judgeId, candId, tick, 1);
 
     return a;

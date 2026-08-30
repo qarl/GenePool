@@ -32,6 +32,7 @@ import { draw, makeStream, DOMAIN } from './rng.js';
 import { SpatialGrid } from './spatialGrid.js';
 import { FrozenSwimbot } from './snapshotView.js';
 import { Perception } from './perception.js';
+import { makeTopology } from './topology.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
     MAX_FOODBITS_PER_TYPE, NON_REPRODUCING_JUNK_DNA_LIMIT,
@@ -59,6 +60,8 @@ export class World {
     constructor(config, masterSeed, options = {}) {
         this._config = config;
         this._masterSeed = masterSeed;
+        this._topology = makeTopology(config); // §7 seam: walls -> FLAT (bit-identical); torus is P4
+
         this._embryology = new Embryology();
         this._clock = 0;
         this._numDeadSwimbots = 0;
@@ -150,6 +153,7 @@ export class World {
         this._myGenotype = new Genotype();
         this._childGenotype = new Genotype();
         this._birthPos = new Vector2D();
+        this._birthDiff = new Vector2D(); // scratch for the §7 displacement in _handleBirth's birthPos midpoint
         this._collisionForce = new Vector2D();
         // Shared perception selection (closest-20 + food scan + setEnvironmentalStimuli). Holds its own scratch;
         // the same class backs the worker-parallel path so both produce identical selections.
@@ -162,7 +166,7 @@ export class World {
         return new Swimbot({
             life: makeStream(this._masterSeed, DOMAIN.SWIMBOT_LIFE, id),
             matePref: this._matePref,
-            config: this._config, embryology: this._embryology,
+            config: this._config, embryology: this._embryology, topology: this._topology,
             onDeath: (deadId) => {
                 this._numDeadSwimbots++; this._deadSwimbotIds.push(deadId); this._livingSwimbotCount--;
                 if (this._onEvent) this._onEvent({ type: 'death', tick: this._clock, id: deadId });
@@ -331,7 +335,7 @@ export class World {
         for (const sb of this._swimbots.values()) {
             if (!sb.getAlive()) continue;
             let v = views.get(sb.getIndex());
-            if (v === undefined) { v = new FrozenSwimbot(this._matePref, this._viewRadius); views.set(sb.getIndex(), v); }
+            if (v === undefined) { v = new FrozenSwimbot(this._matePref, this._viewRadius, this._topology); views.set(sb.getIndex(), v); }
             v.refresh(sb); // sets _seen = true
         }
         for (const [id, v] of views) {
@@ -407,7 +411,7 @@ export class World {
             if (this._useSpatialGrid) this._foodGrid.forEachNear(mpos.x, mpos.y, consider);
             else for (const food of this._foodBits.values()) consider(food);
         };
-        this._perception.perceive(bot, this._clock, this._viewRadius, this._obstacle, this._config.numFoodTypes, enumerateSwimbots, enumerateFood);
+        this._perception.perceive(bot, this._clock, this._viewRadius, this._obstacle, this._config.numFoodTypes, enumerateSwimbots, enumerateFood, this._topology);
     }
 
     _handleBirth(parent) {
@@ -466,15 +470,16 @@ export class World {
         const energyToOffspring = myEnergyContribution + mateEnergyContribution;
 
         // birthPos: parent genital (live -- its own end-of-tick position, both modes) midpoint-to the mate
-        // genital (live in mixed-live, frozen tick-start in snapshot). Reading parent.getGenitalPosition().x
-        // into a local and using it twice is the identical arithmetic as the original (same Vector2D, same
-        // value) -> mixed-live stays bit-for-bit.
+        // genital (live in mixed-live, frozen tick-start in snapshot). Via the §7 seam: displacement gives
+        // parent->mate (flat: mate - parent, the identical arithmetic -> mixed-live stays bit-for-bit), then
+        // wrap keeps the midpoint in-frame (flat: identity). On a torus this is the one birth site that needs
+        // BOTH -- the shortest wrapped vector, and a midpoint that could land across the seam.
         const parentGenX = parent.getGenitalPosition().x;
         const parentGenY = parent.getGenitalPosition().y;
-        const diffX = mateGenX - parentGenX;
-        const diffY = mateGenY - parentGenY;
-        this._birthPos.x = parentGenX + diffX * ONE_HALF;
-        this._birthPos.y = parentGenY + diffY * ONE_HALF;
+        this._topology.displacement(parentGenX, parentGenY, mateGenX, mateGenY, this._birthDiff);
+        this._birthPos.x = parentGenX + this._birthDiff.x * ONE_HALF;
+        this._birthPos.y = parentGenY + this._birthDiff.y * ONE_HALF;
+        this._topology.wrap(this._birthPos.x, this._birthPos.y, this._birthPos);
 
         const initialAngle = -180.0 + genomeRng() * 360.0; // from the same stream, AFTER the genome
 

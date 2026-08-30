@@ -13,6 +13,7 @@
 // (unique -> identical to the old object-identity check). The looker's own gpos/mpos stay live (its own state).
 
 import { BRAIN_MAX_PERCEIVED_NEARBY_SWIMBOTS } from './constants.js';
+import { FLAT } from './topology.js';
 
 export class Perception {
     constructor() {
@@ -38,7 +39,7 @@ export class Perception {
 
     // Perceive for `bot` at `tick`. Fills the closest-20 nearby array + closest food, then hands them to the bot's
     // own setEnvironmentalStimuli (mate argmax / food branch). Bit-for-bit the former inlined logic.
-    perceive(bot, tick, viewRadius, obstacle, numFoodTypes, enumerateSwimbots, enumerateFood) {
+    perceive(bot, tick, viewRadius, obstacle, numFoodTypes, enumerateSwimbots, enumerateFood, topology = FLAT) {
         const cands = this._candidates;
         cands.length = 0;
         const gpos = bot.getGenitalPosition(); // looker's LIVE genital (its own; order-independent)
@@ -46,7 +47,8 @@ export class Perception {
         const selfId = bot.getIndex();
         enumerateSwimbots(gpos, (other) => {
             if (other.getIndex() === selfId || !other.getAlive()) return;
-            const d2 = gpos.getDistanceSquaredTo(other.getGenitalPosition());
+            const op = other.getGenitalPosition();
+            const d2 = topology.distanceSquared(gpos.x, gpos.y, op.x, op.y); // §7 seam (flat == old subtraction)
             if (d2 < vr2) cands.push({ other, d2, id: other.getIndex() }); // obstruction checked LAZILY below
         });
 
@@ -76,7 +78,8 @@ export class Perception {
         enumerateFood(mpos, (food) => {
             if (!food.getAlive()) return;
             if (numFoodTypes === 2 && food.getType() !== preferredType) return;
-            const viewDistance = mpos.getDistanceTo(food.getPosition());
+            const fp = food.getPosition();
+            const viewDistance = topology.distance(mpos.x, mpos.y, fp.x, fp.y); // §7 seam (flat == old subtraction)
             if (viewDistance < viewRadius) {
                 const distance = viewDistance / viewRadius;
                 const id = food.getIndex();

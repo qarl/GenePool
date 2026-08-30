@@ -15,13 +15,15 @@
 // (looker) stays LIVE -- its own metrics are order-independent; only the CANDIDATE is frozen.
 
 import { computeMetricForCriterion, CRITERIA_NEEDING_JUDGE_METRIC, attractivenessOf } from './attraction.js';
+import { FLAT } from './topology.js';
 
 const NO_METRIC = {}; // shared empty judge-metrics for criteria that read no judge metric (no per-call alloc)
 
 export class FrozenSwimbot {
-    constructor(matePref, viewRadius) {
+    constructor(matePref, viewRadius, topology = FLAT) {
         this._matePref = matePref;     // pairwise addressed MATE_PREF (stateless -> order-independent already)
         this._viewRadius = viewRadius; // for the CLOSEST criterion's closeness normalizer
+        this._topology = topology;     // §7 seam for the CLOSEST criterion's inter-entity distance
         this._index = -1;
         this._alive = false;
         this._age = 0;
@@ -69,6 +71,6 @@ export class FrozenSwimbot {
         const judgeMetric = CRITERIA_NEEDING_JUDGE_METRIC.has(this._criterion)
             ? computeMetricForCriterion(judge, this._criterion) : NO_METRIC;
         return attractivenessOf(this._metrics, judgeMetric, this._criterion, tick,
-            this._matePref, this._index, judge.getIndex(), this._viewRadius);
+            this._matePref, this._index, judge.getIndex(), this._viewRadius, this._topology);
     }
 }
