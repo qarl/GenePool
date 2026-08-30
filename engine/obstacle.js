@@ -91,6 +91,7 @@ export class Obstacle {
     }
 
     getCollision(testPosition, radius) {
+        if (this._length <= ZERO) return false; // empty/degenerate obstacle -> no collision (empty is legal, §8)
         if (radius < END_RADIUS) {
             radius = END_RADIUS;
         }
