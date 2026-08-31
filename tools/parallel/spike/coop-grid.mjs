@@ -46,6 +46,14 @@ export class CoopGrid {
         this._botIds = new Int32Array(spec.botIdsSab);
     }
 
+    // Grow-on-near-full: only botIds scales with maxBots (N); the cell arrays (count/start/cursor) are numCells-
+    // sized (pool-based) and unchanged. The grid is rebuilt every tick, so no copy -- just point at the bigger
+    // botIds buffer and update N.
+    rebindGrow(botIdsSab, N) {
+        this._botIds = new Int32Array(botIdsSab);
+        this._N = N;
+    }
+
     // Cell index for a position. PLACEMENT clamps to the edge cell (handles the rare out-of-bounds wall-bounce
     // genital); the query below skips OOB neighbors rather than clamping them.
     _cellOf(x, y) {

@@ -4,33 +4,65 @@
 // DONEGEN/TICKGEN handshake, so it's dropped. Worker 0 does the serial prefix sum, but EVERY worker calls every
 // barrier the same number of times (only the prefix WORK is gated) -- otherwise the barrier deadlocks.
 
-import { parentPort, workerData } from 'node:worker_threads';
+import { parentPort, workerData, receiveMessageOnPort } from 'node:worker_threads';
 import { Partition } from './partition.mjs';
 import { CoopGrid } from './coop-grid.mjs';
-import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, barrier } from './barrier.mjs';
+import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_PARK, barrier } from './barrier.mjs';
 
 const { frozenSab, ctrlSab, gridSpec, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, W, workerIndex,
         foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders, renderSab } = workerData;
-const f64 = new Float64Array(frozenSab);
 const ctrl = new Int32Array(ctrlSab);
 const coopGrid = new CoopGrid(gridSpec);
 // The food SoA + food grid were populated ONCE by main before spawn; the worker just reconstructs read-only views.
 const foodF64 = foodSab ? new Float64Array(foodSab) : null;
 const foodGrid = foodGridSpec ? new CoopGrid(foodGridSpec) : null;
-const puF64 = puSab ? new Float64Array(puSab) : null; // post-update SoA (published in phase 5, read in resolve)
-const res = resSabs ? {
-    wantsEat: new Int32Array(resSabs.wantsEatSab),
-    wantsMate: new Int32Array(resSabs.wantsMateSab),
-    resolvedEnergy: new Float64Array(resSabs.resolvedEnergySab),
-    numFoodEatenDelta: new Int32Array(resSabs.numFoodEatenDeltaSab),
-    numOffspringDelta: new Int32Array(resSabs.numOffspringDeltaSab),
-    flags: new Int32Array(resSabs.flagsSab),
-    genome: new Uint8Array(resSabs.genomeSab),
-    newbornCount: new Int32Array(resSabs.newbornCountSab),
-    newbornRec: new Float64Array(resSabs.newbornRecSab),
-} : null;
 const renderF32 = renderSab ? new Float32Array(renderSab) : null;
+
+// Reconstruct the cross-worker resolution views over a set of resolution SABs. Used at startup AND on a grow (the
+// SABs are reallocated bigger; the views must point at the new backing). Kept in one place so both paths agree.
+function makeResViews(sabs) {
+    return sabs ? {
+        wantsEat: new Int32Array(sabs.wantsEatSab),
+        wantsMate: new Int32Array(sabs.wantsMateSab),
+        resolvedEnergy: new Float64Array(sabs.resolvedEnergySab),
+        numFoodEatenDelta: new Int32Array(sabs.numFoodEatenDeltaSab),
+        numOffspringDelta: new Int32Array(sabs.numOffspringDeltaSab),
+        flags: new Int32Array(sabs.flagsSab),
+        genome: new Uint8Array(sabs.genomeSab),
+        newbornCount: new Int32Array(sabs.newbornCountSab),
+        newbornRec: new Float64Array(sabs.newbornRecSab),
+    } : null;
+}
+
+const f64 = new Float64Array(frozenSab);
+const puF64 = puSab ? new Float64Array(puSab) : null; // post-update SoA (published in phase 5, read in resolve)
+const res = makeResViews(resSabs);
 const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood, puF64, res, numFounders, renderF32);
+
+// GROW (grow-on-near-full): main reallocated the SWIMBOT SABs bigger and copied the two cross-tick carriers (frozen
+// _f64 + the resolution/genome buffers) into them, then postMessaged the new SABs + set CTL_GROW + woke us. We were
+// parked in Atomics.wait, so the message wasn't delivered by our (idle) event loop -- pull it SYNCHRONOUSLY here.
+// Main's event loop IS live (it awaits DONEGEN via waitAsync), so postMessage delivers; poll until it arrives,
+// sleeping ~1ms between polls on the never-changing CTL_PARK slot so we don't busy-spin. Rebind, barrier so all
+// workers are on the new backing before any tick runs, then worker 0 clears CTL_GROW + acks main via DONEGEN.
+// The food SoA/grid + render buffer are unchanged by a swimbot grow (food-grow is a separate mechanism), so they
+// carry through untouched. Keeps slot==id -> the id-keyed fingerprint is unchanged -> G1/G2 hold across a grow.
+function handleGrow() {
+    let m;
+    while (!(m = receiveMessageOnPort(parentPort))) Atomics.wait(ctrl, CTL_PARK, Atomics.load(ctrl, CTL_PARK), 1);
+    const g = m.message;
+    const newGrid = new CoopGrid({ ...gridSpec, botIdsSab: g.botIdsSab, N: g.maxBots }); // reuse count/start/cursor (numCells-sized, per-tick scratch); only botIds grows
+    const nf64 = new Float64Array(g.frozenSab);
+    const npu = g.puSab ? new Float64Array(g.puSab) : null;
+    const nres = makeResViews(g.resSabs);
+    part.rebindGrow(nf64, g.maxBots, newGrid, npu, nres, renderF32);
+    barrier(ctrl, W);                       // all workers rebound before any tick touches the new backing
+    if (workerIndex === 0) {
+        Atomics.store(ctrl, CTL_GROW, 0);   // clear (safe post-barrier: every worker already read CTL_GROW==1)
+        Atomics.add(ctrl, CTL_DONEGEN, 1);  // ack: main awaits this like a tick, then releases the real next tick
+        Atomics.notify(ctrl, CTL_DONEGEN);
+    }
+}
 
 parentPort.postMessage({ type: 'ready', idStart });
 
@@ -49,6 +81,8 @@ for (;;) {
         break;
     }
 
+    if (Atomics.load(ctrl, CTL_GROW) === 1) { handleGrow(); continue; } // grow pseudo-step: rebind, don't run a tick
+
     const tick = Atomics.load(ctrl, CTL_TICK);
 
     part.applyDeltas();                 // phase 1a: apply last tick's deltas + newborns + drop dead (S2a: no-op)
@@ -65,6 +99,7 @@ for (;;) {
 
     if (workerIndex === 0) {            // phase 6: serial cross-worker resolution -> deltas -> tick done
         part.resolve(tick);
+        Atomics.store(ctrl, CTL_NEXTID, part.getNextId()); // publish for main's grow decision (before DONEGEN)
         Atomics.add(ctrl, CTL_DONEGEN, 1);
         Atomics.notify(ctrl, CTL_DONEGEN);
     }

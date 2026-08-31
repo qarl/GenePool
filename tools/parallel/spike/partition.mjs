@@ -94,6 +94,30 @@ export class Partition {
         this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle, coopGrid, config.numFoodTypes ?? 1, foodGrid, foodF64, foodCapacity);
     }
 
+    // Grow-on-near-full (keep slot==id; ids still never reused). Main reallocated the SWIMBOT SABs bigger and
+    // copied the two cross-tick-persistent ones (frozen _f64 + resolution _res / genome); everything else is
+    // per-tick scratch, repopulated next tick. Rebind every view. Same values at the same indices -> G1/G2 hold.
+    // Heavy Swimbot state (this._bots) lives in the worker heap and is untouched.
+    rebindGrow(f64, maxBots, coopGrid, puF64, res, renderF32) {
+        this._f64 = f64;
+        this._maxBots = maxBots;
+        this._coopGrid = coopGrid;
+        this._puF64 = puF64;
+        this._res = res;
+        this._renderF32 = renderF32;
+        this._genomeU8 = res ? res.genome : null;
+        if (res) {
+            this._workEnergy = new Float64Array(maxBots); // worker-0 scratch, cleared each resolve -> no copy
+            this._workTrying = new Uint8Array(maxBots);
+        }
+        this._perceiver.rebindGrow(f64, maxBots, coopGrid);
+    }
+
+    // The next id worker 0 will mint (== all ids ever minted so far). Published by worker 0 to CTL_NEXTID each
+    // tick so main can grow the SABs BEFORE this reaches _maxBots (which would clamp minting and diverge from
+    // world.js). Grow-on-near-full; keeps slot==id (ids still never reused).
+    getNextId() { return this._nextId; }
+
     // Construct one real Swimbot (founder or newborn). Same ctx wiring as world.js#_makeSwimbot: a per-id
     // SWIMBOT_LIFE stream + the shared pairwise matePref.
     _makeBot(id, age, x, y, angle, energy, genes) {

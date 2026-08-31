@@ -83,6 +83,11 @@ export class SlotView {
         this._f64 = f64; this._id = id; this._matePref = matePref; this._viewRadius = viewRadius;
         this._genital = { x: 0, y: 0 };
     }
+    // Point this view at a new frozen buffer (grow-on-near-full reallocated it). CRITICAL: mutate IN PLACE rather
+    // than build a fresh SlotView, because a swimbot holds its _chosenMate as THIS object across ticks during
+    // mate pursuit (perception is periodic) -- replacing the object would orphan that reference to the old buffer,
+    // and the pursuer would keep steering toward the mate's pre-grow (frozen) position. Same reason chosenFood.
+    rebind(f64) { this._f64 = f64; }
     getIndex() { return this._id; }
     getAlive() { return this._f64[this._id * STRIDE + F_ALIVE] === 1; }
     getAge() { return this._f64[this._id * STRIDE + F_AGE]; }

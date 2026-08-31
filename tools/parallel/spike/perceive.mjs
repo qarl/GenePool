@@ -14,6 +14,7 @@ export class Perceiver {
     // grows the id space, so views must cover the CAPACITY, not just the initial count). enumerateFood queries it.
     constructor(f64, maxBots, matePref, viewRadius, obstacle, coopGrid = null, numFoodTypes = 1, foodGrid = null, foodF64 = null, foodCapacity = 0) {
         this._f64 = f64;
+        this._matePref = matePref;                       // stored so rebind() can rebuild SlotViews on a grow
         this._viewRadius = viewRadius;
         this._obstacle = obstacle;
         this._numFoodTypes = numFoodTypes;
@@ -25,6 +26,22 @@ export class Perceiver {
         this._foodViews = new Array(foodCapacity);
         for (let id = 0; id < foodCapacity; id++) this._foodViews[id] = new FoodSlotView(foodF64, id);
         this._perception = new Perception();             // the SHARED engine selector
+    }
+
+    // Grow (grow-on-near-full): the frozen SoA was reallocated bigger. MUTATE the existing SlotViews to point at the
+    // new buffer (do NOT replace them) -- a pursuing swimbot holds one of these as its _chosenMate across ticks, so
+    // replacing the object would leave it reading the OLD (pre-grow, never-updated) buffer -> the pursuer steers to
+    // the mate's stale position. Only ids >= the old capacity get fresh views (no bot references them yet).
+    rebindGrow(f64, maxBots, coopGrid) {
+        this._f64 = f64;
+        this._coopGrid = coopGrid;
+        const old = this._views, oldLen = old.length;
+        const views = new Array(maxBots);
+        for (let id = 0; id < maxBots; id++) {
+            if (id < oldLen) { old[id].rebind(f64); views[id] = old[id]; } // preserve object identity (held _chosenMate follows)
+            else views[id] = new SlotView(f64, id, this._matePref, this._viewRadius);
+        }
+        this._views = views;
     }
 
     // JS-grid mode only: rebuild the local grid from the shared frozen buffer (O(n) per worker -- the cost the

@@ -12,6 +12,9 @@
 export const CTL_TICKGEN = 0;    // main bumps to release a tick (workers wait on it)
 export const CTL_TICK = 1;       // the tick number for this release
 export const CTL_SHUTDOWN = 2;   // 1 -> workers post their fingerprint and exit
+export const CTL_GROW = 3;       // 1 -> the TICKGEN bump is a GROW pseudo-step, not a tick (rebind SABs, don't run).
+                                 // Read at wake alongside SHUTDOWN; written only on a rare grow, so the control line
+                                 // sees no per-tick coherence traffic from it.
 export const CTL_DONECOUNT = 16; // workers that finished this tick (reset by the last one) -- own line
 export const CTL_DONEGEN = 32;   // bumped by the last finisher; main waits on it -- own line
 export const CTL_BAR_COUNT = 48; // inter-worker barrier: arrivals (hottest, 4x/tick) -- own line
@@ -22,7 +25,9 @@ export const CTL_BAR_GEN = 64;   // inter-worker barrier: generation (spun on by
 export const CTL_RUN = 80;       // 1 = run, 0 = paused (worker 0 gates on it; B1 makes the pause unanimous)
 export const CTL_DELAY = 81;     // per-tick sleep in ms (worker 0); 0 = flat out
 export const CTL_PARK = 96;      // dummy slot for worker 0's throttle sleep (main never changes it)
-export const CTL_SIZE = 112;
+export const CTL_NEXTID = 112;   // worker 0 publishes _nextId here after each resolve; main reads it to decide when
+                                 // to grow. Written 1x/tick -> its OWN line (away from TICKGEN parked workers load).
+export const CTL_SIZE = 128;
 
 // Reusable centralized generation barrier across W workers. The last arrival resets the count, bumps the
 // generation, and notifies; everyone else waits for the generation to change. Correct for repeated use (4x/tick
