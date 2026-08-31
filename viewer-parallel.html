@@ -68,7 +68,8 @@ import { setupFood, FD_STRIDE, FD_POSX, FD_POSY, FD_ALIVE } from './tools/parall
 import { makePostUpdateBuffer, makeResolutionBuffers } from './tools/parallel/spike/resolution-layout.mjs';
 import { makeRenderBuffer, R_X, R_Y, R_ANGLE, R_ENERGY, R_HUE, R_ALIVE, R_STRIDE } from './tools/parallel/spike/render-layout.mjs';
 import { allocCoopGrid } from './tools/parallel/spike/coop-grid.mjs';
-import { CTL_TICK, CTL_SHUTDOWN, CTL_RUN, CTL_DELAY, CTL_SIZE } from './tools/parallel/spike/barrier.mjs';
+import { growSwimbotBuffers, growFoodBuffers } from './tools/parallel/spike/grow-buffers.mjs';
+import { CTL_TICK, CTL_SHUTDOWN, CTL_RUN, CTL_DELAY, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './tools/parallel/spike/barrier.mjs';
 import { Genotype } from './engine/genotype.js';
 
 const noteEl = document.getElementById('note');
@@ -91,12 +92,12 @@ const YOUNG_AGE = 1000;         // JJ YOUNG_AGE_DURATION (min founder age)
 const HUNGER = 50;              // JJ DEFAULT_SWIMBOT_HUNGER_THRESHOLD (founder energy)
 const CELL_SIZE = 300;          // == SWIMBOT_VIEW_RADIUS (the P2 grid invariant)
 const NUM_GENES = 256, NUM_GENES_USED = 112;
-// Capacity ceilings. Ids are NEVER reused (monotonic), so these bound LIFETIME births / food, not the living
-// count -- and at high speed they exhaust fast, after which minting/regen stop and the pool starves out (the
-// single-thread viewer has no cap). Generous fixed ceilings buy a long session; slot-recycling is the real
-// unbounded fix (deferred). Sized large but bounded (SAB memory): ~genome 256B/bot dominates.
-const maxBots = Math.max(N * 8, 120000);
-const foodBufferCap = 120000;   // SoA buffer for the monotonic food ids (food ids are never reused)
+// Capacity ceilings. Ids are NEVER reused (monotonic), so these bound LIFETIME births / food, not the living count.
+// They are NO LONGER a hard wall: when a counter nears its ceiling, main GROWS the SABs (doubling) between ticks
+// and the workers rebind -- bit-identical, proven by run-freerun-g1.mjs. So we start MODEST and let the pool grow
+// unbounded (the single-thread viewer's behaviour), instead of pre-allocating a huge fixed buffer.
+let maxBots = Math.max(N * 8, 8000);
+let foodCap = 8000;             // current food SoA capacity (grows on near-full; food ids are never reused)
 const FOOD_CEILING = 2000;      // JJ's MAX_FOODBITS: standing living-food cap
 const INITIAL_FOOD = 1000;      // JJ's INITIAL_NUM_FOODBITS
 const CONFIG = {
@@ -134,17 +135,18 @@ for (let i = 0; i < N; i++) {
 const food = new Array(INITIAL_FOOD);
 for (let i = 0; i < food.length; i++) { const p = diskPoint(); food[i] = { x: p.x, y: p.y, type: 0, energy: 50 }; }
 
-// --- allocate the shared buffers (mirrors runParallel + the render buffer the viewer needs) ---
-const frozenSab = makeFrozenBuffer(maxBots);
-const gridSpec = allocCoopGrid(CONFIG.pool, CELL_SIZE, maxBots);
-const { foodSab, foodGridSpec, numFood } = setupFood(food, CONFIG.pool, CELL_SIZE, foodBufferCap);
-const foodF64 = new Float64Array(foodSab); // main reads this to draw food
-const puSab = makePostUpdateBuffer(maxBots);
-const resSabs = makeResolutionBuffers(maxBots, NUM_GENES);
+// --- allocate the shared buffers (mirrors runParallel + the render buffer the viewer needs). All are `let`: a grow
+// reallocates them bigger and reassigns these so main's render/HUD reads follow the workers to the new backing. ---
+let frozenSab = makeFrozenBuffer(maxBots);
+let gridSpec = allocCoopGrid(CONFIG.pool, CELL_SIZE, maxBots);
+let { foodSab, foodGridSpec, numFood } = setupFood(food, CONFIG.pool, CELL_SIZE, foodCap);
+let foodF64 = new Float64Array(foodSab); // main reads this to draw food
+let puSab = makePostUpdateBuffer(maxBots);
+let resSabs = makeResolutionBuffers(maxBots, NUM_GENES);
 new Int32Array(resSabs.wantsEatSab).fill(-1); // 0 is a valid foodId; -1 = "not eating"
 new Int32Array(resSabs.wantsMateSab).fill(-1);
-const renderSab = makeRenderBuffer(maxBots);
-const renderF32 = new Float32Array(renderSab); // main reads this to draw swimbots
+let renderSab = makeRenderBuffer(maxBots);
+let renderF32 = new Float32Array(renderSab); // main reads this to draw swimbots
 const ctrlSab = new SharedArrayBuffer(CTL_SIZE * Int32Array.BYTES_PER_ELEMENT);
 const ctrl = new Int32Array(ctrlSab);
 
@@ -163,13 +165,40 @@ function stopAll(msg) {
     if (msg) { errEl.textContent = msg; noteEl.textContent = 'stopped.'; }
 }
 
+// GROW-ON-NEAR-FULL (browser side of the free-run grow proven by run-freerun-g1.mjs): worker 0 asks for a grow
+// ('grow-ready') when a counter nears its ceiling; all workers are parked in their event loops (their free-run loop
+// yielded), so the SABs are stable. Main copies them into bigger ones (shared grow-buffers helpers) + a bigger
+// render SoA (browser-only; copied so the frame doesn't flicker), postMessages them, and adopts the new views so
+// its own render/HUD reads follow. Same doubling thresholds as the Node driver.
+let growCount = 0, foodGrowCount = 0;
+function doGrow() {
+    const growBots = Atomics.load(ctrl, CTL_NEXTID) >= (maxBots >> 1);
+    const growFood = Atomics.load(ctrl, CTL_NEXTFOODID) >= foodCap - 2;
+    const msg = { type: 'grow' };
+    let botG, foodG, nRenderSab;
+    if (growBots) {
+        botG = growSwimbotBuffers(frozenSab, resSabs, maxBots * 2);
+        nRenderSab = makeRenderBuffer(botG.maxBots);
+        new Float32Array(nRenderSab).set(new Float32Array(renderSab)); // preserve the current frame across the grow
+        Object.assign(msg, botG, { renderSab: nRenderSab });
+    }
+    if (growFood) { foodG = growFoodBuffers(foodSab, foodGridSpec.botIdsSab, foodCap * 2); Object.assign(msg, foodG); }
+    for (const wk of workers) wk.postMessage(msg);
+    if (growBots) { maxBots = botG.maxBots; frozenSab = botG.frozenSab; puSab = botG.puSab; resSabs = botG.resSabs; renderSab = nRenderSab; renderF32 = new Float32Array(nRenderSab); growCount++; }
+    if (growFood) { foodCap = foodG.maxFood; foodSab = foodG.foodSab; foodGridSpec = { ...foodGridSpec, botIdsSab: foodG.foodBotIdsSab, N: foodG.maxFood }; foodF64 = new Float64Array(foodG.foodSab); foodGrowCount++; }
+}
+
 const ready = new Promise((resolve) => {
     for (let w = 0; w < W; w++) {
         const idStart = w * chunk, idEnd = Math.min(N, (w + 1) * chunk);
         const worker = new Worker(workerURL, { type: 'module' });
         worker.onerror = (e) => stopAll('worker error: ' + (e.message || e.filename + ':' + e.lineno));
         worker.onmessageerror = () => stopAll('worker message error (structured clone failed)');
-        worker.onmessage = (e) => { if (e.data && e.data.type === 'ready' && ++readyCount === W) resolve(); };
+        worker.onmessage = (e) => {
+            if (!e.data) return;
+            if (e.data.type === 'ready') { if (++readyCount === W) resolve(); }
+            else if (e.data.type === 'grow-ready') doGrow();
+        };
         worker.postMessage({
             type: 'init', frozenSab, ctrlSab, gridSpec, maxBots, masterSeed: MASTER_SEED, config: CONFIG,
             founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle: OBSTACLE, W, workerIndex: w,
@@ -195,7 +224,7 @@ function render() {
     cx2d.clearRect(0, 0, canvas.width, canvas.height);
     // food (read the food SoA directly)
     cx2d.fillStyle = '#3fb968';
-    for (let id = 0; id < foodBufferCap; id++) {
+    for (let id = 0; id < foodCap; id++) {
         const o = id * FD_STRIDE;
         if (foodF64[o + FD_ALIVE] !== 1) continue;
         cx2d.fillRect(foodF64[o + FD_POSX] * SCALE - 1, foodF64[o + FD_POSY] * SCALE - 1, 2.2, 2.2);
@@ -224,7 +253,7 @@ let lastHud = performance.now(), lastTick = 0;
 function hud() {
     const curTick = Atomics.load(ctrl, CTL_TICK); // worker 0 writes this each tick
     let pop = 0; for (let id = 0; id < maxBots; id++) if (renderF32[id * R_STRIDE + R_ALIVE] === 1) pop++;
-    let fc = 0; for (let id = 0; id < foodBufferCap; id++) if (foodF64[id * FD_STRIDE + FD_ALIVE] === 1) fc++;
+    let fc = 0; for (let id = 0; id < foodCap; id++) if (foodF64[id * FD_STRIDE + FD_ALIVE] === 1) fc++;
     document.getElementById('s-tick').textContent = curTick.toLocaleString();
     document.getElementById('s-pop').textContent = pop.toLocaleString();
     document.getElementById('s-food').textContent = fc.toLocaleString();
