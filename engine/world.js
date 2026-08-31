@@ -26,6 +26,7 @@ import { Swimbot } from './swimbot.js';
 import { FoodBit } from './foodBit.js';
 import { Obstacle } from './obstacle.js';
 import { Genotype } from './genotype.js';
+import { bytesToBase64 } from './genome.js';
 import { Embryology } from './embryology.js';
 import { Vector2D } from './vector2d.js';
 import { draw, makeStream, DOMAIN } from './rng.js';
@@ -201,6 +202,10 @@ export class World {
         // Snapshot mode scans the frozen views, never the swimbot grid, so don't build it there.
         if (this._useSpatialGrid && !this._snapshotMode) { const gp = sb.getGenitalPosition(); this._swimbotGrid.insert(sb, gp.x, gp.y); }
         if (id >= this._nextSwimbotId) this._nextSwimbotId = id + 1;
+        // Run-file: a founder is a DAG root -- record its FULL initial state (§14 rebuildability). Genes as an
+        // immutable base64 string. Observer-only, RNG-free -> bit-identical. (NOTE: loadSwimbot is also the future
+        // checkpoint-restore path; when P6 lands, gate this on "initial seeding" so restored bodies aren't relabeled.)
+        if (this._onEvent) this._onEvent({ type: 'founder', tick: this._clock, id, genes: bytesToBase64(g.getGenes()), x, y, angle, age, energy });
     }
 
     loadFood(id, { x, y, type, energy }) {
@@ -216,6 +221,8 @@ export class World {
         this._livingFoodCount++;
         if (this._useSpatialGrid) { const p = f.getPosition(); this._foodGrid.insert(f, p.x, p.y); }
         if (id >= this._nextFoodId) this._nextFoodId = id + 1;
+        // Run-file: initial food placement (§14 rebuildability). Observer-only.
+        if (this._onEvent) this._onEvent({ type: 'food_init', tick: this._clock, id, x, y, foodType: type, energy });
     }
 
     setObstacle(e1, e2) { this._obstacle.setEndpointPositions(e1, e2); }
@@ -496,7 +503,7 @@ export class World {
         child.create(newBornId, 0, this._birthPos, initialAngle, energyToOffspring, this._childGenotype);
         // T+1: stage the newborn; it joins the collection AFTER this tick and first acts next tick.
         this._pendingBirths.push(child);
-        if (this._onEvent) this._onEvent({ type: 'birth', tick: this._clock, id: newBornId, parentId: parent.getIndex(), mateId: mate.getIndex(), x: this._birthPos.x, y: this._birthPos.y, parentMask: packMaskHex(provenance.parentOf), mutationMask: packMaskHex(provenance.mutated) });
+        if (this._onEvent) this._onEvent({ type: 'birth', tick: this._clock, id: newBornId, parentId: parent.getIndex(), mateId: mate.getIndex(), x: this._birthPos.x, y: this._birthPos.y, genes: bytesToBase64(this._childGenotype.getGenes()), parentMask: packMaskHex(provenance.parentOf), mutationMask: packMaskHex(provenance.mutated) });
     }
 
     // Pick a random LIVING food of the given type (JJ's slot-index rejection sampling doesn't survive the

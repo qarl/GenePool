@@ -35,6 +35,21 @@ export function canonicalizeGenome(input) {
     return out;
 }
 
+// Base64 <-> genome bytes. Browser-safe (btoa/atob are globals in Node and browsers). Used to carry genome
+// bytes as an IMMUTABLE STRING in the (opt-in) run-file event stream -- never a live/reused buffer reference,
+// which a batching sink would corrupt. A loop (not spread) keeps it safe for any length.
+export function bytesToBase64(u8) {
+    let s = '';
+    for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    return btoa(s);
+}
+export function base64ToBytes(b64) {
+    const s = atob(b64);
+    const u8 = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+    return u8;
+}
+
 // True iff two canonical genomes are byte-equal.
 export function genomesEqual(a, b) {
     if (a.length !== b.length) return false;

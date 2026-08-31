@@ -51,6 +51,17 @@ test('computeRunId: deterministic, key-order-independent, and input-sensitive', 
     assert.notEqual(a, computeRunId({ seed: 1, config: CONFIG, founders: 61 }), 'different founders -> different runId');
 });
 
+test('computeRunId folds founder GENOMES: a single changed founder byte changes the runId (§14 rebuildability)', () => {
+    // run-recorder folds the actual founder genomes into the runId, so two DIFFERENT uploaded/seeded founder
+    // sets can't content-address to the same run (which would collide their catalogs / break rebuild).
+    const mkFounders = () => [{ genes: Array.from({ length: 256 }, (_, g) => g % 256), age: 5, x: 1, y: 2, angle: 3, energy: 80 }];
+    const base = mkFounders();
+    const changed = mkFounders(); changed[0].genes[100] = (changed[0].genes[100] + 1) % 256; // flip ONE gene
+    const idA = computeRunId({ seed: 1, config: CONFIG, founders: base });
+    assert.equal(idA, computeRunId({ seed: 1, config: CONFIG, founders: mkFounders() }), 'same founder genomes -> same runId');
+    assert.notEqual(idA, computeRunId({ seed: 1, config: CONFIG, founders: changed }), 'one changed founder gene -> different runId');
+});
+
 test('bodyUuid: valid v5, deterministic, namespaced by runId, NULL for sentinel ids', () => {
     const r1 = computeRunId({ seed: 1 });
     const r2 = computeRunId({ seed: 2 });
