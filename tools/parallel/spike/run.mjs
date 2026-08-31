@@ -12,9 +12,10 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeFrozenBuffer } from './frozen-layout.mjs';
-import { setupFood, makeFoodBuffer } from './food-layout.mjs';
+import { setupFood } from './food-layout.mjs';
 import { makePostUpdateBuffer, makeResolutionBuffers } from './resolution-layout.mjs';
 import { allocCoopGrid } from './coop-grid.mjs';
+import { growSwimbotBuffers, growFoodBuffers } from './grow-buffers.mjs';
 
 const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './barrier.mjs';
@@ -103,44 +104,17 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
         const growFood = forceFood || Atomics.load(ctrl, CTL_NEXTFOODID) >= maxFood - FOOD_MARGIN;
         if (!growBots && !growFood) return;
         const msg = { type: 'grow' };
-        let newMax, nFrozen, nBotIds, nPu, nRes, newMaxFood, nFoodSab, nFoodBotIds;
-        if (growBots) {
-            newMax = maxBots * 2;
-            nFrozen = makeFrozenBuffer(newMax);
-            nBotIds = new SharedArrayBuffer(newMax * Int32Array.BYTES_PER_ELEMENT); // only botIds scales with maxBots
-            nPu = makePostUpdateBuffer(newMax);
-            nRes = makeResolutionBuffers(newMax, NUM_GENES);
-            // Copy the cross-tick carriers into the larger buffers; old region lands at [0,oldMax), new region stays 0.
-            new Float64Array(nFrozen).set(new Float64Array(frozenSab));                                  // ghost read by next applyDeltas sweep
-            new Uint8Array(nRes.genomeSab).set(new Uint8Array(resSabs.genomeSab));                       // genome accumulator (all genomes ever)
-            new Int32Array(nRes.flagsSab).set(new Int32Array(resSabs.flagsSab));                         // pending resolution deltas ...
-            new Float64Array(nRes.resolvedEnergySab).set(new Float64Array(resSabs.resolvedEnergySab));   //   (applied by next applyDeltas)
-            new Int32Array(nRes.numFoodEatenDeltaSab).set(new Int32Array(resSabs.numFoodEatenDeltaSab));
-            new Int32Array(nRes.numOffspringDeltaSab).set(new Int32Array(resSabs.numOffspringDeltaSab));
-            new Int32Array(nRes.newbornCountSab).set(new Int32Array(resSabs.newbornCountSab));           // this-tick newborns, constructed ...
-            new Float64Array(nRes.newbornRecSab).set(new Float64Array(resSabs.newbornRecSab));           //   by next applyDeltas
-            new Int32Array(nRes.wantsEatSab).fill(-1);  // re-staged fresh each phase-5; MUST be -1 (a swept bot that was
-            new Int32Array(nRes.wantsMateSab).fill(-1); // trying-to-mate is never rewritten -> copying its stale intent would resurrect a birth).
-            // puSab: NOT cross-tick (rewritten in phase 5; swept read PU_ALIVE=0 -> skipped) -> a fresh zero buffer is correct.
-            // grid count/start/cursor: pool-sized + rebuilt each tick -> workers reuse the originals; only botIds grows.
-            msg.frozenSab = nFrozen; msg.botIdsSab = nBotIds; msg.maxBots = newMax; msg.puSab = nPu; msg.resSabs = nRes;
-        }
-        if (growFood) {
-            newMaxFood = maxFood * 2;
-            nFoodSab = makeFoodBuffer(newMaxFood);
-            nFoodBotIds = new SharedArrayBuffer(newMaxFood * Int32Array.BYTES_PER_ELEMENT);
-            new Float64Array(nFoodSab).set(new Float64Array(foodSab));                    // PERSISTENT food SoA (positions/type/alive/energy)
-            new Int32Array(nFoodBotIds).set(new Int32Array(foodGridSpec.botIdsSab));      // STATIC food-grid scatter (cells reused, rebuilt on next regen)
-            msg.foodSab = nFoodSab; msg.foodBotIdsSab = nFoodBotIds; msg.maxFood = newMaxFood;
-        }
+        let botG, foodG;
+        if (growBots) { botG = growSwimbotBuffers(frozenSab, resSabs, maxBots * 2); Object.assign(msg, botG); }
+        if (growFood) { foodG = growFoodBuffers(foodSab, foodGridSpec.botIdsSab, maxFood * 2); Object.assign(msg, foodG); }
         for (const w of workers) w.postMessage(msg);
         const doneBefore = Atomics.load(ctrl, CTL_DONEGEN);
         Atomics.store(ctrl, CTL_GROW, 1);
         Atomics.add(ctrl, CTL_TICKGEN, 1);
         Atomics.notify(ctrl, CTL_TICKGEN);
         await awaitTickDone(doneBefore); // worker 0 acks (bumps DONEGEN) after the grow-barrier; CTL_GROW already cleared
-        if (growBots) { maxBots = newMax; frozenSab = nFrozen; puSab = nPu; resSabs = nRes; growCount++; }        // adopt: copy sources for the next grow
-        if (growFood) { maxFood = newMaxFood; foodSab = nFoodSab; foodGridSpec = { ...foodGridSpec, botIdsSab: nFoodBotIds, N: newMaxFood }; foodGrowCount++; }
+        if (growBots) { maxBots = botG.maxBots; frozenSab = botG.frozenSab; puSab = botG.puSab; resSabs = botG.resSabs; growCount++; }        // adopt: copy sources for the next grow
+        if (growFood) { maxFood = foodG.maxFood; foodSab = foodG.foodSab; foodGridSpec = { ...foodGridSpec, botIdsSab: foodG.foodBotIdsSab, N: foodG.maxFood }; foodGrowCount++; }
     };
 
     const forced = (tk) => forceGrowEvery > 0 && tk % forceGrowEvery === 0;         // test hook: force a swimbot grow on a schedule

@@ -117,6 +117,11 @@ export class Partition {
     // main can grow the food SABs BEFORE this reaches _maxFood (which would SKIP a regen and diverge from world.js).
     getNextFoodId() { return this._nextFoodId; }
 
+    // FREE-RUN grow trigger (worker 0 only): near-full on swimbots OR food. Same thresholds as run.mjs's maybeGrow
+    // (the handshake path decides main-side from the published counters; free-run decides worker-side). _nextFoodId/
+    // _maxFood are only set on worker 0 -> undefined elsewhere, but only worker 0 calls this.
+    needsGrow() { return this._nextId >= (this._maxBots >> 1) || this._nextFoodId >= this._maxFood - 2; }
+
     // Food-grow (grow-on-near-full): main reallocated the food SoA + food grid bigger and copied the persistent
     // food SoA + the (static) food-grid scatter into them. Rebind every food view/grid; worker 0's authoritative
     // FoodBits Map + regen state live in its heap and are untouched. Same values at the same ids -> G1/G2 hold.

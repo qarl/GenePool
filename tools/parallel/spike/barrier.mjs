@@ -15,6 +15,9 @@ export const CTL_SHUTDOWN = 2;   // 1 -> workers post their fingerprint and exit
 export const CTL_GROW = 3;       // 1 -> the TICKGEN bump is a GROW pseudo-step, not a tick (rebind SABs, don't run).
                                  // Read at wake alongside SHUTDOWN; written only on a rare grow, so the control line
                                  // sees no per-tick coherence traffic from it.
+export const CTL_GROWREQ = 4;    // FREE-RUN only: worker 0 sets this after resolve when near-full; all workers see it
+                                 // at the grow-check barrier and exit the loop so the shell can grow (the browser
+                                 // needs the event loop to receive new SABs -- can't receiveMessageOnPort like Node).
 export const CTL_DONECOUNT = 16; // workers that finished this tick (reset by the last one) -- own line
 export const CTL_DONEGEN = 32;   // bumped by the last finisher; main waits on it -- own line
 export const CTL_BAR_COUNT = 48; // inter-worker barrier: arrivals (hottest, 4x/tick) -- own line
