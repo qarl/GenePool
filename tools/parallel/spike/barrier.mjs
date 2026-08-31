@@ -27,6 +27,7 @@ export const CTL_DELAY = 81;     // per-tick sleep in ms (worker 0); 0 = flat ou
 export const CTL_PARK = 96;      // dummy slot for worker 0's throttle sleep (main never changes it)
 export const CTL_NEXTID = 112;   // worker 0 publishes _nextId here after each resolve; main reads it to decide when
                                  // to grow. Written 1x/tick -> its OWN line (away from TICKGEN parked workers load).
+export const CTL_NEXTFOODID = 113; // worker 0 publishes _nextFoodId (same line as CTL_NEXTID: same writer/cadence)
 export const CTL_SIZE = 128;
 
 // Reusable centralized generation barrier across W workers. The last arrival resets the count, bumps the

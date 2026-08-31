@@ -12,18 +12,18 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeFrozenBuffer } from './frozen-layout.mjs';
-import { setupFood } from './food-layout.mjs';
+import { setupFood, makeFoodBuffer } from './food-layout.mjs';
 import { makePostUpdateBuffer, makeResolutionBuffers } from './resolution-layout.mjs';
 import { allocCoopGrid } from './coop-grid.mjs';
 
 const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
-import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_SIZE } from './barrier.mjs';
+import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './barrier.mjs';
 import { makeEcologyConfig, makeFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS (config leaves viewRadius default)
 
-export async function runParallel(N, ticks, W, poolSize, founders, config, food, warmup = 50, initialMaxBots = 0, forceGrowEvery = 0) {
+export async function runParallel(N, ticks, W, poolSize, founders, config, food, warmup = 50, initialMaxBots = 0, forceGrowEvery = 0, initialMaxFood = 0, forceFoodGrowEvery = 0) {
     // Ids are never reused + monotonic, so the swimbot SABs are sized to a CAPACITY CEILING. That ceiling is no
     // longer a hard wall: worker 0 publishes nextId each tick and main GROWS the SABs (doubling) before nextId
     // reaches maxBots -- so a long run that mints > initialMaxBots lifetime ids keeps going, deterministically,
@@ -33,10 +33,12 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
     let maxBots = initialMaxBots || N * 8;
     let frozenSab = makeFrozenBuffer(maxBots);
     const gridSpec = allocCoopGrid(config.pool, CELL_SIZE, maxBots); // count/start/cursor are pool-sized (fixed); only botIds grows on a grow
-    // Food SoA + food grid built ONCE; workers reconstruct read-only views. Capacity includes regen headroom
-    // (food ids never reused: 1 regen per foodRegenerationPeriod over the run + warmup).
-    const maxFood = food.length + Math.ceil((ticks + 100) / (config.foodRegenerationPeriod || 20)) + 16;
-    const { foodSab, foodGridSpec, numFood } = setupFood(food, config.pool, CELL_SIZE, maxFood);
+    // Food SoA + food grid built ONCE; workers reconstruct read-only views. Food ids never reused; the SoA GROWS
+    // on near-full (like the swimbots) so a run longer than any static headroom keeps regenerating -- else regen
+    // would stop while world.js's unbounded food keeps spawning, diverging. `initialMaxFood` (0 -> sized for `ticks`)
+    // lets the grow gate start tiny to force food-grows.
+    let maxFood = initialMaxFood || (food.length + Math.ceil((ticks + 100) / (config.foodRegenerationPeriod || 20)) + 16);
+    let { foodSab, foodGridSpec, numFood } = setupFood(food, config.pool, CELL_SIZE, maxFood);
     let puSab = makePostUpdateBuffer(maxBots); // post-update SoA (workers publish; worker 0 resolves from it)
     let resSabs = makeResolutionBuffers(maxBots, NUM_GENES);
     new Int32Array(resSabs.wantsEatSab).fill(-1);  // 0 is a valid foodId; -1 = "not eating"
@@ -89,45 +91,64 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
     // maxBots/2 is provably below any one tick's minting (births/tick <= living/2 <= nextId/2), so the resolve()
     // minting clamp is never reached (reaching it would stall births and diverge from world.js). Copy ONLY the two
     // cross-tick carriers (frozen _f64 + the resolution/genome buffers); everything else is per-tick scratch.
-    let growCount = 0;
-    // `force` (test hook forceGrowEvery) grows regardless of nextId, to exercise the multi-grow chain fast -- always
-    // safe: a grow only ENLARGES the buffers, moving the mint clamp further away.
-    const maybeGrow = async (force = false) => {
-        const nextId = Atomics.load(ctrl, CTL_NEXTID);
-        if (!force && nextId < (maxBots >> 1)) return;
-        const newMax = maxBots * 2;
-        const nFrozen = makeFrozenBuffer(newMax);
-        const nBotIds = new SharedArrayBuffer(newMax * Int32Array.BYTES_PER_ELEMENT); // only botIds scales with maxBots
-        const nPu = makePostUpdateBuffer(newMax);
-        const nRes = makeResolutionBuffers(newMax, NUM_GENES);
-        // Copy the cross-tick carriers into the larger buffers; old region lands at [0,oldMax), new region stays 0.
-        new Float64Array(nFrozen).set(new Float64Array(frozenSab));                                  // ghost read by next applyDeltas sweep
-        new Uint8Array(nRes.genomeSab).set(new Uint8Array(resSabs.genomeSab));                       // genome accumulator (all genomes ever)
-        new Int32Array(nRes.flagsSab).set(new Int32Array(resSabs.flagsSab));                         // pending resolution deltas ...
-        new Float64Array(nRes.resolvedEnergySab).set(new Float64Array(resSabs.resolvedEnergySab));   //   (applied by next applyDeltas)
-        new Int32Array(nRes.numFoodEatenDeltaSab).set(new Int32Array(resSabs.numFoodEatenDeltaSab));
-        new Int32Array(nRes.numOffspringDeltaSab).set(new Int32Array(resSabs.numOffspringDeltaSab));
-        new Int32Array(nRes.newbornCountSab).set(new Int32Array(resSabs.newbornCountSab));           // this-tick newborns, constructed ...
-        new Float64Array(nRes.newbornRecSab).set(new Float64Array(resSabs.newbornRecSab));           //   by next applyDeltas
-        new Int32Array(nRes.wantsEatSab).fill(-1);  // re-staged fresh each phase-5; MUST be -1 (a swept bot that was
-        new Int32Array(nRes.wantsMateSab).fill(-1); // trying-to-mate is never rewritten -> copying its stale intent would resurrect a birth).
-        // puSab: NOT cross-tick (rewritten in phase 5; swept read PU_ALIVE=0 -> skipped) -> a fresh zero buffer is correct.
-        // grid count/start/cursor: pool-sized + rebuilt each tick -> workers reuse the originals; only botIds grows.
-        for (const w of workers) w.postMessage({ type: 'grow', frozenSab: nFrozen, botIdsSab: nBotIds, maxBots: newMax, puSab: nPu, resSabs: nRes });
+    let growCount = 0, foodGrowCount = 0;
+    const FOOD_MARGIN = 2; // grow food this many ids early -- regen adds <=1 food/tick and maybeGrow runs every tick,
+                           // so the SoA never fills before we grow (a full SoA would SKIP a regen -> diverge).
+    // `force` (test hook forceGrowEvery) forces a SWIMBOT grow regardless of nextId, to exercise the multi-grow
+    // chain fast -- always safe: a grow only ENLARGES the buffers, moving the mint clamp further away. Swimbot and
+    // food have INDEPENDENT triggers but share ONE handshake: the message carries whichever grew; the worker rebinds
+    // whichever is present.
+    const maybeGrow = async (force = false, forceFood = false) => {
+        const growBots = force || Atomics.load(ctrl, CTL_NEXTID) >= (maxBots >> 1);
+        const growFood = forceFood || Atomics.load(ctrl, CTL_NEXTFOODID) >= maxFood - FOOD_MARGIN;
+        if (!growBots && !growFood) return;
+        const msg = { type: 'grow' };
+        let newMax, nFrozen, nBotIds, nPu, nRes, newMaxFood, nFoodSab, nFoodBotIds;
+        if (growBots) {
+            newMax = maxBots * 2;
+            nFrozen = makeFrozenBuffer(newMax);
+            nBotIds = new SharedArrayBuffer(newMax * Int32Array.BYTES_PER_ELEMENT); // only botIds scales with maxBots
+            nPu = makePostUpdateBuffer(newMax);
+            nRes = makeResolutionBuffers(newMax, NUM_GENES);
+            // Copy the cross-tick carriers into the larger buffers; old region lands at [0,oldMax), new region stays 0.
+            new Float64Array(nFrozen).set(new Float64Array(frozenSab));                                  // ghost read by next applyDeltas sweep
+            new Uint8Array(nRes.genomeSab).set(new Uint8Array(resSabs.genomeSab));                       // genome accumulator (all genomes ever)
+            new Int32Array(nRes.flagsSab).set(new Int32Array(resSabs.flagsSab));                         // pending resolution deltas ...
+            new Float64Array(nRes.resolvedEnergySab).set(new Float64Array(resSabs.resolvedEnergySab));   //   (applied by next applyDeltas)
+            new Int32Array(nRes.numFoodEatenDeltaSab).set(new Int32Array(resSabs.numFoodEatenDeltaSab));
+            new Int32Array(nRes.numOffspringDeltaSab).set(new Int32Array(resSabs.numOffspringDeltaSab));
+            new Int32Array(nRes.newbornCountSab).set(new Int32Array(resSabs.newbornCountSab));           // this-tick newborns, constructed ...
+            new Float64Array(nRes.newbornRecSab).set(new Float64Array(resSabs.newbornRecSab));           //   by next applyDeltas
+            new Int32Array(nRes.wantsEatSab).fill(-1);  // re-staged fresh each phase-5; MUST be -1 (a swept bot that was
+            new Int32Array(nRes.wantsMateSab).fill(-1); // trying-to-mate is never rewritten -> copying its stale intent would resurrect a birth).
+            // puSab: NOT cross-tick (rewritten in phase 5; swept read PU_ALIVE=0 -> skipped) -> a fresh zero buffer is correct.
+            // grid count/start/cursor: pool-sized + rebuilt each tick -> workers reuse the originals; only botIds grows.
+            msg.frozenSab = nFrozen; msg.botIdsSab = nBotIds; msg.maxBots = newMax; msg.puSab = nPu; msg.resSabs = nRes;
+        }
+        if (growFood) {
+            newMaxFood = maxFood * 2;
+            nFoodSab = makeFoodBuffer(newMaxFood);
+            nFoodBotIds = new SharedArrayBuffer(newMaxFood * Int32Array.BYTES_PER_ELEMENT);
+            new Float64Array(nFoodSab).set(new Float64Array(foodSab));                    // PERSISTENT food SoA (positions/type/alive/energy)
+            new Int32Array(nFoodBotIds).set(new Int32Array(foodGridSpec.botIdsSab));      // STATIC food-grid scatter (cells reused, rebuilt on next regen)
+            msg.foodSab = nFoodSab; msg.foodBotIdsSab = nFoodBotIds; msg.maxFood = newMaxFood;
+        }
+        for (const w of workers) w.postMessage(msg);
         const doneBefore = Atomics.load(ctrl, CTL_DONEGEN);
         Atomics.store(ctrl, CTL_GROW, 1);
         Atomics.add(ctrl, CTL_TICKGEN, 1);
         Atomics.notify(ctrl, CTL_TICKGEN);
         await awaitTickDone(doneBefore); // worker 0 acks (bumps DONEGEN) after the grow-barrier; CTL_GROW already cleared
-        maxBots = newMax; frozenSab = nFrozen; puSab = nPu; resSabs = nRes; // adopt: copy sources for the next grow
-        growCount++;
+        if (growBots) { maxBots = newMax; frozenSab = nFrozen; puSab = nPu; resSabs = nRes; growCount++; }        // adopt: copy sources for the next grow
+        if (growFood) { maxFood = newMaxFood; foodSab = nFoodSab; foodGridSpec = { ...foodGridSpec, botIdsSab: nFoodBotIds, N: newMaxFood }; foodGrowCount++; }
     };
 
-    const forced = (tk) => forceGrowEvery > 0 && tk % forceGrowEvery === 0; // test hook: force a grow on a schedule
+    const forced = (tk) => forceGrowEvery > 0 && tk % forceGrowEvery === 0;         // test hook: force a swimbot grow on a schedule
+    const forcedFood = (tk) => forceFoodGrowEvery > 0 && tk % forceFoodGrowEvery === 0; // ditto for food
     const warm = Math.min(warmup, ticks); // untimed warmup (perf runs); 0 for bit-identity comparisons vs world.js
-    for (let t = 0; t < warm; t++) { await awaitTickDone(releaseTick(t + 1)); await maybeGrow(forced(t + 1)); }
+    for (let t = 0; t < warm; t++) { await awaitTickDone(releaseTick(t + 1)); await maybeGrow(forced(t + 1), forcedFood(t + 1)); }
     const t0 = performance.now();
-    for (let t = 0; t < ticks; t++) { await awaitTickDone(releaseTick(warm + t + 1)); await maybeGrow(forced(warm + t + 1)); }
+    for (let t = 0; t < ticks; t++) { await awaitTickDone(releaseTick(warm + t + 1)); await maybeGrow(forced(warm + t + 1), forcedFood(warm + t + 1)); }
     const ms = performance.now() - t0;
 
     Atomics.store(ctrl, CTL_SHUTDOWN, 1);
@@ -140,7 +161,7 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
     for (let w = 0; w < W; w++) fp.push(...fingerprints.get(w * chunk));
     fp.sort((a, b) => Number(a.split(':')[0]) - Number(b.split(':')[0]));
     const hash = createHash('sha256').update(fp.join('|')).digest('hex').slice(0, 16);
-    return { ms, tps: Math.round(ticks / (ms / 1000)), hash, totalBots: fp.length, grows: growCount, finalMaxBots: maxBots, fp };
+    return { ms, tps: Math.round(ticks / (ms / 1000)), hash, totalBots: fp.length, grows: growCount, finalMaxBots: maxBots, foodGrows: foodGrowCount, finalMaxFood: maxFood, fp };
 }
 
 // CLI: quick coop-1 vs coop-W determinism + speedup on a full-ecology pool. (The authoritative correctness gate

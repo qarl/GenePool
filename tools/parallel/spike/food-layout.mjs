@@ -38,6 +38,10 @@ export function writeFood(f64, id, { x, y, type, alive, energy }) {
 // slot flipped to 0) is filtered by the scan even though the static grid still lists its id.
 export class FoodSlotView {
     constructor(f64, id) { this._f64 = f64; this._id = id; this._pos = { x: 0, y: 0 }; }
+    // Point at a new food SoA (food-grow reallocated it). MUTATE in place, same reason as SlotView.rebind: a
+    // swimbot holds its _chosenFood as THIS object across ticks while pursuing food -- a fresh object would orphan
+    // that reference to the old (pre-grow, never-updated) buffer and the forager would steer to the food's stale slot.
+    rebind(f64) { this._f64 = f64; }
     getIndex() { return this._id; }
     getAlive() { return this._f64[this._id * FD_STRIDE + FD_ALIVE] === 1; }
     getType() { return this._f64[this._id * FD_STRIDE + FD_TYPE]; }

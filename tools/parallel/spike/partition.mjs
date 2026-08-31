@@ -113,6 +113,20 @@ export class Partition {
         this._perceiver.rebindGrow(f64, maxBots, coopGrid);
     }
 
+    // The next food id worker 0 will mint (== all food ids ever minted). Published to CTL_NEXTFOODID each tick so
+    // main can grow the food SABs BEFORE this reaches _maxFood (which would SKIP a regen and diverge from world.js).
+    getNextFoodId() { return this._nextFoodId; }
+
+    // Food-grow (grow-on-near-full): main reallocated the food SoA + food grid bigger and copied the persistent
+    // food SoA + the (static) food-grid scatter into them. Rebind every food view/grid; worker 0's authoritative
+    // FoodBits Map + regen state live in its heap and are untouched. Same values at the same ids -> G1/G2 hold.
+    rebindFoodGrow(foodF64, maxFood, foodGrid) {
+        this._foodF64 = foodF64;
+        this._foodGrid = foodGrid;
+        this._maxFood = maxFood; // worker-0 SoA capacity (undefined/unused on other workers -> harmless)
+        this._perceiver.rebindFoodGrow(foodF64, maxFood, foodGrid);
+    }
+
     // The next id worker 0 will mint (== all ids ever minted so far). Published by worker 0 to CTL_NEXTID each
     // tick so main can grow the SABs BEFORE this reaches _maxBots (which would clamp minting and diverge from
     // world.js). Grow-on-near-full; keeps slot==id (ids still never reused).

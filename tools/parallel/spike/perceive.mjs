@@ -44,6 +44,20 @@ export class Perceiver {
         this._views = views;
     }
 
+    // Food-grow (grow-on-near-full): the food SoA was reallocated bigger. Same in-place discipline as rebindGrow --
+    // MUTATE existing FoodSlotViews (a forager holds one as _chosenFood across ticks); only ids >= the old food
+    // capacity get fresh views. foodGrid is the new (bigger) food grid.
+    rebindFoodGrow(foodF64, maxFood, foodGrid) {
+        this._foodGrid = foodGrid;
+        const old = this._foodViews, oldLen = old.length;
+        const views = new Array(maxFood);
+        for (let id = 0; id < maxFood; id++) {
+            if (id < oldLen) { old[id].rebind(foodF64); views[id] = old[id]; }
+            else views[id] = new FoodSlotView(foodF64, id);
+        }
+        this._foodViews = views;
+    }
+
     // JS-grid mode only: rebuild the local grid from the shared frozen buffer (O(n) per worker -- the cost the
     // coop grid eliminates). No-op in coop mode (the grid is built cooperatively via count/scatter).
     rebuild(maxBots) {

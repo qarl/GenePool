@@ -7,7 +7,7 @@
 import { parentPort, workerData, receiveMessageOnPort } from 'node:worker_threads';
 import { Partition } from './partition.mjs';
 import { CoopGrid } from './coop-grid.mjs';
-import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_PARK, barrier } from './barrier.mjs';
+import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_PARK, barrier } from './barrier.mjs';
 
 const { frozenSab, ctrlSab, gridSpec, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, W, workerIndex,
         foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders, renderSab } = workerData;
@@ -39,23 +39,26 @@ const puF64 = puSab ? new Float64Array(puSab) : null; // post-update SoA (publis
 const res = makeResViews(resSabs);
 const part = new Partition(f64, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, coopGrid, workerIndex, W, foodGrid, foodF64, numFood, puF64, res, numFounders, renderF32);
 
-// GROW (grow-on-near-full): main reallocated the SWIMBOT SABs bigger and copied the two cross-tick carriers (frozen
-// _f64 + the resolution/genome buffers) into them, then postMessaged the new SABs + set CTL_GROW + woke us. We were
-// parked in Atomics.wait, so the message wasn't delivered by our (idle) event loop -- pull it SYNCHRONOUSLY here.
-// Main's event loop IS live (it awaits DONEGEN via waitAsync), so postMessage delivers; poll until it arrives,
-// sleeping ~1ms between polls on the never-changing CTL_PARK slot so we don't busy-spin. Rebind, barrier so all
-// workers are on the new backing before any tick runs, then worker 0 clears CTL_GROW + acks main via DONEGEN.
-// The food SoA/grid + render buffer are unchanged by a swimbot grow (food-grow is a separate mechanism), so they
-// carry through untouched. Keeps slot==id -> the id-keyed fingerprint is unchanged -> G1/G2 hold across a grow.
+// GROW (grow-on-near-full): main reallocated some SABs bigger and copied the cross-tick carriers into them, then
+// postMessaged the new SABs + set CTL_GROW + woke us. We were parked in Atomics.wait, so the message wasn't
+// delivered by our (idle) event loop -- pull it SYNCHRONOUSLY here. Main's event loop IS live (it awaits DONEGEN via
+// waitAsync), so postMessage delivers; poll until it arrives, sleeping ~1ms between polls on the never-changing
+// CTL_PARK slot so we don't busy-spin. Rebind whichever grew (SWIMBOT: g.frozenSab present; FOOD: g.foodSab
+// present -- independent triggers, one handshake), barrier so all workers are on the new backing before any tick
+// runs, then worker 0 clears CTL_GROW + acks main via DONEGEN. Keeps slot==id / food-id==slot -> the id-keyed
+// fingerprint is unchanged -> G1/G2 hold across a grow.
 function handleGrow() {
     let m;
     while (!(m = receiveMessageOnPort(parentPort))) Atomics.wait(ctrl, CTL_PARK, Atomics.load(ctrl, CTL_PARK), 1);
     const g = m.message;
-    const newGrid = new CoopGrid({ ...gridSpec, botIdsSab: g.botIdsSab, N: g.maxBots }); // reuse count/start/cursor (numCells-sized, per-tick scratch); only botIds grows
-    const nf64 = new Float64Array(g.frozenSab);
-    const npu = g.puSab ? new Float64Array(g.puSab) : null;
-    const nres = makeResViews(g.resSabs);
-    part.rebindGrow(nf64, g.maxBots, newGrid, npu, nres, renderF32);
+    if (g.frozenSab) { // SWIMBOT grow: frozen + coop grid (botIds only) + pu + res
+        const newGrid = new CoopGrid({ ...gridSpec, botIdsSab: g.botIdsSab, N: g.maxBots }); // reuse count/start/cursor (per-tick scratch); only botIds grows
+        part.rebindGrow(new Float64Array(g.frozenSab), g.maxBots, newGrid, g.puSab ? new Float64Array(g.puSab) : null, makeResViews(g.resSabs), renderF32);
+    }
+    if (g.foodSab) {   // FOOD grow: food SoA + food grid (foodBotIds only; static grid was copied, cells reused)
+        const newFoodGrid = new CoopGrid({ ...foodGridSpec, botIdsSab: g.foodBotIdsSab, N: g.maxFood });
+        part.rebindFoodGrow(new Float64Array(g.foodSab), g.maxFood, newFoodGrid);
+    }
     barrier(ctrl, W);                       // all workers rebound before any tick touches the new backing
     if (workerIndex === 0) {
         Atomics.store(ctrl, CTL_GROW, 0);   // clear (safe post-barrier: every worker already read CTL_GROW==1)
@@ -99,7 +102,8 @@ for (;;) {
 
     if (workerIndex === 0) {            // phase 6: serial cross-worker resolution -> deltas -> tick done
         part.resolve(tick);
-        Atomics.store(ctrl, CTL_NEXTID, part.getNextId()); // publish for main's grow decision (before DONEGEN)
+        Atomics.store(ctrl, CTL_NEXTID, part.getNextId());         // publish for main's grow decision (before DONEGEN)
+        Atomics.store(ctrl, CTL_NEXTFOODID, part.getNextFoodId()); // ditto for food-grow
         Atomics.add(ctrl, CTL_DONEGEN, 1);
         Atomics.notify(ctrl, CTL_DONEGEN);
     }
