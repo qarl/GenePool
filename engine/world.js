@@ -24,7 +24,7 @@
 
 import { Swimbot } from './swimbot.js';
 import { FoodBit } from './foodBit.js';
-import { Obstacle } from './obstacle.js';
+import { ObstacleField } from './obstacle-field.js';
 import { Genotype } from './genotype.js';
 import { bytesToBase64 } from './genome.js';
 import { Embryology } from './embryology.js';
@@ -99,9 +99,14 @@ export class World {
         // draws no RNG when full). Default Infinity -> no cap -> byte-identical to pre-cap (the north star: bounds
         // are user config, not engine defaults). The viewer sets it to reproduce JJ's standing food level.
         this._maxFood = config.maxFood ?? Infinity;
-        this._obstacle = new Obstacle();
-        this._obstacle.setPoolBounds(config.pool);
-        this._obstacle.setTopology(this._topology); // torus: line-of-sight follows the shortest wrapped path (P4d)
+        // §8: the physical environment is a FIELD of obstacles (a list; empty is legal). Built from per-pool config
+        // (`config.obstacles`: [{a,b,thickness?,mask?}]); the engine imposes none. Pool bounds + topology first, so
+        // each obstacle's clamp / torus line-of-sight (P4d) is set up before its endpoints. setObstacle(e1,e2)
+        // remains as a single-obstacle convenience -- a one-obstacle field is bit-identical to the old path.
+        this._obstacleField = new ObstacleField();
+        this._obstacleField.setPoolBounds(config.pool);
+        this._obstacleField.setTopology(this._topology);
+        if (config.obstacles) this._obstacleField.setObstacles(config.obstacles);
 
         // P2 spatial grid: a BEHAVIOR-PRESERVING acceleration of the O(n^2) perception scans. cellSize ==
         // the view radius, so the 3x3 neighborhood of any query point covers the whole view circle -- the
@@ -225,7 +230,9 @@ export class World {
         if (this._onEvent) this._onEvent({ type: 'food_init', tick: this._clock, id, x, y, foodType: type, energy });
     }
 
-    setObstacle(e1, e2) { this._obstacle.setEndpointPositions(e1, e2); }
+    // Convenience: set the field to a SINGLE default-thickness obstacle (back-compat for tests/tools/restore).
+    // For multiple or masked obstacles, supply `config.obstacles` at construction.
+    setObstacle(e1, e2) { this._obstacleField.setObstacles([{ a: e1, b: e2 }]); }
 
     getClock() { return this._clock; }
     getPoolBounds() { return this._pool; } // {left,top,right,bottom,width,height,margin} (P3)
@@ -306,8 +313,8 @@ export class World {
                 this._giveSwimbotNearbyEnvironmentalStimuli(bot);
             }
 
-            if (this._obstacle.getCollision(bot.getPosition(), bot.getBoundingRadius() * ONE_HALF)) {
-                this._collisionForce.set(this._obstacle.getCurrentCollisionForce());
+            if (this._obstacleField.getCollision(bot.getPosition(), bot.getBoundingRadius() * ONE_HALF)) {
+                this._collisionForce.set(this._obstacleField.getCurrentCollisionForce());
                 this._collisionForce.scale(1.2);
                 bot.addForce(this._collisionForce);
             }
@@ -427,7 +434,7 @@ export class World {
             if (this._useSpatialGrid) this._foodGrid.forEachNear(mpos.x, mpos.y, consider);
             else for (const food of this._foodBits.values()) consider(food);
         };
-        this._perception.perceive(bot, this._clock, this._viewRadius, this._obstacle, this._config.numFoodTypes, enumerateSwimbots, enumerateFood, this._topology);
+        this._perception.perceive(bot, this._clock, this._viewRadius, this._obstacleField, this._config.numFoodTypes, enumerateSwimbots, enumerateFood, this._topology);
     }
 
     _handleBirth(parent) {
@@ -566,7 +573,7 @@ export class World {
                 let num = 0;
                 while (looking) {
                     child.randomizeSpawnPosition(parent, this._foodRegenRng);
-                    if (!this._obstacle.getObstruction(parent.getPosition(), child.getPosition())) looking = false;
+                    if (!this._obstacleField.getObstruction(parent.getPosition(), child.getPosition())) looking = false;
                     num++;
                     if (num > 10) looking = false;
                 }
@@ -683,7 +690,7 @@ export class World {
             numDeadSwimbots: this._numDeadSwimbots,
             livingSwimbotCount: this._livingSwimbotCount, livingFoodCount: this._livingFoodCount,
             foodRegenPosition: this._foodRegenStream.position,
-            obstacle: this._obstacle.getEndpoints(),
+            obstacles: this._obstacleField.toSpecs(), // §8: the full obstacle list (was a single `obstacle` pair)
             swimbots, food,
             ghostSwimbots: [...ghostSwimbots.values()],
             ghostFood: [...ghostFood.values()],
@@ -697,7 +704,8 @@ export class World {
         world._nextFoodId = data.nextFoodId;
         world._numDeadSwimbots = data.numDeadSwimbots;
         world._foodRegenStream.position = data.foodRegenPosition;
-        world.setObstacle(data.obstacle[0], data.obstacle[1]);
+        if (data.obstacles) world._obstacleField.setObstacles(data.obstacles);      // §8 checkpoints
+        else if (data.obstacle) world.setObstacle(data.obstacle[0], data.obstacle[1]); // legacy single-obstacle checkpoints
 
         const makeFood = (fd, alive) => {
             const f = new FoodBit();

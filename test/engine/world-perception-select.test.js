@@ -57,7 +57,7 @@ test('perception closest-20: heap + lazy obstruction == independent brute filter
     const byKey = (a, b) => (a.d2 - b.d2) || (a.id - b.id);
     const distOnlyTop20 = [...inView].sort(byKey).slice(0, 20).map((c) => c.id);
     const refTop20 = inView
-        .filter((c) => !world._obstacle.getObstruction(lg, c.s.getGenitalPosition()))
+        .filter((c) => !world._obstacleField.getObstruction(lg, c.s.getGenitalPosition()))
         .sort(byKey).slice(0, 20).map((c) => c.id);
 
     // scenario sanity: enough candidates, and obstruction actually CHANGED the top-20 (promotion happened)

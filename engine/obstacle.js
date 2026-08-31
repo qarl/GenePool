@@ -1,16 +1,22 @@
-// Obstacle — forked from JJ's Obstacle.js as an ES module (PLAN-restructure.md §15). A single line
-// segment (two endpoints) that blocks swimbot movement (getCollision) and line-of-sight / access
-// (getObstruction). RNG-free. The UI-only bits (hover/move/render) are dropped; the sim reads only
-// endpoints, collision, and obstruction. Faithful arithmetic (the pool tick is bit-exact against JJ).
+// Obstacle — forked from JJ's Obstacle.js as an ES module (PLAN-restructure.md §15). ONE line segment (two
+// endpoints) that blocks swimbot movement (getCollision) and line-of-sight / access (getObstruction). A field of
+// these (obstacle-field.js) is the per-pool physical environment (§8). RNG-free. The UI-only bits (hover/move/
+// render) are dropped; the sim reads only endpoints, collision, and obstruction. Faithful arithmetic (the pool tick
+// is bit-exact against JJ).
+//
+// §8: `thickness` is per-obstacle (JJ's fixed END_RADIUS=20 is the DEFAULT, so a default obstacle is bit-identical),
+// and a `mask` selects which effects the segment has (movement / vision shipped; food / lethal reserved, not yet
+// implemented). The engine imposes no obstacle by default -- the field is built from config (empty is legal).
 
 import { ZERO, ONE, ONE_HALF, resolvePoolBounds } from './constants.js';
 import { Vector2D } from './vector2d.js';
 import { FLAT } from './topology.js';
 
-const END_RADIUS = 20;
+export const DEFAULT_THICKNESS = 20; // JJ END_RADIUS: half-width + endpoint-cap radius + min-length/clamp basis
+export const DEFAULT_MASK = Object.freeze({ movement: true, vision: true, food: false, lethal: false });
 
 export class Obstacle {
-    constructor() {
+    constructor(thickness = DEFAULT_THICKNESS, mask = DEFAULT_MASK) {
         this._end1 = new Vector2D();      // endpoint positions (the UI ObstacleEndpoint is collapsed to a point)
         this._end2 = new Vector2D();
         this._mid = new Vector2D();
@@ -20,6 +26,8 @@ export class Obstacle {
         this._testVector = new Vector2D();
         this._collisionForce = new Vector2D();
         this._length = ZERO;
+        this._thickness = thickness;                       // §8: per-obstacle (was the fixed END_RADIUS)
+        this._mask = { ...DEFAULT_MASK, ...mask };          // §8: which effects this segment has
         // Pool bounds for endpoint clamping -- default JJ 8000x8000; World overrides via setPoolBounds (P3).
         this._pool = resolvePoolBounds(undefined);
         // §7 seam (P4d): on a torus, line-of-sight follows the SHORTEST wrapped path. Default FLAT = walls.
@@ -32,6 +40,12 @@ export class Obstacle {
 
     setPoolBounds(pool) { this._pool = resolvePoolBounds(pool); }
     setTopology(topology) { this._topology = topology; }
+    setThickness(thickness) { this._thickness = thickness; this._calculateStuff(); }
+    setMask(mask) { this._mask = { ...DEFAULT_MASK, ...mask }; }
+    getThickness() { return this._thickness; }
+    getMask() { return this._mask; }
+    blocksMovement() { return this._mask.movement; }
+    blocksVision() { return this._mask.vision; }
 
     // Current (post-clamp) endpoints, for checkpointing. Restoring them via setEndpointPositions re-clamps
     // idempotently (they are already in-bounds), so a round-trip is exact.
@@ -65,40 +79,44 @@ export class Obstacle {
         this._perp.x = this._direction.y;
         this._perp.y = -this._direction.x;
 
-        // handle endpoints bumping into each other (shift AFTER mid/length/perp are computed, matching JJ)
-        const minLength = END_RADIUS * 2;
+        // handle endpoints bumping into each other (shift AFTER mid/length/perp are computed, matching JJ). JJ's
+        // fixed END_RADIUS generalizes to this obstacle's thickness; a default (thickness 20) obstacle is unchanged.
+        const minLength = this._thickness * 2;
         if (this._length < minLength) {
             const penetration = ONE - (this._length / minLength);
-            const xShift = END_RADIUS * this._direction.x * penetration;
-            const yShift = END_RADIUS * this._direction.y * penetration;
+            const xShift = this._thickness * this._direction.x * penetration;
+            const yShift = this._thickness * this._direction.y * penetration;
             this._end1.x -= xShift;
             this._end1.y -= yShift;
             this._end2.x += xShift;
             this._end2.y += yShift;
         }
 
-        // clamp endpoints to the pool walls (again, without recomputing mid/length -- faithful to JJ)
-        const left = this._pool.left + END_RADIUS;
-        const right = this._pool.right - END_RADIUS;
-        const bottom = this._pool.bottom - END_RADIUS;
-        const top = this._pool.top + END_RADIUS;
+        // clamp endpoints to the pool walls (again, without recomputing mid/length -- faithful to JJ). On a torus
+        // there are no walls to clamp to (§7/§8): the segment + its seam images already tile the plane.
+        if (!this._topology.isToroidal()) {
+            const left = this._pool.left + this._thickness;
+            const right = this._pool.right - this._thickness;
+            const bottom = this._pool.bottom - this._thickness;
+            const top = this._pool.top + this._thickness;
 
-        if (this._end1.x > right) { this._end1.x = right; } else if (this._end1.x < left) { this._end1.x = left; }
-        if (this._end1.y > bottom) { this._end1.y = bottom; } else if (this._end1.y < top) { this._end1.y = top; }
+            if (this._end1.x > right) { this._end1.x = right; } else if (this._end1.x < left) { this._end1.x = left; }
+            if (this._end1.y > bottom) { this._end1.y = bottom; } else if (this._end1.y < top) { this._end1.y = top; }
 
-        if (this._end2.x > right) { this._end2.x = right; } else if (this._end2.x < left) { this._end2.x = left; }
-        if (this._end2.y > bottom) { this._end2.y = bottom; } else if (this._end2.y < top) { this._end2.y = top; }
+            if (this._end2.x > right) { this._end2.x = right; } else if (this._end2.x < left) { this._end2.x = left; }
+            if (this._end2.y > bottom) { this._end2.y = bottom; } else if (this._end2.y < top) { this._end2.y = top; }
+        }
     }
 
     getCollision(testPosition, radius) {
         if (this._length <= ZERO) return false; // empty/degenerate obstacle -> no collision (empty is legal, §8)
-        if (radius < END_RADIUS) {
-            radius = END_RADIUS;
+        if (radius < this._thickness) {
+            radius = this._thickness;
         }
         const xx = testPosition.x - this._mid.x;
         const yy = testPosition.y - this._mid.y;
         const distanceSquared = xx * xx + yy * yy;
-        const ll = this._length * ONE_HALF + END_RADIUS + radius;
+        const ll = this._length * ONE_HALF + this._thickness + radius;
 
         if (distanceSquared < ll * ll) {
             this._testVector.x = testPosition.x - this._end1.x;
