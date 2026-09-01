@@ -12,7 +12,7 @@ import { ZERO, ONE, ONE_HALF, resolvePoolBounds } from './constants.js';
 import { Vector2D } from './vector2d.js';
 import { FLAT } from './topology.js';
 
-export const DEFAULT_THICKNESS = 20; // JJ END_RADIUS: half-width + endpoint-cap radius + min-length/clamp basis
+export const DEFAULT_THICKNESS = 20; // JJ END_RADIUS: collision half-width + endpoint-cap radius + wall-clamp margin
 export const DEFAULT_MASK = Object.freeze({ movement: true, vision: true, food: false, lethal: false });
 
 export class Obstacle {
@@ -79,20 +79,12 @@ export class Obstacle {
         this._perp.x = this._direction.y;
         this._perp.y = -this._direction.x;
 
-        // handle endpoints bumping into each other (shift AFTER mid/length/perp are computed, matching JJ). JJ's
-        // fixed END_RADIUS generalizes to this obstacle's thickness; a default (thickness 20) obstacle is unchanged.
-        const minLength = this._thickness * 2;
-        if (this._length < minLength) {
-            const penetration = ONE - (this._length / minLength);
-            const xShift = this._thickness * this._direction.x * penetration;
-            const yShift = this._thickness * this._direction.y * penetration;
-            this._end1.x -= xShift;
-            this._end1.y -= yShift;
-            this._end2.x += xShift;
-            this._end2.y += yShift;
-        }
+        // §8: NO engine-imposed minimum length. JJ stretched a segment shorter than 2*END_RADIUS apart (silently
+        // rewriting the author's endpoints); the faithful-mechanism engine leaves declared coordinates alone -- an
+        // obstacle is exactly as short/thin as configured (a degenerate one is the author's call; length 0 is a
+        // clean no-op via the getCollision guard). The default obstacle (length 40) was never shifted anyway.
 
-        // clamp endpoints to the pool walls (again, without recomputing mid/length -- faithful to JJ). On a torus
+        // clamp endpoints to the pool walls (without recomputing mid/length -- faithful to JJ for bounded worlds). On a torus
         // there are no walls to clamp to (§7/§8): the segment + its seam images already tile the plane.
         if (!this._topology.isToroidal()) {
             const left = this._pool.left + this._thickness;

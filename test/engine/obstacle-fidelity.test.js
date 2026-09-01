@@ -3,8 +3,9 @@
 // RNG-free geometry, so a direct old-vs-new comparison across many endpoint configs + probe points:
 //   - getCollision (movement bounce) -- boolean AND the resulting collision-force vector,
 //   - getObstruction (line-of-sight / access blocking) -- the segment-crossing boolean.
-// Covers the golden's obstacle (40,40)-(80,40), a near-wall config (endpoint clamping), and a short
-// segment (the length<2*END_RADIUS endpoint-separation branch).
+// Covers the golden's obstacle (40,40)-(80,40) and a near-wall config (endpoint clamping). §8 intentionally
+// DROPPED JJ's min-length endpoint-separation shift (the engine must not rewrite declared coordinates), so a
+// short segment no longer matches JJ -- that divergence is asserted by its own test below, not compared here.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -28,9 +29,8 @@ function mkNew(e1, e2) {
 }
 
 const CONFIGS = [
-    { name: 'golden', e1: [40, 40], e2: [80, 40] },      // the golden's obstacle (length 40 = minLength, no shift)
+    { name: 'golden', e1: [40, 40], e2: [80, 40] },      // the golden's obstacle (length 40; well-formed, unaffected)
     { name: 'mid-pool', e1: [3000, 4000], e2: [5000, 4200] },
-    { name: 'short', e1: [4000, 4000], e2: [4010, 4005] }, // length < 2*END_RADIUS -> endpoint-separation branch
     { name: 'near-wall', e1: [5, 5], e2: [30, 100] },      // endpoint clamping to walls
     { name: 'vertical', e1: [2000, 1000], e2: [2000, 3000] },
 ];
@@ -105,4 +105,17 @@ test('rung3a: Obstacle.getObstruction matches JJ (segment crossing) across confi
             assert.ok(crossings > 0, 'the golden-obstacle pairs must include at least one real crossing');
         }
     }
+});
+
+test('§8: a short obstacle keeps its EXACT declared endpoints (no min-length shift; diverges from JJ)', () => {
+    const e1 = [4000, 4000], e2 = [4010, 4005]; // length ~11 < 2*thickness -> JJ would stretch it apart
+    // JJ (baseline) DOES shift a sub-min-length segment: its endpoints move away from their declared values.
+    const oldO = mkOld(e1, e2);
+    const jjMoved = oldO.getEnd1Position().x !== e1[0] || oldO.getEnd1Position().y !== e1[1]
+        || oldO.getEnd2Position().x !== e2[0] || oldO.getEnd2Position().y !== e2[1];
+    assert.ok(jjMoved, 'sanity: JJ should stretch this short segment (else the divergence is untestable)');
+    // The faithful-mechanism engine leaves the author's coordinates untouched.
+    const newO = mkNew(e1, e2);
+    assert.deepEqual({ x: newO.getEnd1Position().x, y: newO.getEnd1Position().y }, { x: e1[0], y: e1[1] });
+    assert.deepEqual({ x: newO.getEnd2Position().x, y: newO.getEnd2Position().y }, { x: e2[0], y: e2[1] });
 });
