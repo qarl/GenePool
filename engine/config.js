@@ -7,7 +7,7 @@
 
 import {
     resolvePoolBounds, SWIMBOT_VIEW_RADIUS, MAX_FOODBITS_PER_TYPE,
-    DEFAULT_MAXIMUM_AGE, DEFAULT_CHILD_ENERGY_RATIO,
+    DEFAULT_MAXIMUM_AGE, DEFAULT_CHILD_ENERGY_RATIO, NON_REPRODUCING_JUNK_DNA_LIMIT,
     DEFAULT_FOOD_REGENERATION_PERIOD, DEFAULT_CROSSOVER_RATE, DEFAULT_MUTATION_RATE,
 } from './constants.js';
 
@@ -73,6 +73,9 @@ export function resolveWorldConfig(config = {}) {
         crossoverRate: config.crossoverRate ?? DEFAULT_CROSSOVER_RATE,
         mutationRate: config.mutationRate ?? DEFAULT_MUTATION_RATE,
         numFoodTypes: config.numFoodTypes ?? 1,
+        // §11: the junk-DNA reproductive-isolation gate is a per-pool WORLD RULE, not an engine constant. Default =
+        // JJ's 0.9 (byte-identical); a pool can loosen it (more gene flow) or tighten it (stricter speciation).
+        reproductiveIsolation: config.reproductiveIsolation ?? NON_REPRODUCING_JUNK_DNA_LIMIT,
 
         // --- opt-in world-scale caps (Infinity = no engine-imposed limit; North Star) ---
         maxPopulation: config.maxPopulation ?? Infinity,

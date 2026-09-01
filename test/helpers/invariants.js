@@ -4,8 +4,13 @@
 // (e.g. replacing the slot arrays). Throws a tagged Error on the first violation —
 // the caller stops the run (update() is not atomic, so continuing runs on corrupt state).
 
-function checkInvariants(gp, GP) {
+// opts.maxEnergy (§11): the energy-ceiling backstop is a CONFIG-DERIVED bound, not an engine constant -- a
+// high-energy world (large hungerThreshold + foodBitEnergy) legitimately tops out well above the default 1000, so
+// such a run passes its own bound (~ hungerThreshold + maxMealEnergy + margin). Default 1000 keeps every existing
+// (default-config) caller unchanged.
+function checkInvariants(gp, GP, opts = {}) {
     const fail = (msg) => { const e = new Error('INVARIANT: ' + msg); e.invariant = true; throw e; };
+    const maxEnergy = opts.maxEnergy ?? 1000;
 
     const MAX_S = GP.MAX_SWIMBOTS;
     const MAX_F = GP.MAX_FOODBITS;
@@ -39,7 +44,7 @@ function checkInvariants(gp, GP) {
         // signals an energy-injection bug. 1000 is a generous bound: far above any legitimate energy,
         // far below an injection. (This is the reliable subset of "energy conservation" -- full
         // per-tick accounting needs stable IDs + per-meal/-death observation and is deferred.)
-        if (s.energy > 1000) fail(`swimbot ${s.id} energy ${s.energy} exceeds the ceiling (energy-injection bug?)`);
+        if (s.energy > maxEnergy) fail(`swimbot ${s.id} energy ${s.energy} exceeds the ceiling ${maxEnergy} (energy-injection bug?)`);
 
         if (!Array.isArray(s.genes) || s.genes.length !== NG) {
             fail(`swimbot ${s.id} genes length ${s.genes && s.genes.length}, expected ${NG}`);

@@ -26,6 +26,7 @@ test('resolveWorldConfig: minimal config gets complete defaults; foodSpread scal
     assert.equal(def.crossoverRate, 0.2);
     assert.equal(def.mutationRate, 0.01);
     assert.equal(def.numFoodTypes, 1);
+    assert.equal(def.reproductiveIsolation, 0.9); // §11: JJ's junk-DNA gate, now per-pool config
     assert.equal(def.maxPopulation, Infinity);   // opt-in cap: no engine-imposed ceiling
     assert.equal(def.maxFood, Infinity);
 
@@ -69,4 +70,23 @@ test('a minimal-config World runs deterministically at a non-default pool (no Na
     for (const f of a.food) assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y), 'NaN food position (foodSpread default not applied?)');
     assert.ok(a.food.length > 30, 'food should have regenerated past the initial 120 or at least persisted'); // regen fired -> foodRegenerationPeriod default applied
     assert.deepEqual(a, b, 'same seed + minimal config -> identical run (deterministic)');
+});
+
+test('§11: reproductiveIsolation is a per-pool config gate on breeding', async () => {
+    const { World } = await load();
+    const pool = { left: 0, top: 0, right: 1500, bottom: 1500 };
+    const run = (iso) => {
+        const w = new World({ pool, reproductiveIsolation: iso }, 7);
+        // founders old enough to reproduce (age > YOUNG_AGE 1000), clustered so they perceive each other as mates
+        for (let i = 0; i < 50; i++) w.loadSwimbot(i, { age: 3000 + i * 7, x: 500 + (i * 13) % 500, y: 500 + (i * 11) % 500, angle: (i * 23) % 360, energy: 85, genes: genesOf(i) });
+        for (let i = 0; i < 200; i++) w.loadFood(i, { x: (i * 61) % 1500, y: (i * 97) % 1500, type: 0, energy: 50 });
+        for (let t = 0; t < 300; t++) w.tick();
+        return w.dumpSwimbots().length;
+    };
+    // junk-zeroed founders have similarity 1.0. Gate: no breeding when similarity <= isolation.
+    const permissive = run(0.0); // 1.0 > 0.0 -> pairs may breed
+    const strict = run(1.0);     // 1.0 <= 1.0 -> NO pair may EVER breed (blocks everything)
+    const byDefault = run(0.9);  // 1.0 > 0.9 -> same-species breeds (JJ's default)
+    assert.ok(permissive > strict, `permissive isolation must out-breed strict (${permissive} vs ${strict})`);
+    assert.ok(byDefault > strict, `the default 0.9 gate must still allow same-species breeding (${byDefault} vs ${strict})`);
 });

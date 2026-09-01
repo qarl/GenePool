@@ -76,6 +76,7 @@ export class Partition {
         this._crossoverRate = config.crossoverRate;
         this._mutationRate = config.mutationRate;
         this._maxPopulation = config.maxPopulation ?? Infinity;
+        this._reproductiveIsolation = config.reproductiveIsolation ?? NON_REPRODUCING_JUNK_DNA_LIMIT; // §11: per-pool (default 0.9)
         this._genomeU8 = res ? res.genome : null;
         this._myGeno = new Genotype();
         this._mateGeno = new Genotype();
@@ -355,7 +356,7 @@ export class Partition {
             if (this._nextId >= this._maxBots) break; // capacity ceiling (never-reused-id overflow stopgap)
             const mateId = wantsMate[pid];
             if (frozen[mateId * STRIDE + F_ALIVE] !== 1) continue; // mate must be alive at TICK START (world.js snapshot gate)
-            if (this._junkDnaSimilarity(pid, mateId) <= NON_REPRODUCING_JUNK_DNA_LIMIT) continue; // speciation gate
+            if (this._junkDnaSimilarity(pid, mateId) <= this._reproductiveIsolation) continue; // speciation gate (§11: per-pool config)
             const newBornId = this._nextId++;
             const genomeStream = makeStream(this._masterSeed, DOMAIN.OFFSPRING_GENOME, newBornId);
             const genomeRng = () => genomeStream.next();

@@ -37,7 +37,7 @@ import { makeTopology } from './topology.js';
 import { resolveWorldConfig } from './config.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
-    MAX_FOODBITS_PER_TYPE, NON_REPRODUCING_JUNK_DNA_LIMIT,
+    MAX_FOODBITS_PER_TYPE,
     SWIMBOT_VIEW_RADIUS, resolvePoolBounds,
 } from './constants.js';
 
@@ -469,7 +469,7 @@ export class World {
 
         this._myGenotype.copyFromGenotype(parent.getGenotype());
         const mateGenotype = mate.getGenotype();
-        if (this._getJunkDnaSimilarity(this._myGenotype, mateGenotype) <= NON_REPRODUCING_JUNK_DNA_LIMIT) return;
+        if (this._getJunkDnaSimilarity(this._myGenotype, mateGenotype) <= this._config.reproductiveIsolation) return; // §11: per-pool config (default 0.9)
 
         const newBornId = this._nextSwimbotId++;
 
