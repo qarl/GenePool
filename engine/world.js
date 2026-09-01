@@ -34,7 +34,7 @@ import { SpatialGrid } from './spatialGrid.js';
 import { FrozenSwimbot } from './snapshotView.js';
 import { Perception } from './perception.js';
 import { makeTopology } from './topology.js';
-import { resolveWorldConfig } from './config.js';
+import { resolveWorldConfig, scheduleValue } from './config.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
     MAX_FOODBITS_PER_TYPE,
@@ -97,10 +97,9 @@ export class World {
         // MAX_FOODBITS_PER_TYPE (a per-type 2-food regen BALANCE hint, not a hard cap) is also config now.
         this._pool = resolvePoolBounds(config.pool);
         this._maxFoodBitsPerType = config.maxFoodBitsPerType ?? MAX_FOODBITS_PER_TYPE;
-        // OPT-IN total living-food ceiling (JJ's MAX_FOODBITS: regen spawns only when living food < cap, and
-        // draws no RNG when full). Default Infinity -> no cap -> byte-identical to pre-cap (the north star: bounds
-        // are user config, not engine defaults). The viewer sets it to reproduce JJ's standing food level.
-        this._maxFood = config.maxFood ?? Infinity;
+        // OPT-IN total living-food ceiling (JJ's MAX_FOODBITS: regen spawns only when living food < cap, and draws no
+        // RNG when full). Default Infinity -> no cap -> byte-identical to pre-cap. §10: read fresh each tick via
+        // _sched (may be a step-schedule), so a world can raise/lower its food ceiling over time.
         // §8: the physical environment is a FIELD of obstacles (a list; empty is legal). Built from per-pool config
         // (`config.obstacles`: [{a,b,thickness?,mask?}]); the engine imposes none. Pool bounds + topology first, so
         // each obstacle's clamp / torus line-of-sight (P4d) is set up before its endpoints. setObstacle(e1,e2)
@@ -122,10 +121,9 @@ export class World {
         // SWIMBOT_VIEW_RADIUS); the swimbot closeness normalizer reads the same config.viewRadius, so the
         // perception filter and the normalizer stay consistent.
         this._viewRadius = config.viewRadius ?? SWIMBOT_VIEW_RADIUS;
-        // L5 carrying-capacity knob (D-f): OPT-IN population bound for long/hosted runs. Default = no cap
-        // (Infinity) -> births are never suppressed -> byte-identical to pre-cap (North Star: bounds are user
-        // config, NOT an engine default -- unlike JJ's always-on 2000-slot cap we removed at P1b).
-        this._maxPopulation = config.maxPopulation ?? Infinity;
+        // L5 carrying-capacity knob (D-f): OPT-IN population bound. Default = no cap (Infinity) -> births never
+        // suppressed -> byte-identical to pre-cap (North Star: bounds are user config, not an engine default). §10:
+        // read fresh each tick via _sched (may be a step-schedule) so carrying capacity can change over time.
         // Optional event sink (observability foundation for P5 events->DB). When set, the engine calls it with
         // {type, tick, ...} for births/deaths/eats + a per-tick summary. Default null -> zero overhead, and the
         // sink is a pure OBSERVER (must not mutate the world), so an event-instrumented run is byte-identical
@@ -221,7 +219,7 @@ export class World {
         f.setPosition({ x, y });
         f.setType(type);
         f.setEnergy(energy);
-        f.setMaxSpawnRadius(this._config.foodSpread);
+        f.setMaxSpawnRadius(this._sched('foodSpread'));
         f.setPoolBounds(this._config.pool);
         f.setTopology(this._topology);
         this._foodBits.set(id, f);
@@ -238,6 +236,11 @@ export class World {
 
     getClock() { return this._clock; }
     getPoolBounds() { return this._pool; } // {left,top,right,bottom,width,height,margin} (P3)
+
+    // §10 parameter schedules: resolve a schedulable config value at the CURRENT tick. A scalar returns itself
+    // (byte-identical to a scheduleless world); a { schedule: [[tick,value],...] } steps over time. Pure function
+    // of (config, clock) -> no run state -> checkpoint-safe (restore re-resolves at the resumed clock).
+    _sched(field) { return scheduleValue(this._config[field], this._clock); }
     getNextSwimbotId() { return this._nextSwimbotId; }
     getNextFoodId() { return this._nextFoodId; }
     getNumDeadSwimbots() { return this._numDeadSwimbots; }
@@ -442,7 +445,7 @@ export class World {
     _handleBirth(parent) {
         // L5 carrying capacity (opt-in): suppress births once the projected population reaches the cap.
         // Default Infinity -> never true. Consumes no id/RNG for a suppressed birth (checked before minting).
-        if (this._livingSwimbotCount + this._pendingBirths.length >= this._maxPopulation) return;
+        if (this._livingSwimbotCount + this._pendingBirths.length >= this._sched('maxPopulation')) return;
         const mateId = parent.getChosenMateIndex();
         if (mateId === NULL_INDEX) return;
         const mate = this._swimbots.get(mateId);
@@ -469,7 +472,7 @@ export class World {
 
         this._myGenotype.copyFromGenotype(parent.getGenotype());
         const mateGenotype = mate.getGenotype();
-        if (this._getJunkDnaSimilarity(this._myGenotype, mateGenotype) <= this._config.reproductiveIsolation) return; // §11: per-pool config (default 0.9)
+        if (this._getJunkDnaSimilarity(this._myGenotype, mateGenotype) <= this._sched('reproductiveIsolation')) return; // §11 config, §10 schedulable
 
         const newBornId = this._nextSwimbotId++;
 
@@ -487,7 +490,7 @@ export class World {
             provenance = this._provenance;
         }
         this._childGenotype.setAsOffspring(this._myGenotype, mateGenotype, genomeRng, {
-            crossoverRate: this._config.crossoverRate, mutationRate: this._config.mutationRate,
+            crossoverRate: this._sched('crossoverRate'), mutationRate: this._sched('mutationRate'),
         }, provenance);
 
         const myEnergyContribution = parent.contributeToOffspring();
@@ -539,13 +542,14 @@ export class World {
             }
         }
 
-        if (this._clock % this._config.foodRegenerationPeriod === 0) {
+        if (this._clock % this._sched('foodRegenerationPeriod') === 0) {
             // JJ's food ceiling: if living food is at the cap, spawn nothing this tick AND draw no RNG (JJ's
             // findLowestDeadFoodBit returns NULL when the array is full, before any draw). Default Infinity -> never.
-            if (this._maxFood !== Infinity) {
+            const maxFood = this._sched('maxFood'); // §10: may step over time
+            if (maxFood !== Infinity) {
                 let living = 0;
                 for (const food of this._foodBits.values()) if (food.getAlive()) living++;
-                if (living >= this._maxFood) return;
+                if (living >= maxFood) return;
             }
             let newFoodType = 0;
             let parent;
@@ -566,7 +570,7 @@ export class World {
             if (parent) {
                 const childId = this._nextFoodId++;
                 const child = new FoodBit();
-                child.setMaxSpawnRadius(this._config.foodSpread);
+                child.setMaxSpawnRadius(this._sched('foodSpread'));
                 child.setPoolBounds(this._config.pool); // before spawnFromParent -> randomizeSpawnPosition clamps to bounds
                 child.setTopology(this._topology); // torus: spawn wraps instead of reflecting (P4d)
                 child.spawnFromParent(parent, childId, newFoodType, this._foodRegenRng);
@@ -713,9 +717,9 @@ export class World {
             const f = new FoodBit();
             if (alive) f.setIndex(fd.id); // dead ghost food keeps NULL_INDEX (getAlive false); keyed by id in the side map
             f.setPosition({ x: fd.x, y: fd.y }); f.setType(fd.type); f.setEnergy(fd.energy);
-            // read the RESOLVED config (world._config), not the raw restore arg -- else a minimal-config restore
-            // gets foodSpread=undefined -> NaN on the next respawn (the fresh loadFood path already reads resolved).
-            f.setMaxSpawnRadius(world._config.foodSpread); f.setPoolBounds(world._config.pool); f.setTopology(world._topology);
+            // read via _sched at the resumed clock (a scalar or §10 schedule), matching the fresh loadFood path;
+            // a restored bit's own spawn radius is dead state, but this keeps it consistent + never a schedule object.
+            f.setMaxSpawnRadius(world._sched('foodSpread')); f.setPoolBounds(world._config.pool); f.setTopology(world._topology);
             return f;
         };
         for (const fd of data.food) {

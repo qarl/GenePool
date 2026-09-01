@@ -48,6 +48,40 @@ export function makeConfig(overrides = {}) {
     return Object.freeze(cfg);
 }
 
+// §10 — PARAMETER SCHEDULES. Any schedulable per-pool value may be a plain scalar (the constant case) OR a
+// step-schedule `{ schedule: [[tick0, v0], [tick1, v1], ...] }` (ascending ticks) so a world can CHANGE over time
+// (drought, seasons, shifting carrying capacity). Resolution is a pure function of (spec, tick) -- a STEP function,
+// no run-state accumulator -- so it is deterministic and adds nothing to checkpoint/restore. A scalar returns
+// itself, so a world with no schedules is byte-identical.
+export function scheduleValue(spec, tick) {
+    if (spec === null || typeof spec !== 'object' || !Array.isArray(spec.schedule)) return spec; // scalar -> as-is
+    const s = spec.schedule;
+    let v = s.length ? s[0][1] : undefined; // before the first step, the first value holds
+    for (let i = 0; i < s.length; i++) { if (tick >= s[i][0]) v = s[i][1]; else break; }
+    return v;
+}
+
+// Validate a schedule's FORM (not its values -- those are the author's world design). Throws at config time so a
+// malformed schedule fails at the boundary, not deep in a tick. A scalar is always valid.
+export function validateScheduleForm(field, spec) {
+    if (spec === null || typeof spec !== 'object' || !Array.isArray(spec.schedule)) return; // scalar
+    const s = spec.schedule;
+    if (s.length === 0) throw new Error(`config: ${field}.schedule must have at least one [tick, value] entry`);
+    let prev = -Infinity;
+    for (const e of s) {
+        if (!Array.isArray(e) || e.length !== 2 || !Number.isFinite(e[0]) || e[0] < 0) {
+            throw new Error(`config: ${field}.schedule entries must be [tick>=0, value]`);
+        }
+        if (e[0] < prev) throw new Error(`config: ${field}.schedule ticks must be ascending`);
+        prev = e[0];
+    }
+}
+
+// The per-pool values World resolves per tick through scheduleValue (so each may be scalar or a step-schedule).
+export const SCHEDULABLE_FIELDS = Object.freeze([
+    'foodRegenerationPeriod', 'reproductiveIsolation', 'crossoverRate', 'mutationRate', 'foodSpread', 'maxFood', 'maxPopulation',
+]);
+
 // P3/§6 — the FULL world-config schema `World` reads: fill every ecology/lifecycle/spatial default so a MINIMAL
 // config (even just `{}` or `{pool}`) yields a working, correctly-scaled world at ANY pool size, and DECLARE the
 // scaling policy per quantity. This is the §6 "absolute-vs-×poolSize table". Only UNDEFINED fields are filled
@@ -57,7 +91,7 @@ export function makeConfig(overrides = {}) {
 // default to Infinity (opt-in caps), never a built-in ceiling.
 export function resolveWorldConfig(config = {}) {
     const pool = resolvePoolBounds(config.pool);
-    return Object.freeze({
+    const resolved = {
         ...config, // preserve pool/obstacles/topology/perceptionMode/masterSeed + any extra fields verbatim
 
         // --- ×poolSize (scales with world width) --- a spatial EXTENT that should track the world's size, so an
@@ -81,5 +115,7 @@ export function resolveWorldConfig(config = {}) {
         maxPopulation: config.maxPopulation ?? Infinity,
         maxFood: config.maxFood ?? Infinity,
         maxFoodBitsPerType: config.maxFoodBitsPerType ?? MAX_FOODBITS_PER_TYPE,
-    });
+    };
+    for (const field of SCHEDULABLE_FIELDS) validateScheduleForm(field, resolved[field]); // §10: fail malformed schedules at config time
+    return Object.freeze(resolved);
 }
