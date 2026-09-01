@@ -667,18 +667,30 @@ export class World {
     // dereferences a dead ref's frozen position (only the eat/mate test guards on getAlive). Dropping them
     // would diverge. (config is NOT serialized -- the caller re-supplies the same config to restore.)
     serialize() {
-        // H1 checkpoint does not yet support snapshot mode: a bot's _chosenMate is a FrozenSwimbot (no
-        // serializeCheckpoint), and the frozen-view/ghost state would need its own persistence contract. Fail
-        // loudly rather than crash cryptically. (Checkpoint a mixed-live world; snapshot checkpointing is future work.)
-        if (this._snapshotMode) throw new Error('World.serialize(): checkpoint is not supported in snapshot perception mode yet.');
+        // Snapshot mode's chosenMate is a FrozenSwimbot (a frozen tick-start VIEW), not a full swimbot -- so a
+        // swept-but-referenced mate is captured as a GHOST VIEW (index + frozen genital) rather than a full ghost
+        // swimbot. That is all the resumed steering dereferences: swimbot.update() derefs a dead chosenMate's
+        // getGenitalPosition() (unguarded, ~line 419) to steer for one more tick before the mate rescan drops it.
+        // The LIVING snapshot views are NOT persisted -- they are derived (rebuilt from the live bots on restore);
+        // only the ghosts (their bot is gone -> not derivable) need it. Mixed-live still captures full ghost swimbots.
+        const snapshot = this._snapshotMode;
         const swimbots = [];
-        const ghostSwimbots = new Map(); // id -> serialized dead swimbot referenced as a chosenMate
+        const ghostSwimbots = new Map(); // mixed-live: id -> serialized dead swimbot referenced as a chosenMate
+        const ghostViews = new Map();    // snapshot:   id -> {index,genital,age,energy} of a swept referenced view
         const ghostFood = new Map();     // id -> {id,x,y,type,energy} of an eaten food referenced as chosenFood
         for (const bot of this._swimbots.values()) {
             swimbots.push(bot.serializeCheckpoint());
-            const cm = bot.getChosenMate(); // dead swimbots keep their _index (die() doesn't clear it)
-            if (cm && !this._swimbots.has(cm.getIndex()) && !ghostSwimbots.has(cm.getIndex())) {
-                ghostSwimbots.set(cm.getIndex(), cm.serializeCheckpoint());
+            const cm = bot.getChosenMate(); // swept swimbots/views keep their _index (die()/markDead() don't clear it)
+            if (cm && !this._swimbots.has(cm.getIndex())) {
+                const cmIdx = cm.getIndex();
+                if (snapshot) {
+                    if (!ghostViews.has(cmIdx)) {
+                        const g = cm.getGenitalPosition();
+                        ghostViews.set(cmIdx, { index: cmIdx, genital: [g.x, g.y], age: cm.getAge(), energy: cm.getEnergy() });
+                    }
+                } else if (!ghostSwimbots.has(cmIdx)) {
+                    ghostSwimbots.set(cmIdx, cm.serializeCheckpoint());
+                }
             }
             const cfIdx = bot.getChosenFoodBitIndex(); // eaten food's kill() clears its index -> use the stored id
             if (cfIdx !== NULL_INDEX && !this._foodBits.has(cfIdx) && !ghostFood.has(cfIdx)) {
@@ -691,7 +703,7 @@ export class World {
             food.push({ id: f.getIndex(), x: f.getPosition().x, y: f.getPosition().y, type: f.getType(), energy: f.getEnergy() });
         }
         return {
-            masterSeed: this._masterSeed, clock: this._clock,
+            masterSeed: this._masterSeed, clock: this._clock, perceptionMode: this._perceptionMode,
             nextSwimbotId: this._nextSwimbotId, nextFoodId: this._nextFoodId,
             numDeadSwimbots: this._numDeadSwimbots,
             livingSwimbotCount: this._livingSwimbotCount, livingFoodCount: this._livingFoodCount,
@@ -699,12 +711,17 @@ export class World {
             obstacles: this._obstacleField.toSpecs(), // §8: the full obstacle list (was a single `obstacle` pair)
             swimbots, food,
             ghostSwimbots: [...ghostSwimbots.values()],
+            ghostViews: [...ghostViews.values()],
             ghostFood: [...ghostFood.values()],
         };
     }
 
     static restore(config, data) {
-        const world = new World(config, data.masterSeed);
+        // Resume on the SAME perception baseline the checkpoint was saved on (snapshot vs mixed-live are two
+        // deliberately different deterministic trajectories) -- override the caller's config only if it disagrees.
+        const savedMode = data.perceptionMode || 'mixed-live';
+        const cfg = savedMode !== (config.perceptionMode || 'mixed-live') ? { ...config, perceptionMode: savedMode } : config;
+        const world = new World(cfg, data.masterSeed);
         world._clock = data.clock;
         world._nextSwimbotId = data.nextSwimbotId;
         world._nextFoodId = data.nextFoodId;
@@ -740,14 +757,40 @@ export class World {
         for (const sd of data.swimbots) {
             const sb = makeBot(sd);
             world._swimbots.set(sd.index, sb);
-            if (world._useSpatialGrid) { const gp = sb.getGenitalPosition(); world._swimbotGrid.insert(sb, gp.x, gp.y); }
+            // snapshot mode never reads the live _swimbotGrid (it scans _snapshotViews/_snapshotGrid), and the fresh
+            // load path guards this the same way (ctor line ~208) -- so keep restore symmetric: only the mixed-live
+            // grid is populated. (Harmless today since snapshot never reads it, but avoids a latent restore/fresh drift.)
+            if (world._useSpatialGrid && !world._snapshotMode) { const gp = sb.getGenitalPosition(); world._swimbotGrid.insert(sb, gp.x, gp.y); }
         }
-        const ghostSwimbots = new Map();
-        for (const sd of data.ghostSwimbots) ghostSwimbots.set(sd.index, makeBot(sd)); // dead; not in _swimbots, not ticked
-
-        const resolveSwimbot = (id) => world._swimbots.get(id) || ghostSwimbots.get(id);
         const resolveFood = (id) => world._foodBits.get(id) || ghostFood.get(id);
-        for (const sb of world._swimbots.values()) sb.relinkChosen(resolveSwimbot, resolveFood);
+
+        if (world._snapshotMode) {
+            // Snapshot mode: _chosenMate is a FrozenSwimbot, never a live swimbot. Rebuild the persistent view map:
+            // LIVING views are derived (refresh from the restored bots); GHOST views (swept-but-referenced last
+            // tick) are recreated ALIVE from data.ghostViews -- so the next _buildSnapshot markDead()s them into the
+            // one-tick ghost the resumed steering expects (getGenitalPosition read once, then the rescan drops it),
+            // exactly as the uninterrupted run would. The _snapshotGrid is NOT rebuilt here: the next tick's
+            // _buildSnapshot clears+refills it (after markDead) before any perception reads it.
+            const views = world._snapshotViews;
+            for (const sb of world._swimbots.values()) {
+                const v = new FrozenSwimbot(world._matePref, world._viewRadius, world._topology);
+                v.refresh(sb); // derived; overwritten identically by the next _buildSnapshot (bots have not moved)
+                views.set(sb.getIndex(), v);
+            }
+            for (const gv of (data.ghostViews || [])) {
+                const v = new FrozenSwimbot(world._matePref, world._viewRadius, world._topology);
+                v._index = gv.index; v._alive = true; v._age = gv.age; v._energy = gv.energy;
+                v._genital.x = gv.genital[0]; v._genital.y = gv.genital[1]; // frozen; markDead keeps it next build
+                views.set(gv.index, v);
+            }
+            const resolveView = (id) => views.get(id) || null;
+            for (const sb of world._swimbots.values()) sb.relinkChosen(resolveView, resolveFood);
+        } else {
+            const ghostSwimbots = new Map();
+            for (const sd of data.ghostSwimbots) ghostSwimbots.set(sd.index, makeBot(sd)); // dead; not in _swimbots, not ticked
+            const resolveSwimbot = (id) => world._swimbots.get(id) || ghostSwimbots.get(id);
+            for (const sb of world._swimbots.values()) sb.relinkChosen(resolveSwimbot, resolveFood);
+        }
 
         world._livingSwimbotCount = data.livingSwimbotCount;
         world._livingFoodCount = data.livingFoodCount;
