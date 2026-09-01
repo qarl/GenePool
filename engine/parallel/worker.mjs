@@ -10,7 +10,7 @@ import { CoopGrid } from './coop-grid.mjs';
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_PARK, barrier } from './barrier.mjs';
 
 const { frozenSab, ctrlSab, gridSpec, maxBots, masterSeed, config, founders, idStart, idEnd, obstacle, W, workerIndex,
-        foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders, renderSab } = workerData;
+        foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders, renderSab, wantCheckpoint } = workerData;
 const ctrl = new Int32Array(ctrlSab);
 const coopGrid = new CoopGrid(gridSpec);
 // The food SoA + food grid were populated ONCE by main before spawn; the worker just reconstructs read-only views.
@@ -80,7 +80,10 @@ for (;;) {
 
     if (Atomics.load(ctrl, CTL_SHUTDOWN) === 1) {
         part.applyDeltas(); // flush the LAST tick's resolution (normally applied at the next tick's start) so the
-        parentPort.postMessage({ type: 'fingerprint', idStart, fp: part.fingerprint() }); // fingerprint is fully resolved
+        // fingerprint / checkpoint is fully resolved. C2: wantCheckpoint ships each partition's full living-bot state
+        // (+ worker 0's ecology) so main can rebuild a resumable World; else the lean id-keyed fingerprint (G1/G2).
+        if (wantCheckpoint) parentPort.postMessage({ type: 'checkpoint', idStart, ...part.checkpoint(workerIndex === 0) });
+        else parentPort.postMessage({ type: 'fingerprint', idStart, fp: part.fingerprint() });
         break;
     }
 

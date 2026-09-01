@@ -455,4 +455,29 @@ export class Partition {
         }
         return out;
     }
+
+    // C2 -- FULL checkpoint of this partition's LIVING bots (heavy heap state via the engine's own serializeCheckpoint,
+    // the SAME record World.restore consumes), so main can rebuild a live, resumable World from a parallel run. The
+    // frozen snapshot VIEWS are NOT shipped: they are derived (World.restore refreshes them from the restored bots),
+    // and a swept-but-referenced mate's frozen genital is read by main straight from the shared frozen SoA (slot==id,
+    // never reused). `includeEcology` (worker 0 only, the authoritative food/regen/mint owner) adds the living food +
+    // the id high-water marks + the food-regen stream position -- the world-level state no single partition holds.
+    checkpoint(includeEcology) {
+        const swimbots = [];
+        for (const sb of this._bots) { if (sb.getAlive()) swimbots.push(sb.serializeCheckpoint()); }
+        const out = { swimbots };
+        if (includeEcology) {
+            const food = [];
+            for (const f of this._foodBits.values()) {
+                if (!f.getAlive()) continue; // eaten food lingers in worker 0's map (kill != delete); world.js sweeps it -> living only
+                const p = f.getPosition();
+                food.push({ id: f.getIndex(), x: p.x, y: p.y, type: f.getType(), energy: f.getEnergy() });
+            }
+            out.food = food;
+            out.nextSwimbotId = this._nextId;      // worker 0 mints all ids in resolve() -> its high-water is global
+            out.nextFoodId = this._nextFoodId;
+            out.foodRegenPosition = this._foodRegenStream.position;
+        }
+        return out;
+    }
 }

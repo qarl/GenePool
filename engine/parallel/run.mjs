@@ -11,12 +11,14 @@ import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeFrozenBuffer } from './frozen-layout.mjs';
-import { setupFood } from './food-layout.mjs';
+import { makeFrozenBuffer, STRIDE, F_GX, F_GY, F_AGE, F_ENERGY } from './frozen-layout.mjs';
+import { setupFood, FD_STRIDE, FD_POSX, FD_POSY, FD_TYPE, FD_ENERGY } from './food-layout.mjs';
 import { makePostUpdateBuffer, makeResolutionBuffers } from './resolution-layout.mjs';
 import { allocCoopGrid } from './coop-grid.mjs';
 import { growSwimbotBuffers, growFoodBuffers } from './grow-buffers.mjs';
 import { resolveWorldConfig, SCHEDULABLE_FIELDS } from '../config.js';
+import { NULL_INDEX } from '../constants.js';
+import { World } from '../world.js';
 
 const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './barrier.mjs';
@@ -25,7 +27,7 @@ import { makeEcologyConfig, makeFounders, makeFood, MASTER_SEED, OBSTACLE } from
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS (config leaves viewRadius default)
 
-export async function runParallel(N, ticks, W, poolSize, founders, config, food, warmup = 50, initialMaxBots = 0, forceGrowEvery = 0, initialMaxFood = 0, forceFoodGrowEvery = 0, seed = MASTER_SEED, obstacle = OBSTACLE) {
+export async function runParallel(N, ticks, W, poolSize, founders, config, food, warmup = 50, initialMaxBots = 0, forceGrowEvery = 0, initialMaxFood = 0, forceFoodGrowEvery = 0, seed = MASTER_SEED, obstacle = OBSTACLE, wantCheckpoint = false) {
     // Ids are never reused + monotonic, so the swimbot SABs are sized to a CAPACITY CEILING. That ceiling is no
     // longer a hard wall: worker 0 publishes nextId each tick and main GROWS the SABs (doubling) before nextId
     // reaches maxBots -- so a long run that mints > initialMaxBots lifetime ids keeps going, deterministically,
@@ -51,6 +53,7 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
     const chunk = Math.ceil(N / W);
     const workers = [];
     const fingerprints = new Map();
+    const checkpoints = new Map(); // C2: per-worker full-state checkpoints (when wantCheckpoint)
     let readyCount = 0, onReady, onAllFingerprints;
     const ready = new Promise(r => { onReady = r; });
     const dumped = new Promise(r => { onAllFingerprints = r; });
@@ -62,12 +65,13 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
             workerData: {
                 frozenSab, ctrlSab, gridSpec, maxBots, masterSeed: seed, config,
                 founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle, W, workerIndex: w,
-                foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders: N,
+                foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders: N, wantCheckpoint,
             },
         });
         worker.on('message', (m) => {
             if (m.type === 'ready') { if (++readyCount === W) onReady(); }
             else if (m.type === 'fingerprint') { fingerprints.set(m.idStart, m.fp); if (fingerprints.size === W) onAllFingerprints(); }
+            else if (m.type === 'checkpoint') { checkpoints.set(m.idStart, m); if (checkpoints.size === W) onAllFingerprints(); }
         });
         worker.on('error', (e) => { console.error('worker error', e); process.exit(1); });
         workers.push(worker);
@@ -132,6 +136,51 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
     await dumped;
     await Promise.all(workers.map(w => w.terminate()));
 
+    if (wantCheckpoint) {
+        // C2: assemble a World.serialize()-format (snapshot-mode) checkpoint from the per-worker partial checkpoints.
+        // Living bots come from every worker's heap (their own serializeCheckpoint); the ecology (food + id high-water
+        // + regen-stream position) from worker 0. GHOSTS -- a live bot's chosenMate/chosenFood swept/eaten by the
+        // boundary -- are read straight from the shared SoAs (slot==id, never reused): the frozen genital from
+        // frozenSab, the eaten-food position from foodSab (both `let`s hold the latest post-grow backing). This is
+        // precisely the checkpoint World.restore consumes -> a resumable, snapshot-baseline World bit-identical to
+        // a serial snapshot run (gated by run-tw.mjs).
+        const F = new Float64Array(frozenSab), FF = new Float64Array(foodSab);
+        const allBots = [];
+        let eco = null;
+        for (let w = 0; w < W; w++) {
+            const c = checkpoints.get(w * chunk);
+            for (const sb of c.swimbots) allBots.push(sb);
+            if (c.food) eco = c; // worker 0 carries the ecology
+        }
+        allBots.sort((a, b) => a.index - b.index);
+        const livingIds = new Set(allBots.map(b => b.index));
+        const livingFoodIds = new Set(eco.food.map(f => f.id));
+        const ghostViews = new Map(), ghostFood = new Map();
+        for (const sb of allBots) {
+            const cm = sb.chosenMateIndex;
+            if (cm !== NULL_INDEX && !livingIds.has(cm) && !ghostViews.has(cm)) {
+                const o = cm * STRIDE;
+                ghostViews.set(cm, { index: cm, genital: [F[o + F_GX], F[o + F_GY]], age: F[o + F_AGE], energy: F[o + F_ENERGY] });
+            }
+            const cf = sb.chosenFoodBitIndex;
+            if (cf !== NULL_INDEX && !livingFoodIds.has(cf) && !ghostFood.has(cf)) {
+                const o = cf * FD_STRIDE;
+                ghostFood.set(cf, { id: cf, x: FF[o + FD_POSX], y: FF[o + FD_POSY], type: FF[o + FD_TYPE], energy: FF[o + FD_ENERGY] });
+            }
+        }
+        const data = {
+            masterSeed: seed, clock: warm + ticks, perceptionMode: 'snapshot',
+            nextSwimbotId: eco.nextSwimbotId, nextFoodId: eco.nextFoodId,
+            numDeadSwimbots: eco.nextSwimbotId - allBots.length,
+            livingSwimbotCount: allBots.length, livingFoodCount: eco.food.length,
+            foodRegenPosition: eco.foodRegenPosition,
+            obstacles: (config.obstacles && config.obstacles.length) ? config.obstacles : [],
+            swimbots: allBots, food: eco.food,
+            ghostSwimbots: [], ghostViews: [...ghostViews.values()], ghostFood: [...ghostFood.values()],
+        };
+        return { ms, tps: Math.round(ticks / (ms / 1000)), grows: growCount, foodGrows: foodGrowCount, totalBots: allBots.length, data };
+    }
+
     const fp = [];
     for (let w = 0; w < W; w++) fp.push(...fingerprints.get(w * chunk));
     fp.sort((a, b) => Number(a.split(':')[0]) - Number(b.split(':')[0]));
@@ -150,25 +199,44 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
 // single-thread engine. Rejected (run these on world.js single-thread): torus topology; numFoodTypes > 1; and §10
 // schedules. ACCEPTED: any pool size; a full §8 obstacle FIELD (any count, per-obstacle thickness + movement/vision
 // masks -- honored via the engine ObstacleField, same as world.js); static ecology. Grows automatically (unbounded).
-export async function runPoolParallel({ config, seed = MASTER_SEED, founders, food, workers = 8, ticks }) {
+// Resolve the config to world.js's defaults and REJECT anything the parallel engine can't reproduce bit-for-bit.
+// Returns the resolved cfg with the ObstacleField path forced (config.obstacles defined, even []); the single-obstacle
+// param is the gates' back-compat fallback only. Shared by runPoolParallel (run-to-completion) and runPoolParallelToWorld.
+function resolveAndGuard(who, { config, founders, food, ticks }) {
     if (!config || !Array.isArray(founders) || !Array.isArray(food) || !Number.isInteger(ticks)) {
-        throw new Error('runPoolParallel: requires { config, founders: [...], food: [...], ticks }');
+        throw new Error(`${who}: requires { config, founders: [...], food: [...], ticks }`);
     }
+    if (founders.length === 0) throw new Error(`${who}: an empty founder pool has nothing to simulate`); // else chunk=0 -> workers share idStart 0 -> the all-workers-reported barrier never completes (hang)
     const resolved = resolveWorldConfig(config); // same defaults world.js applies -> bit-identical
-    const reject = (why) => { throw new Error(`runPoolParallel: ${why} is not modeled by the parallel engine -- run it on world.js single-thread`); };
+    const reject = (why) => { throw new Error(`${who}: ${why} is not modeled by the parallel engine -- run it on world.js single-thread`); };
     for (const f of SCHEDULABLE_FIELDS) { // the parallel path reads config values raw, not per-tick -> reject §10 schedules (would be silent NaN)
         const v = resolved[f];
         if (v !== null && typeof v === 'object' && Array.isArray(v.schedule)) reject(`a §10 schedule on config.${f}`);
     }
     if (resolved.topology === 'torus') reject('torus topology (the coop grid + LoS are flat-only)');
     if ((resolved.numFoodTypes ?? 1) > 1) reject(`numFoodTypes=${resolved.numFoodTypes}`);
+    return { ...resolved, obstacles: resolved.obstacles || [] };
+}
 
-    // Force the ObstacleField path in the workers (config.obstacles defined, even []); the single-obstacle param is
-    // the gates' back-compat fallback only, so pass a no-op here.
-    const cfg = { ...resolved, obstacles: resolved.obstacles || [] };
+export async function runPoolParallel({ config, seed = MASTER_SEED, founders, food, workers = 8, ticks }) {
+    const cfg = resolveAndGuard('runPoolParallel', { config, founders, food, ticks });
     const poolSize = cfg.pool ? (cfg.pool.right - cfg.pool.left) : 8000;
     const r = await runParallel(founders.length, ticks, workers, poolSize, founders, cfg, food, 0, 0, 0, 0, 0, seed, [{ x: 0, y: 0 }, { x: 0, y: 0 }]);
     return { hash: r.hash, totalBots: r.totalBots, grows: r.grows, foodGrows: r.foodGrows, tps: r.tps, ms: r.ms, fingerprint: r.fp };
+}
+
+// C (live-World acceleration, docs/PLAN-parallel-in-world.md): run a pool across `workers` cores AND return it as a
+// live, tickable, resumable World -- so you can seed a world, fast-forward it across cores, then keep inspecting /
+// ticking / checkpointing it single-thread. Same scope + rejections as runPoolParallel. The parallel engine runs the
+// SNAPSHOT baseline (order-independent), so the returned World is in snapshot mode: ticking it on continues the SAME
+// deterministic trajectory the fast-forward was on. Bit-identical to a serial snapshot World run `ticks` ticks then
+// resumed (gated by run-tw.mjs, which also proves the reconstructed state == serial world.serialize() field-for-field).
+export async function runPoolParallelToWorld({ config, seed = MASTER_SEED, founders, food, workers = 8, ticks }) {
+    const cfg = resolveAndGuard('runPoolParallelToWorld', { config, founders, food, ticks });
+    const poolSize = cfg.pool ? (cfg.pool.right - cfg.pool.left) : 8000;
+    const r = await runParallel(founders.length, ticks, workers, poolSize, founders, cfg, food, 0, 0, 0, 0, 0, seed, [{ x: 0, y: 0 }, { x: 0, y: 0 }], true);
+    const world = World.restore(cfg, r.data); // cfg carries perceptionMode via the checkpoint; snapshot-mode resume
+    return { world, checkpoint: r.data, grows: r.grows, foodGrows: r.foodGrows, tps: r.tps, ms: r.ms, totalBots: r.totalBots };
 }
 
 // CLI: quick coop-1 vs coop-W determinism + speedup on a full-ecology pool. (The authoritative correctness gate
