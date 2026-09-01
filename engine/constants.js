@@ -50,6 +50,9 @@ export const FOOD_TYPE_OFFSET = 0.2;                  // energy multiplier when 
 export const DEFAULT_SWIMBOT_HUNGER_THRESHOLD = 50;   // brain's hunger threshold at create()
 export const DEFAULT_MAXIMUM_AGE = 40000;             // GlobalTweakers default (config override)
 export const DEFAULT_CHILD_ENERGY_RATIO = 0.5;        // GlobalTweakers default (config override)
+export const DEFAULT_FOOD_REGENERATION_PERIOD = 20;   // GlobalTweakers default: ticks between regen events
+export const DEFAULT_CROSSOVER_RATE = 0.2;            // GlobalTweakers default (config override)
+export const DEFAULT_MUTATION_RATE = 0.01;            // GlobalTweakers default (config override)
 export const TOO_UGLY_TO_CHOOSE = 0;                  // attractiveness floor for mate choice
 
 // Brain FSM

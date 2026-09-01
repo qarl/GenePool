@@ -5,6 +5,12 @@
 // dims/topology/obstacles/food-ecology/schedules join the schema in later phases (§6/§7/§8/§9). Everything
 // here is world CONFIG the user supplies -- the engine imposes no bounds (§ Design Principle).
 
+import {
+    resolvePoolBounds, SWIMBOT_VIEW_RADIUS, MAX_FOODBITS_PER_TYPE,
+    DEFAULT_MAXIMUM_AGE, DEFAULT_CHILD_ENERGY_RATIO,
+    DEFAULT_FOOD_REGENERATION_PERIOD, DEFAULT_CROSSOVER_RATE, DEFAULT_MUTATION_RATE,
+} from './constants.js';
+
 const DEFAULTS = Object.freeze({
     masterSeed: 0,
     poolSize: 0,
@@ -40,4 +46,37 @@ export function makeConfig(overrides = {}) {
         }
     }
     return Object.freeze(cfg);
+}
+
+// P3/§6 — the FULL world-config schema `World` reads: fill every ecology/lifecycle/spatial default so a MINIMAL
+// config (even just `{}` or `{pool}`) yields a working, correctly-scaled world at ANY pool size, and DECLARE the
+// scaling policy per quantity. This is the §6 "absolute-vs-×poolSize table". Only UNDEFINED fields are filled
+// (`??`), so a fully-specified config (every golden / gate) is returned unchanged -> byte-identical. Any field
+// not named here (masterSeed, pool, obstacles, topology, perceptionMode, maxFoodBitsPerType overrides, ...) is
+// preserved verbatim via the spread. The engine imposes no world-scale limits (North Star): the "max" knobs
+// default to Infinity (opt-in caps), never a built-in ceiling.
+export function resolveWorldConfig(config = {}) {
+    const pool = resolvePoolBounds(config.pool);
+    return Object.freeze({
+        ...config, // preserve pool/obstacles/topology/perceptionMode/masterSeed + any extra fields verbatim
+
+        // --- ×poolSize (scales with world width) --- a spatial EXTENT that should track the world's size, so an
+        // arbitrary-size pool behaves sensibly with no per-size tuning. foodSpread is JJ's "secret" W/2 spawn radius.
+        foodSpread: config.foodSpread ?? pool.width / 2,
+
+        // --- ABSOLUTE (independent of world size) --- rates, periods, thresholds, and the sensory RANGE (a body's
+        // reach doesn't grow with the pool -- a world-design choice; the user overrides with any absolute value).
+        viewRadius: config.viewRadius ?? SWIMBOT_VIEW_RADIUS,
+        foodRegenerationPeriod: config.foodRegenerationPeriod ?? DEFAULT_FOOD_REGENERATION_PERIOD,
+        maximumLifeSpan: config.maximumLifeSpan ?? DEFAULT_MAXIMUM_AGE,
+        childEnergyRatio: config.childEnergyRatio ?? DEFAULT_CHILD_ENERGY_RATIO,
+        crossoverRate: config.crossoverRate ?? DEFAULT_CROSSOVER_RATE,
+        mutationRate: config.mutationRate ?? DEFAULT_MUTATION_RATE,
+        numFoodTypes: config.numFoodTypes ?? 1,
+
+        // --- opt-in world-scale caps (Infinity = no engine-imposed limit; North Star) ---
+        maxPopulation: config.maxPopulation ?? Infinity,
+        maxFood: config.maxFood ?? Infinity,
+        maxFoodBitsPerType: config.maxFoodBitsPerType ?? MAX_FOODBITS_PER_TYPE,
+    });
 }

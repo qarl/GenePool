@@ -34,6 +34,7 @@ import { SpatialGrid } from './spatialGrid.js';
 import { FrozenSwimbot } from './snapshotView.js';
 import { Perception } from './perception.js';
 import { makeTopology } from './topology.js';
+import { resolveWorldConfig } from './config.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE,
     MAX_FOODBITS_PER_TYPE, NON_REPRODUCING_JUNK_DNA_LIMIT,
@@ -59,6 +60,7 @@ export class World {
     // options.useSpatialGrid (default true) picks the P2 spatial-grid perception; false = the brute-force
     // O(n^2) reference path (kept for the bit-for-bit A/B, and as a fallback).
     constructor(config, masterSeed, options = {}) {
+        config = resolveWorldConfig(config); // P3/§6: fill ecology/lifecycle/spatial defaults + scaling policy (foodSpread=W/2). Only fills UNDEFINED fields -> a full config is unchanged (byte-identical).
         this._config = config;
         this._masterSeed = masterSeed;
         this._topology = makeTopology(config); // §7 seam: walls -> FLAT (bit-identical); torus is P4
@@ -711,7 +713,9 @@ export class World {
             const f = new FoodBit();
             if (alive) f.setIndex(fd.id); // dead ghost food keeps NULL_INDEX (getAlive false); keyed by id in the side map
             f.setPosition({ x: fd.x, y: fd.y }); f.setType(fd.type); f.setEnergy(fd.energy);
-            f.setMaxSpawnRadius(config.foodSpread); f.setPoolBounds(config.pool); f.setTopology(world._topology);
+            // read the RESOLVED config (world._config), not the raw restore arg -- else a minimal-config restore
+            // gets foodSpread=undefined -> NaN on the next respawn (the fresh loadFood path already reads resolved).
+            f.setMaxSpawnRadius(world._config.foodSpread); f.setPoolBounds(world._config.pool); f.setTopology(world._topology);
             return f;
         };
         for (const fd of data.food) {
