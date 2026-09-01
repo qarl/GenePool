@@ -6,7 +6,13 @@
 //
 //   node tools/run-recorder.mjs [--seed 1] [--founders 300] [--food 900] [--ticks 5000]
 //        [--out run.jsonl] [--db run.db] [--pool WxH] [--viewRadius 300] [--sensoryPeriod 50] [--maxPopulation N]
+//        [--topology walls|torus] [--isolation 0.9] [--config world.json]
+//
+// --config <world.json> supplies the FULL arbitrary-world definition (any config field: pool, topology, an
+// obstacles LIST, reproductiveIsolation, §10 parameter schedules like {"foodRegenerationPeriod":{"schedule":[[0,20],[5000,200]]}},
+// and the ecology params). Convenience flags override the file. This is how you run an arbitrary world end to end.
 
+import { readFileSync } from 'node:fs';
 import { World } from '../engine/world.js';
 import { Genotype } from '../engine/genotype.js';
 import { createJsonlSink } from './events/jsonl-sink.mjs';
@@ -27,17 +33,26 @@ const ticks = num('ticks', 5000);
 const out = str('out', 'run.jsonl');
 const dbOut = str('db', out.replace(/\.jsonl$/, '') + '.db');
 const poolStr = str('pool', '8000x8000');
-const [pw, ph] = poolStr.split('x').map(Number);
+const [pw0, ph0] = poolStr.split('x').map(Number);
 
-const config = {
+// Base config (flag defaults); a --config file overrides ANY field; convenience flags override the file.
+let config = {
     maximumLifeSpan: 40000, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
     crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: 4000,
     foodBitEnergy: 50, attractionCriterion: 10,
-    pool: { left: 0, top: 0, right: pw, bottom: ph },
+    pool: { left: 0, top: 0, right: pw0, bottom: ph0 },
 };
+const configFile = str('config', null);
+if (configFile) config = { ...config, ...JSON.parse(readFileSync(configFile, 'utf8')) };
 if (argv.includes('--viewRadius')) config.viewRadius = num('viewRadius');
 if (argv.includes('--sensoryPeriod')) config.sensoryPeriod = num('sensoryPeriod');
 if (argv.includes('--maxPopulation')) config.maxPopulation = num('maxPopulation');
+if (argv.includes('--topology')) config.topology = str('topology');
+if (argv.includes('--isolation')) config.reproductiveIsolation = num('isolation');
+
+// Final pool bounds (a --config may have replaced the flag pool) -> place founders + food inside them.
+const pl = config.pool.left, pt = config.pool.top, pw = config.pool.right - pl, ph = config.pool.bottom - pt;
+const foodEnergy = typeof config.foodBitEnergy === 'number' ? config.foodBitEnergy : 50;
 
 // Build the initial conditions deterministically from the seed, so they can be recorded into the run file.
 const rng = mulberry32((seed >>> 0) ^ 0x5eed1234);
@@ -46,10 +61,10 @@ for (let i = 0; i < founders; i++) {
     const g = new Genotype(); g.randomize(rng);
     const genes = g.getGenes().slice();
     for (let k = NUM_GENES_USED; k < NUM_GENES; k++) genes[k] = 0; // junk-zeroed -> one interbreeding species
-    founderSpecs.push({ id: i, genes, age: Math.floor(rng() * 20000), x: rng() * pw, y: rng() * ph, angle: rng() * 360 - 180, energy: 80 });
+    founderSpecs.push({ id: i, genes, age: Math.floor(rng() * 20000), x: pl + rng() * pw, y: pt + rng() * ph, angle: rng() * 360 - 180, energy: 80 });
 }
 const foodSpecs = [];
-for (let i = 0; i < food; i++) foodSpecs.push({ id: i, x: rng() * pw, y: rng() * ph, type: 0, energy: config.foodBitEnergy });
+for (let i = 0; i < food; i++) foodSpecs.push({ id: i, x: pl + rng() * pw, y: pt + rng() * ph, type: 0, energy: foodEnergy });
 
 // runId content-addresses the run's ACTUAL initial conditions incl. the founder genomes (§14 must-fix): a
 // different founder set -> a different runId -> correct dedupe/rebuild. Excludes tick count (a short run is a
@@ -60,7 +75,9 @@ const sink = createJsonlSink(out, { runId, seed, config });
 const world = new World(config, seed, { onEvent: sink.onEvent });
 for (const f of founderSpecs) world.loadSwimbot(f.id, f);
 for (const f of foodSpecs) world.loadFood(f.id, f);
-world.setObstacle({ x: 40, y: 40 }, { x: 80, y: 40 });
+// A --config `obstacles` LIST fully defines the physical environment (World builds it from config); otherwise keep
+// the default single JJ obstacle (flag mode). An explicit `"obstacles": []` in a config file means a bare pool.
+if (!('obstacles' in config)) world.setObstacle({ x: 40, y: 40 }, { x: 80, y: 40 });
 
 const t0 = Date.now();
 try { for (let t = 0; t < ticks; t++) world.tick(); }
