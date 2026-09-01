@@ -1,0 +1,11 @@
+{
+  "_comment": "A walled arena with an obstacle maze (movement + line-of-sight blockers, one vision-only glass wall). Run: node tools/run-recorder.mjs --config examples/maze.json --founders 500 --food 1500 --ticks 3000",
+  "pool": { "left": 0, "top": 0, "right": 5000, "bottom": 5000 },
+  "obstacles": [
+    { "a": {"x": 1200, "y": 400}, "b": {"x": 1200, "y": 3600}, "thickness": 30 },
+    { "a": {"x": 2500, "y": 1400}, "b": {"x": 2500, "y": 4600}, "thickness": 30 },
+    { "a": {"x": 3800, "y": 400}, "b": {"x": 3800, "y": 3600}, "thickness": 30 },
+    { "a": {"x": 800, "y": 2500}, "b": {"x": 4200, "y": 2500}, "thickness": 40 },
+    { "a": {"x": 2500, "y": 400}, "b": {"x": 4200, "y": 400}, "mask": {"movement": false, "vision": true} }
+  ]
+}

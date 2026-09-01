@@ -1,0 +1,7 @@
+{
+  "_comment": "A world that dries out: food regenerates every 20 ticks, then slows to every 400 at tick 4000 (drought), forcing a population crash + selection. §10 schedules. Run: node tools/run-recorder.mjs --config examples/drought.json --founders 500 --food 1500 --ticks 8000",
+  "pool": { "left": 0, "top": 0, "right": 5000, "bottom": 5000 },
+  "foodRegenerationPeriod": { "schedule": [[0, 20], [4000, 400]] },
+  "maxFood": 2000,
+  "maxPopulation": 3000
+}

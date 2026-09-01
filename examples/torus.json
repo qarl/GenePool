@@ -1,0 +1,7 @@
+{
+  "_comment": "A seamless toroidal world: swimbots and food wrap across every edge (no walls). Run: node tools/run-recorder.mjs --config examples/torus.json --founders 400 --food 1200 --ticks 3000",
+  "pool": { "left": 0, "top": 0, "right": 6000, "bottom": 6000 },
+  "topology": "torus",
+  "maxPopulation": 3000,
+  "maxFood": 2000
+}

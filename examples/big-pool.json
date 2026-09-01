@@ -1,0 +1,5 @@
+{
+  "_comment": "A giant world: foodSpread auto-scales to poolWidth/2 (=20000), so ecology behaves sensibly at any size (P3). Run: node tools/run-recorder.mjs --config examples/big-pool.json --founders 2000 --food 8000 --ticks 2000",
+  "pool": { "left": 0, "top": 0, "right": 40000, "bottom": 40000 },
+  "maxPopulation": 20000
+}
