@@ -37,6 +37,7 @@ export class Partition {
         this._matePref = (l, c, t, i) => draw(masterSeed, DOMAIN.MATE_PREF, l, c, t, i);
         this._viewRadius = config.viewRadius ?? SWIMBOT_VIEW_RADIUS;
         this._obstacle = new Obstacle();
+        this._obstacle.setPoolBounds(config.pool); // match world.js: endpoint wall-clamp uses the config pool, not the 8000 default
         this._obstacle.setEndpointPositions(obstacle[0], obstacle[1]);
         this._collisionForce = new Vector2D();
         this._coopGrid = coopGrid;

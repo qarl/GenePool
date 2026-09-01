@@ -16,6 +16,8 @@ import { setupFood } from './food-layout.mjs';
 import { makePostUpdateBuffer, makeResolutionBuffers } from './resolution-layout.mjs';
 import { allocCoopGrid } from './coop-grid.mjs';
 import { growSwimbotBuffers, growFoodBuffers } from './grow-buffers.mjs';
+import { resolveWorldConfig, SCHEDULABLE_FIELDS } from '../../../engine/config.js';
+import { DEFAULT_THICKNESS } from '../../../engine/obstacle.js';
 
 const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './barrier.mjs';
@@ -24,7 +26,7 @@ import { makeEcologyConfig, makeFounders, makeFood, MASTER_SEED, OBSTACLE } from
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CELL_SIZE = 300; // == SWIMBOT_VIEW_RADIUS (config leaves viewRadius default)
 
-export async function runParallel(N, ticks, W, poolSize, founders, config, food, warmup = 50, initialMaxBots = 0, forceGrowEvery = 0, initialMaxFood = 0, forceFoodGrowEvery = 0) {
+export async function runParallel(N, ticks, W, poolSize, founders, config, food, warmup = 50, initialMaxBots = 0, forceGrowEvery = 0, initialMaxFood = 0, forceFoodGrowEvery = 0, seed = MASTER_SEED, obstacle = OBSTACLE) {
     // Ids are never reused + monotonic, so the swimbot SABs are sized to a CAPACITY CEILING. That ceiling is no
     // longer a hard wall: worker 0 publishes nextId each tick and main GROWS the SABs (doubling) before nextId
     // reaches maxBots -- so a long run that mints > initialMaxBots lifetime ids keeps going, deterministically,
@@ -59,8 +61,8 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
         const idEnd = Math.min(N, (w + 1) * chunk);
         const worker = new Worker(join(HERE, 'worker.mjs'), {
             workerData: {
-                frozenSab, ctrlSab, gridSpec, maxBots, masterSeed: MASTER_SEED, config,
-                founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle: OBSTACLE, W, workerIndex: w,
+                frozenSab, ctrlSab, gridSpec, maxBots, masterSeed: seed, config,
+                founders: founders.slice(idStart, idEnd), idStart, idEnd, obstacle, W, workerIndex: w,
                 foodGridSpec, foodSab, numFood, puSab, resSabs, numFounders: N,
             },
         });
@@ -136,6 +138,41 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
     fp.sort((a, b) => Number(a.split(':')[0]) - Number(b.split(':')[0]));
     const hash = createHash('sha256').update(fp.join('|')).digest('hex').slice(0, 16);
     return { ms, tps: Math.round(ticks / (ms / 1000)), hash, totalBots: fp.length, grows: growCount, finalMaxBots: maxBots, foodGrows: foodGrowCount, finalMaxFood: maxFood, fp };
+}
+
+// FIRST-CLASS PARALLEL RUNNER (wire-parallel option A, docs/PLAN-parallel-in-world.md): run ONE pool across
+// `workers` cores to completion and return the result. A clean options-object API over runParallel that threads the
+// SEED and the obstacle from the config (the positional runParallel bakes the gate's fixed seed/obstacle), and
+// RESOLVES the config first (resolveWorldConfig) so the parallel path fills the same defaults as world.js -> a
+// MINIMAL config yields a run BIT-IDENTICAL to single-thread world.js snapshot mode (gated by run-api.mjs).
+// `founders` / `food` are the same records World.loadSwimbot / loadFood take.
+// SCOPE (= world.js snapshot mode MINUS what the spike doesn't model). Rather than silently diverge, runPoolParallel
+// REJECTS every world it can't reproduce bit-for-bit -- so a result you get back is guaranteed identical to the
+// single-thread engine. Rejected (run these on world.js single-thread instead): torus topology; numFoodTypes > 1;
+// more than one obstacle; a single obstacle with non-default thickness or a movement/vision mask; and §10 schedules.
+// Accepted: any pool size, one default obstacle or none, static ecology. Grows automatically (unbounded).
+export async function runPoolParallel({ config, seed = MASTER_SEED, founders, food, workers = 8, ticks }) {
+    if (!config || !Array.isArray(founders) || !Array.isArray(food) || !Number.isInteger(ticks)) {
+        throw new Error('runPoolParallel: requires { config, founders: [...], food: [...], ticks }');
+    }
+    const resolved = resolveWorldConfig(config); // same defaults world.js applies -> bit-identical
+    const reject = (why) => { throw new Error(`runPoolParallel: ${why} is not modeled by the parallel engine -- run it on world.js single-thread`); };
+    for (const f of SCHEDULABLE_FIELDS) { // the parallel path reads config values raw, not per-tick -> reject §10 schedules (would be silent NaN)
+        const v = resolved[f];
+        if (v !== null && typeof v === 'object' && Array.isArray(v.schedule)) reject(`a §10 schedule on config.${f}`);
+    }
+    if (resolved.topology === 'torus') reject('torus topology (the coop grid + LoS are flat-only)');
+    if ((resolved.numFoodTypes ?? 1) > 1) reject(`numFoodTypes=${resolved.numFoodTypes}`);
+    const obs = resolved.obstacles;
+    if (obs && obs.length > 1) reject(`${obs.length} obstacles (a single obstacle only)`);
+    const o0 = obs && obs[0];
+    if (o0 && o0.thickness !== undefined && o0.thickness !== DEFAULT_THICKNESS) reject(`obstacle thickness ${o0.thickness} (only the default ${DEFAULT_THICKNESS})`);
+    if (o0 && o0.mask && (o0.mask.movement === false || o0.mask.vision === false)) reject('a masked obstacle (movement/vision off)');
+
+    const poolSize = resolved.pool ? (resolved.pool.right - resolved.pool.left) : 8000;
+    const obstacle = o0 ? [o0.a, o0.b] : [{ x: 0, y: 0 }, { x: 0, y: 0 }]; // none -> degenerate segment = a no-op
+    const r = await runParallel(founders.length, ticks, workers, poolSize, founders, resolved, food, 0, 0, 0, 0, 0, seed, obstacle);
+    return { hash: r.hash, totalBots: r.totalBots, grows: r.grows, foodGrows: r.foodGrows, tps: r.tps, ms: r.ms, fingerprint: r.fp };
 }
 
 // CLI: quick coop-1 vs coop-W determinism + speedup on a full-ecology pool. (The authoritative correctness gate
