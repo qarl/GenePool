@@ -4,10 +4,10 @@
 // (a) with no grow, and (b) forcing swimbot AND food grows (tiny initial ceilings) -- proving free-run GROW before
 // the browser inherits it. Same seed/founders/food/config as run-g1 -> the same world.js reference.
 //
-// Usage: node tools/parallel/spike/run-freerun-g1.mjs [N] [ticks] [pool] [W]
+// Usage: node engine/parallel/run-freerun-g1.mjs [N] [ticks] [pool] [W]
 
 import { createHash } from 'node:crypto';
-import { World } from '../../../engine/world.js';
+import { World } from '../world.js';
 import { runFreeRun } from './run-freerun.mjs';
 import { makeEcologyConfig, makeFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
 

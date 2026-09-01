@@ -13,8 +13,8 @@ import {
     ATTRACTION_NO_COLOR, ATTRACTION_SMALL, ATTRACTION_STILL, ATTRACTION_SHORT, ATTRACTION_CROOKED,
     ATTRACTION_SIMILAR_COLOR, ATTRACTION_SIMILAR_SIZE, ATTRACTION_SIMILAR_HYPER,
     ATTRACTION_SIMILAR_LENGTH, ATTRACTION_SIMILAR_STRAIGHT, ATTRACTION_CLOSEST,
-} from '../../../engine/constants.js';
-import { attractivenessOf, CRITERIA_NEEDING_JUDGE_METRIC, computeMetricForCriterion } from '../../../engine/attraction.js';
+} from '../constants.js';
+import { attractivenessOf, CRITERIA_NEEDING_JUDGE_METRIC, computeMetricForCriterion } from '../attraction.js';
 
 // Per-bot field offsets within a slot, and the slot stride.
 export const F_ALIVE = 0;   // 0/1

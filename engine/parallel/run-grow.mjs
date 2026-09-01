@@ -5,10 +5,10 @@
 // fingerprint is unchanged. This gate FORCES several grows (tiny initialMaxBots) and asserts the fingerprint still
 // matches world.js at W=1 AND W=8. Same seed/founders/food/config as run-g1 -> the same world.js reference.
 //
-// Usage: node tools/parallel/spike/run-grow.mjs [N] [ticks] [pool] [W]
+// Usage: node engine/parallel/run-grow.mjs [N] [ticks] [pool] [W]
 
 import { createHash } from 'node:crypto';
-import { World } from '../../../engine/world.js';
+import { World } from '../world.js';
 import { runParallel } from './run.mjs';
 import { makeEcologyConfig, makeFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
 

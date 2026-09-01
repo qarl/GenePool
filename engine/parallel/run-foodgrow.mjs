@@ -6,10 +6,10 @@
 // and asserts bit-identity to world.js at W=1 AND W=8, for a NATURAL food-grow, a forced food-grow CHAIN, and a
 // SIMULTANEOUS swimbot+food grow (both buffers in one handshake message). Same seed/founders/food/config as run-g1.
 //
-// Usage: node tools/parallel/spike/run-foodgrow.mjs [N] [ticks] [pool] [W]
+// Usage: node engine/parallel/run-foodgrow.mjs [N] [ticks] [pool] [W]
 
 import { createHash } from 'node:crypto';
-import { World } from '../../../engine/world.js';
+import { World } from '../world.js';
 import { runParallel } from './run.mjs';
 import { makeEcologyConfig, makeFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
 

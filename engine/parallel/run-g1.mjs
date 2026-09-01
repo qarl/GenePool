@@ -4,10 +4,10 @@
 // replica faithfully reproduces the engine; combined with the G2 determinism gate (coop-W == coop-1), the
 // parallel mode is proven correct.
 //
-// Usage: node tools/parallel/spike/run-g1.mjs [N] [ticks] [pool]
+// Usage: node engine/parallel/run-g1.mjs [N] [ticks] [pool]
 
 import { createHash } from 'node:crypto';
-import { World } from '../../../engine/world.js';
+import { World } from '../world.js';
 import { runParallel } from './run.mjs';
 import { makeEcologyConfig, makeFounders, makeWallFounders, makeFood, MASTER_SEED, OBSTACLE } from './common.mjs';
 

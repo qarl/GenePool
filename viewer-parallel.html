@@ -63,13 +63,13 @@
 </div>
 
 <script type="module">
-import { makeFrozenBuffer } from './tools/parallel/spike/frozen-layout.mjs';
-import { setupFood, FD_STRIDE, FD_POSX, FD_POSY, FD_ALIVE } from './tools/parallel/spike/food-layout.mjs';
-import { makePostUpdateBuffer, makeResolutionBuffers } from './tools/parallel/spike/resolution-layout.mjs';
-import { makeRenderBuffer, R_X, R_Y, R_ANGLE, R_ENERGY, R_HUE, R_ALIVE, R_STRIDE } from './tools/parallel/spike/render-layout.mjs';
-import { allocCoopGrid } from './tools/parallel/spike/coop-grid.mjs';
-import { growSwimbotBuffers, growFoodBuffers } from './tools/parallel/spike/grow-buffers.mjs';
-import { CTL_TICK, CTL_SHUTDOWN, CTL_RUN, CTL_DELAY, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './tools/parallel/spike/barrier.mjs';
+import { makeFrozenBuffer } from './engine/parallel/frozen-layout.mjs';
+import { setupFood, FD_STRIDE, FD_POSX, FD_POSY, FD_ALIVE } from './engine/parallel/food-layout.mjs';
+import { makePostUpdateBuffer, makeResolutionBuffers } from './engine/parallel/resolution-layout.mjs';
+import { makeRenderBuffer, R_X, R_Y, R_ANGLE, R_ENERGY, R_HUE, R_ALIVE, R_STRIDE } from './engine/parallel/render-layout.mjs';
+import { allocCoopGrid } from './engine/parallel/coop-grid.mjs';
+import { growSwimbotBuffers, growFoodBuffers } from './engine/parallel/grow-buffers.mjs';
+import { CTL_TICK, CTL_SHUTDOWN, CTL_RUN, CTL_DELAY, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './engine/parallel/barrier.mjs';
 import { Genotype } from './engine/genotype.js';
 
 const noteEl = document.getElementById('note');
@@ -78,7 +78,7 @@ function fail(msg) { errEl.textContent = msg; noteEl.textContent = 'stopped.'; t
 
 // --- preflight: SharedArrayBuffer requires cross-origin isolation (the COOP/COEP headers from serve.mjs) ---
 if (typeof SharedArrayBuffer === 'undefined' || !self.crossOriginIsolated) {
-    fail('SharedArrayBuffer unavailable — the page is not cross-origin isolated.\nServe it with:  node tools/parallel/spike/serve.mjs\nthen open http://localhost:8099/viewer-parallel.html in Chrome (NOT file://).');
+    fail('SharedArrayBuffer unavailable — the page is not cross-origin isolated.\nServe it with:  node engine/parallel/serve.mjs\nthen open http://localhost:8099/viewer-parallel.html in Chrome (NOT file://).');
 }
 
 // --- init EXACTLY like JJ's RANDOM-mode startSimulation: 500 swimbots + 1000 food in a central "garden of eden"
@@ -156,7 +156,7 @@ document.getElementById('s-workers').textContent = W;
 const chunk = Math.ceil(N / W);
 const workers = [];
 let readyCount = 0, running = false, stopped = false;
-const workerURL = new URL('./tools/parallel/spike/browser-worker.js', location.href);
+const workerURL = new URL('./engine/parallel/browser-worker.js', location.href);
 
 function stopAll(msg) {
     stopped = true; running = false;

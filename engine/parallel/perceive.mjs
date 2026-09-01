@@ -4,8 +4,8 @@
 // SoA + food grid + food enumeration); until then enumerateFood yields nothing (foundFoodBit=false). Using the
 // shared selector is what lets the parallel result be BIT-IDENTICAL to the engine instead of drifting.
 
-import { Perception } from '../../../engine/perception.js';
-import { SpatialGrid } from '../../../engine/spatialGrid.js';
+import { Perception } from '../perception.js';
+import { SpatialGrid } from '../spatialGrid.js';
 import { STRIDE, F_ALIVE, F_GX, F_GY, SlotView } from './frozen-layout.mjs';
 import { FoodSlotView } from './food-layout.mjs';
 

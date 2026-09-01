@@ -2,12 +2,12 @@
 // parallel engine: a single pool, evolving (forage/eat/mate/reproduce/die/regen), spread over `workers` threads,
 // producing EXACTLY the same result as the single-thread engine (proven bit-identical by run-g1.mjs) -- faster.
 //
-// Usage: node tools/parallel/spike/run-pool.mjs [N] [ticks] [workers] [pool]
-//   e.g. node tools/parallel/spike/run-pool.mjs 6000 1000 10 16000
+// Usage: node engine/parallel/run-pool.mjs [N] [ticks] [workers] [pool]
+//   e.g. node engine/parallel/run-pool.mjs 6000 1000 10 16000
 //
 // Correctness is guaranteed by the gates (run separately):
-//   node tools/parallel/spike/run-g1.mjs        # bit-identical to world.js at W=1 and W>1
-//   node tools/parallel/spike/run-ecology.mjs   # deterministic across worker counts
+//   node engine/parallel/run-g1.mjs        # bit-identical to world.js at W=1 and W>1
+//   node engine/parallel/run-ecology.mjs   # deterministic across worker counts
 
 import { runParallel } from './run.mjs';
 import { makeEcologyConfig, makeFounders, makeFood } from './common.mjs';

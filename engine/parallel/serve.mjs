@@ -3,7 +3,7 @@
 // workers inherit that isolation. It also serves every module with a real JS MIME (Chrome rejects module
 // scripts/workers served as octet-stream). Serves the whole REPO ROOT so /engine/* resolves from the spike dir.
 //
-// LAUNCH:  node tools/parallel/spike/serve.mjs
+// LAUNCH:  node engine/parallel/serve.mjs
 //          then open  http://localhost:8099/viewer-parallel.html   (Chrome; file:// will NOT work)
 
 import { createServer } from 'node:http';
@@ -11,7 +11,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = normalize(join(fileURLToPath(import.meta.url), '..', '..', '..', '..')); // repo root (…/GenePool)
+const ROOT = normalize(join(fileURLToPath(import.meta.url), '..', '..', '..')); // repo root (…/GenePool)
 const PORT = Number(process.env.PORT || 8099);
 const MIME = {
     '.html': 'text/html; charset=utf-8',

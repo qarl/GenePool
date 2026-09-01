@@ -1,9 +1,9 @@
 // G1 debugger: drive a single-thread Partition (W=1) through its phases IN-PROCESS (no workers) alongside
 // world.js snapshot mode, comparing living-bot fingerprints EACH tick to find the FIRST divergence + the exact
-// bot/field. Usage: node tools/parallel/spike/run-g1-debug.mjs [N] [ticks] [pool]
+// bot/field. Usage: node engine/parallel/run-g1-debug.mjs [N] [ticks] [pool]
 
-import { World } from '../../../engine/world.js';
-import { Genotype } from '../../../engine/genotype.js';
+import { World } from '../world.js';
+import { Genotype } from '../genotype.js';
 import { makeFrozenBuffer } from './frozen-layout.mjs';
 import { setupFood } from './food-layout.mjs';
 import { makePostUpdateBuffer, makeResolutionBuffers } from './resolution-layout.mjs';

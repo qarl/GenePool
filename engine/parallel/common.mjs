@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const FIX = JSON.parse(readFileSync(join(HERE, '..', '..', '..', 'test', 'fixtures', 'jj-macro-seed42.json'), 'utf8'));
+const FIX = JSON.parse(readFileSync(join(HERE, '..', '..', 'test', 'fixtures', 'jj-macro-seed42.json'), 'utf8'));
 const GENES = FIX.init.swimbots.map(s => Array.from(Buffer.from(s.genes, 'base64'))); // junk-zeroed founder genomes
 
 export const MASTER_SEED = 9;

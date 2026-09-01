@@ -23,14 +23,14 @@ This mirrors `world.js`'s `perceptionMode:'snapshot'` tick, which is order-indep
 
 ## Run it
 
-    node tools/parallel/spike/run-pool.mjs [founders] [ticks] [workers] [pool]
-    # e.g. node tools/parallel/spike/run-pool.mjs 6000 1000 10 16000
+    node engine/parallel/run-pool.mjs [founders] [ticks] [workers] [pool]
+    # e.g. node engine/parallel/run-pool.mjs 6000 1000 10 16000
 
 ## Correctness gates
 
-    node tools/parallel/spike/run-g1.mjs       # BIT-IDENTICAL to world.js snapshot mode (W=1, W>1, and at walls)
-    node tools/parallel/spike/run-ecology.mjs  # DETERMINISTIC: coop-W == coop-1, full ecology
-    node tools/parallel/spike/run-g1-debug.mjs # tick-by-tick divergence finder (with the one-tick apply-lag offset)
+    node engine/parallel/run-g1.mjs       # BIT-IDENTICAL to world.js snapshot mode (W=1, W>1, and at walls)
+    node engine/parallel/run-ecology.mjs  # DETERMINISTIC: coop-W == coop-1, full ecology
+    node engine/parallel/run-g1-debug.mjs # tick-by-tick divergence finder (with the one-tick apply-lag offset)
 
 `run-g1` is the strong gate: the parallel run at W=1 **and** W>1 is bit-identical to the single-thread engine
 over a full-ecology run (forage/eat/mate/reproduce/die/regen), including a wall-hugging fixture.

@@ -3,7 +3,7 @@
 // BIT-IDENTICAL to coop(W=1) at every worker count (same seed, same everything). The separate G1 gate
 // (== single-thread world.js snapshot) lands once births + regen are wired.
 //
-// Usage: node tools/parallel/spike/run-ecology.mjs [N] [ticks] [W] [pool]
+// Usage: node engine/parallel/run-ecology.mjs [N] [ticks] [W] [pool]
 
 import { runParallel } from './run.mjs';
 import { makeEcologyConfig, makeFounders, makeFood } from './common.mjs';

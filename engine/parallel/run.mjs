@@ -4,7 +4,7 @@
 // [grid impl correct] and (b) coop at W=1 [parallelization deterministic]. Then reports the speedup. Also runs a
 // WALL-HUGGING fixture where coop MUST still match the JS grid (the only case that exercises the clamp/skip edges).
 //
-// Usage: node tools/parallel/spike/run.mjs [N] [ticks] [workers] [pool]
+// Usage: node engine/parallel/run.mjs [N] [ticks] [workers] [pool]
 // The engine itself is untouched; this lives entirely in tools/.
 
 import { Worker } from 'node:worker_threads';
@@ -16,7 +16,7 @@ import { setupFood } from './food-layout.mjs';
 import { makePostUpdateBuffer, makeResolutionBuffers } from './resolution-layout.mjs';
 import { allocCoopGrid } from './coop-grid.mjs';
 import { growSwimbotBuffers, growFoodBuffers } from './grow-buffers.mjs';
-import { resolveWorldConfig, SCHEDULABLE_FIELDS } from '../../../engine/config.js';
+import { resolveWorldConfig, SCHEDULABLE_FIELDS } from '../config.js';
 
 const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './barrier.mjs';

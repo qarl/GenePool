@@ -5,15 +5,15 @@
 // stable, repeatable PERF probe -- eats and births are out of scope for the spike (they are the serial-resolution
 // hardening that comes AFTER the spike proves the parallel loop is worth it).
 
-import { Swimbot } from '../../../engine/swimbot.js';
-import { Genotype } from '../../../engine/genotype.js';
-import { Embryology } from '../../../engine/embryology.js';
-import { ObstacleField } from '../../../engine/obstacle-field.js';
-import { FoodBit } from '../../../engine/foodBit.js';
-import { Vector2D } from '../../../engine/vector2d.js';
-import { makeStream, draw, DOMAIN } from '../../../engine/rng.js';
-import { computeMetricForCriterion } from '../../../engine/attraction.js';
-import { SWIMBOT_VIEW_RADIUS, ONE_HALF, ONE, NUM_GENES, NUM_GENES_USED, BYTE_SIZE, NON_REPRODUCING_JUNK_DNA_LIMIT } from '../../../engine/constants.js';
+import { Swimbot } from '../swimbot.js';
+import { Genotype } from '../genotype.js';
+import { Embryology } from '../embryology.js';
+import { ObstacleField } from '../obstacle-field.js';
+import { FoodBit } from '../foodBit.js';
+import { Vector2D } from '../vector2d.js';
+import { makeStream, draw, DOMAIN } from '../rng.js';
+import { computeMetricForCriterion } from '../attraction.js';
+import { SWIMBOT_VIEW_RADIUS, ONE_HALF, ONE, NUM_GENES, NUM_GENES_USED, BYTE_SIZE, NON_REPRODUCING_JUNK_DNA_LIMIT } from '../constants.js';
 import { writeSlot, F_ALIVE, F_GX, F_GY, STRIDE } from './frozen-layout.mjs';
 import { FD_STRIDE, FD_ALIVE, FD_ENERGY, FD_POSX, FD_POSY, FD_TYPE, writeFood, buildFoodGridOnce } from './food-layout.mjs';
 import { writePostUpdate, PU_STRIDE, PU_ALIVE, PU_ENERGY, PU_GX, PU_GY, FLAG_ENERGY_SET, FLAG_TIMER_RESET, FLAG_CLEAR_EAT, FLAG_CLEAR_MATE,

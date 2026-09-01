@@ -3,10 +3,10 @@
 // MASTER_SEED/OBSTACLE that run-g1 bakes in). This proves the seed + obstacle threading and the config-resolve are
 // correct, at W=1 AND W=8, with a single obstacle, with NO obstacle, and from a MINIMAL config.
 //
-// Usage: node tools/parallel/spike/run-api.mjs
+// Usage: node engine/parallel/run-api.mjs
 
 import { createHash } from 'node:crypto';
-import { World } from '../../../engine/world.js';
+import { World } from '../world.js';
 import { runPoolParallel } from './run.mjs';
 import { makeEcologyConfig, makeFounders, makeFood } from './common.mjs';
 

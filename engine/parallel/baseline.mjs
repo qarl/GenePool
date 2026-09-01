@@ -1,7 +1,7 @@
 // SPIKE — single-thread baseline: ONE partition covering all N bots, running the exact same SAB dataflow
 // (writeFrozen -> step) the parallel version uses, minus the threads/barriers. Establishes (1) the correctness
 // reference fingerprint the parallel run must match bit-for-bit, and (2) the single-thread wall-clock the
-// parallel speedup is measured against. Run directly: `node tools/parallel/spike/baseline.mjs [N] [ticks] [pool]`.
+// parallel speedup is measured against. Run directly: `node engine/parallel/baseline.mjs [N] [ticks] [pool]`.
 
 import { createHash } from 'node:crypto';
 import { makeFrozenBuffer, STRIDE } from './frozen-layout.mjs';
