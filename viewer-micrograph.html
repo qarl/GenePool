@@ -1,0 +1,313 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GenePool — micrograph</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0e13; color: #cfd6e0; font: 13px/1.5 system-ui, sans-serif; }
+  header { padding: 8px 14px; background: #11161f; border-bottom: 1px solid #1e2733; }
+  .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .row + .row { margin-top: 8px; }
+  h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 600; letter-spacing: .02em; }
+  label { display: inline-flex; gap: 6px; align-items: center; user-select: none; font-size: 12px; }
+  button { background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+  button:hover { background: #24344a; }
+  input[type=number] { width: 66px; background: #0b0e13; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 3px 6px; }
+  .hud { margin-left: auto; font-variant-numeric: tabular-nums; color: #8fa0b5; }
+  .hud b { color: #cfd6e0; font-weight: 600; }
+  .params { color: #8fa0b5; }
+  #err { color: #ff8f8f; }
+  #wrap { display: flex; justify-content: center; padding: 14px; }
+  canvas { border-radius: 10px; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: grab; }
+  canvas.drag { cursor: grabbing; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>GenePool · micrograph</h1>
+    <button id="play">Pause</button>
+    <button id="reset">Reset</button>
+    <label>Seed <input id="seedIn" type="number" min="0" step="1" value="1"></label>
+    <label>Speed <input id="speed" type="range" min="1" max="60" value="3"> <span id="speedv">3×</span></label>
+    <div class="hud">tick <b id="tick">0</b> · pop <b id="pop">0</b> · <b id="fps">0</b> fps · <span id="zoomv">1.0×</span></div>
+  </div>
+  <div class="row params" id="params"></div>
+  <div class="row"><span id="err"></span> <span style="color:#5c6b80">scroll = zoom · drag = pan</span></div>
+</header>
+<div id="wrap"><canvas id="cv" width="900" height="760"></canvas></div>
+
+<script type="module">
+import { World } from './engine/world.js';
+import { Genotype } from './engine/genotype.js';
+
+const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000, EGG_SIZE = 5, SPLINE = 0.4;
+const cv = document.getElementById('cv'), W = cv.width, H = cv.height;
+const ctx = cv.getContext('2d');
+// offscreen "specimen" layer: bodies are drawn OPAQUE here (segments fuse via source-over -> joints vanish, no
+// multiply-compounding), then the whole layer is composited onto the field ONCE as a translucent specimen.
+const spec = document.createElement('canvas'); spec.width = W; spec.height = H;
+const sctx = spec.getContext('2d');
+
+function mulberry32(seed){let a=seed>>>0;return()=>{a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+function diskPoint(rng, cx, cy, r){ const rad = 2*Math.PI*rng(); const mag = r*Math.sqrt(rng()); return { x: cx + Math.cos(rad)*mag, y: cy + Math.sin(rad)*mag }; }
+
+// --- live look/params (tunable in the panel) ---
+const P = {
+  pool: 3000, n: 220, food: 700,
+  density: 0.7,    // body optical density (multiply strength)
+  lighten: 0.5,    // mix segment pigment toward white (lift the whole specimen)
+  rim: 0.9,        // refractive Becke-line rim brightness
+  organelles: 1.0, // organelle amount
+  field: 232,      // condenser field brightness
+};
+const SPEC = [
+  { k:'density', label:'Density', min:0, max:1, step:0.05 },
+  { k:'lighten', label:'Lighten', min:0, max:1, step:0.05 },
+  { k:'rim',     label:'Rim',     min:0, max:2, step:0.05 },
+  { k:'organelles', label:'Organelles', min:0, max:2, step:0.1 },
+  { k:'field',   label:'Field',   min:180, max:255, step:2 },
+];
+
+let seed = 1, world = null, running = true, ticksPerFrame = 3;
+// camera: world units -> screen. scale chosen so the pool ~fills, then user zooms in.
+let cam = { x: P.pool/2, y: P.pool/2, zoom: 1 };
+function fitZoom(){ return Math.min(W, H) / P.pool; }        // base: whole pool visible
+function sc(){ return fitZoom() * cam.zoom; }
+function toScreen(wx, wy){ const s = sc(); return [ (wx - cam.x)*s + W/2, (wy - cam.y)*s + H/2 ]; }
+
+// --- detritus: faint out-of-focus motes drifting in the field (depth cue) ---
+let motes = [];
+function seedMotes(rng){ motes = []; for (let i=0;i<70;i++) motes.push({ x: rng()*P.pool, y: rng()*P.pool, r: 2+rng()*7, a: 0.02+rng()*0.05, dark: rng()<0.6, vx:(rng()-0.5)*0.15, vy:(rng()-0.5)*0.15 }); }
+
+function build(){
+  const err = document.getElementById('err'); err.textContent = '';
+  const config = {
+    maximumLifeSpan: MAX_LIFESPAN, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
+    crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: P.pool/2,
+    foodBitEnergy: 50, attractionCriterion: 10, maxPopulation: 2000, maxFood: 2000,
+    viewRadius: 300, pool: { left:0, top:0, right:P.pool, bottom:P.pool },
+  };
+  try { world = new World(config, seed, {}); }
+  catch(e){ world = null; err.textContent = 'Cannot build: ' + e.message; return; }
+  const rng = mulberry32((seed>>>0) ^ 0x5eed1234);
+  for (let i=0;i<P.n;i++){
+    const g = new Genotype(); g.randomize(rng);
+    const genes = g.getGenes().slice();
+    for (let k=USED;k<NUM_GENES;k++) genes[k]=0;                 // junk-zeroed -> one species (JJ's rule)
+    const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.4);
+    const age = YOUNG_AGE + Math.floor((MAX_LIFESPAN-YOUNG_AGE)*rng());
+    world.loadSwimbot(i, { age, x:p.x, y:p.y, angle: rng()*360-180, energy: 50, genes });
+  }
+  for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
+  seedMotes(rng);
+  cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 1 };
+  document.getElementById('seedIn').value = seed;
+}
+
+// hash a swimbot's genes -> a stable per-creature pigment + organelle layout
+function pigment(genes){
+  // faint, desaturated so the field shows THROUGH it (specimens are near-colorless, faintly tinted)
+  const hue = ((genes[3] + 2*genes[7] + 3*genes[11]) % 256) / 256;      // 0..1
+  const r = 0.5 + 0.5*Math.cos(2*Math.PI*(hue+0.00));
+  const g = 0.5 + 0.5*Math.cos(2*Math.PI*(hue+0.33));
+  const b = 0.5 + 0.5*Math.cos(2*Math.PI*(hue+0.66));
+  return [r,g,b];
+}
+
+function parentPos(ph, p){ const par = ph.parts[p].parent; return (par === undefined || par === null || par < 0) ? ph.parts[0].position : ph.parts[par].position; }
+
+// Compute ONE segment's smooth (bezier-splined) tapered outline in SCREEN space (JJ SwimbotRenderer geometry):
+// the two long edges (left/right) plus their bezier control points, and the joint width. Returns screen points so
+// the SAME geometry feeds both the fused body fill and the continuous outer rim.
+function partPoints(ph, p, gscale){
+  const part = ph.parts[p], parIdx = part.parent, pos = part.position, ppos = parentPos(ph, p);
+  let width = part.width, parentWidth = ph.parts[(parIdx>=0?parIdx:0)].width;
+  if (gscale < 1){ width = width*gscale + EGG_SIZE*(1-gscale); parentWidth = parentWidth*gscale + EGG_SIZE*(1-gscale); }
+  let psx = part.perpendicular.x, psy = part.perpendicular.y, pex = part.perpendicular.x, pey = part.perpendicular.y;
+  const cvl = part.length * SPLINE;
+  if (p > 1 && !part.branch && parIdx >= 0){ psx += ph.parts[parIdx].perpendicular.x; psy += ph.parts[parIdx].perpendicular.y; const l = Math.hypot(psx,psy)||1; psx/=l; psy/=l; }
+  if (part.child !== undefined && part.child >= 0){ pex += ph.parts[part.child].perpendicular.x; pey += ph.parts[part.child].perpendicular.y; const l = Math.hypot(pex,pey)||1; pex/=l; pey/=l; }
+  const c1vx=-psy*cvl, c1vy=psx*cvl, c2vx=pey*cvl, c2vy=-pex*cvl;
+  const startW = (p===1?width:parentWidth);
+  const sPX=psx*startW, sPY=psy*startW, ePX=pex*width, ePY=pey*width;
+  const T=(x,y)=>toScreen(x,y);
+  // terminal segment -> a gene-shaped END CAP (JJ's endCapSpline): bulge the tip out along the segment axis by
+  // width*endCapSpline (round when large, tapered/pointed when small) instead of ending on a flat cut.
+  const terminal = !(part.child !== undefined && part.child >= 0);
+  let capC1 = null, capC2 = null;
+  if (terminal){
+    const len = part.length || 1, nx = part.axis.x/len, ny = part.axis.y/len, s = width * (part.endCapSpline || 0);
+    capC1 = T(pos.x-ePX + nx*s, pos.y-ePY + ny*s);
+    capC2 = T(pos.x+ePX + nx*s, pos.y+ePY + ny*s);
+  }
+  return {
+    sL:T(ppos.x-sPX, ppos.y-sPY), c1L:T(ppos.x-sPX+c1vx, ppos.y-sPY+c1vy),
+    c2L:T(pos.x-ePX+c2vx, pos.y-ePY+c2vy), eL:T(pos.x-ePX, pos.y-ePY),
+    eR:T(pos.x+ePX, pos.y+ePY), c2R:T(pos.x+ePX+c2vx, pos.y+ePY+c2vy),
+    c1R:T(ppos.x+sPX+c1vx, ppos.y+sPY+c1vy), sR:T(ppos.x+sPX, ppos.y+sPY),
+    joint:T(ppos.x, ppos.y), jointR: startW*sc(), terminal, capC1, capC2,
+  };
+}
+// the filled tapered segment (closed) -- into `g`. Terminal segments close with the gene-shaped end cap, not a flat cut.
+function fillPart(g, pt){
+  g.beginPath();
+  g.moveTo(pt.sL[0],pt.sL[1]);
+  g.bezierCurveTo(pt.c1L[0],pt.c1L[1], pt.c2L[0],pt.c2L[1], pt.eL[0],pt.eL[1]);
+  if (pt.terminal) g.bezierCurveTo(pt.capC1[0],pt.capC1[1], pt.capC2[0],pt.capC2[1], pt.eR[0],pt.eR[1]); // rounded/pointed tip
+  else g.lineTo(pt.eR[0],pt.eR[1]);
+  g.bezierCurveTo(pt.c2R[0],pt.c2R[1], pt.c1R[0],pt.c1R[1], pt.sR[0],pt.sR[1]);
+  g.closePath(); g.fill();
+}
+// the two long outer edges only (they align across segments -> one continuous body outline, no per-segment cross-strokes);
+// a terminal segment's rim also wraps its end cap so the tip gets a refractive edge.
+function strokeEdges(g, pt){
+  g.beginPath();
+  g.moveTo(pt.sL[0],pt.sL[1]); g.bezierCurveTo(pt.c1L[0],pt.c1L[1], pt.c2L[0],pt.c2L[1], pt.eL[0],pt.eL[1]);
+  if (pt.terminal) g.bezierCurveTo(pt.capC1[0],pt.capC1[1], pt.capC2[0],pt.capC2[1], pt.eR[0],pt.eR[1]);
+  g.moveTo(pt.sR[0],pt.sR[1]); g.bezierCurveTo(pt.c1R[0],pt.c1R[1], pt.c2R[0],pt.c2R[1], pt.eR[0],pt.eR[1]);
+  g.stroke();
+}
+
+function bodyParts(sb){ const ph = sb._phenotype; return ph && ph.parts && ph.numParts>1 ? ph : null; }
+
+// PASS 1 -- draw a creature's body OPAQUE into the specimen layer (sctx). Segments fuse via source-over; a disk at
+// each joint bridges the elbow. Each segment keeps its own genome pigment (greyed when starving, lifted by `lighten`).
+function drawBody(sb){
+  const ph = bodyParts(sb); if (!ph) return;
+  const g = (sb._growthScale !== undefined) ? sb._growthScale : 1;
+  const m = P.lighten, vitality = Math.max(0.2, Math.min(1, sb.getEnergy()/60));
+  const tint = (c) => Math.round(255*(((c*vitality + (1-vitality)*0.4))*(1-m) + m));
+  for (let p=1;p<ph.numParts;p++){
+    const part = ph.parts[p]; if (part.length <= 0) continue;
+    const pt = partPoints(ph, p, g);
+    sctx.fillStyle = `rgb(${tint(part.red)},${tint(part.green)},${tint(part.blue)})`;
+    fillPart(sctx, pt);
+    sctx.beginPath(); sctx.arc(pt.joint[0], pt.joint[1], Math.max(0.4, pt.jointR), 0, 6.283); sctx.fill(); // joint bridge
+  }
+}
+
+// PASS 3 -- on top of the composited specimen: the continuous refractive rim (outer edges only) + organelles.
+function drawDetail(sb){
+  const ph = bodyParts(sb); if (!ph) return;
+  const g = (sb._growthScale !== undefined) ? sb._growthScale : 1;
+  const genes = sb.getGenotype().getGenes();
+  const S = sc();
+
+  // refractive Becke-line rim: the two long edges align across segments -> ONE continuous outline, no strip seams
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = `rgba(255,255,248,${0.12*P.rim})`;
+  ctx.lineWidth = Math.max(0.8, 1.6*Math.sqrt(S));
+  for (let p=1;p<ph.numParts;p++){ if (ph.parts[p].length>0) strokeEdges(ctx, partPoints(ph,p,g)); }
+
+  if (P.organelles > 0){
+    const rng = mulberry32((genes[5]*131 + genes[9]*17 + genes[13]) >>> 0);
+    let big = 1, bw = 0; for (let p=1;p<ph.numParts;p++){ if (ph.parts[p].width>bw){ bw=ph.parts[p].width; big=p; } }
+    const nuc = ph.parts[big].position, [nx,ny] = toScreen(nuc.x, nuc.y), nr = Math.max(1.5, bw*0.7*S);
+    ctx.globalCompositeOperation = 'multiply';
+    let grd = ctx.createRadialGradient(nx,ny,0, nx,ny,nr);
+    grd.addColorStop(0, `rgba(90,80,70,${0.5*P.organelles})`); grd.addColorStop(0.7,`rgba(150,140,130,${0.3*P.organelles})`); grd.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(nx,ny,nr,0,6.283); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(255,255,245,${0.25*P.organelles})`; ctx.beginPath(); ctx.arc(nx-nr*0.2,ny-nr*0.2, nr*0.28,0,6.283); ctx.fill();
+    const nv = 2 + Math.floor(rng()*3);
+    for (let i=0;i<nv;i++){
+      const p = 1 + Math.floor(rng()*(ph.numParts-1));
+      const pp = ph.parts[p].position; const jitter = ph.parts[p].width*0.4;
+      const [vx,vy] = toScreen(pp.x + (rng()-0.5)*jitter, pp.y + (rng()-0.5)*jitter);
+      const vr = Math.max(1, ph.parts[p].width*(0.2+rng()*0.25)*S);
+      let vg = ctx.createRadialGradient(vx,vy,0, vx,vy,vr);
+      vg.addColorStop(0,'rgba(255,255,255,0)'); vg.addColorStop(0.6,`rgba(255,255,250,${0.05*P.organelles})`); vg.addColorStop(0.92,`rgba(255,255,248,${0.35*P.organelles})`); vg.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle = vg; ctx.beginPath(); ctx.arc(vx,vy,vr,0,6.283); ctx.fill();
+    }
+  }
+}
+
+function drawFood(f){
+  const p = f.getPosition(); const [x,y] = toScreen(p.x, p.y); const S = sc();
+  const r = Math.max(1.1, 3.2*S);
+  // a refractive food particle: faint green core + bright rim (little algal cell)
+  ctx.globalCompositeOperation = 'multiply';
+  let g = ctx.createRadialGradient(x,y,0, x,y,r);
+  g.addColorStop(0,`rgba(170,200,150,0.5)`); g.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r,0,6.283); ctx.fill();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = `rgba(255,255,250,0.35)`; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x,y,r*0.9,0,6.283); ctx.stroke();
+}
+
+function drawField(){
+  // bright condenser field + subtle vignette + faint low-freq mottling
+  const f = P.field;
+  const bg = ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0, `rgb(${f-4},${f-2},${f-8})`); bg.addColorStop(1, `rgb(${f+4},${f+5},${f-2})`);
+  ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = bg; ctx.fillRect(0,0,W,H);
+  // vignette
+  const vg = ctx.createRadialGradient(W/2,H/2, Math.min(W,H)*0.25, W/2,H/2, Math.max(W,H)*0.62);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,`rgba(30,34,26,0.5)`);
+  ctx.fillStyle = vg; ctx.fillRect(0,0,W,H);
+  // detritus motes (out of focus)
+  for (const m of motes){
+    m.x += m.vx; m.y += m.vy;
+    const [x,y] = toScreen(m.x, m.y); const S = sc(); const r = m.r*S*1.6;
+    if (x<-40||x>W+40||y<-40||y>H+40) continue;
+    ctx.globalCompositeOperation = m.dark ? 'multiply' : 'lighter';
+    const g = ctx.createRadialGradient(x,y,0,x,y,r);
+    const col = m.dark ? '90,95,80' : '255,255,250';
+    g.addColorStop(0,`rgba(${col},${m.a})`); g.addColorStop(1,`rgba(${col},0)`);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r,0,6.283); ctx.fill();
+  }
+}
+
+function render(){
+  drawField();
+  if (!world) return;
+  // food particles sit in the field, behind the specimens
+  ctx.globalCompositeOperation = 'multiply';
+  for (const f of world._foodBits.values()){ if (f.getAlive()) drawFood(f); }
+  // PASS 1: all bodies drawn OPAQUE into the specimen layer (segments fuse; no per-segment multiply seams)
+  sctx.setTransform(1,0,0,1,0,0); sctx.globalCompositeOperation = 'source-over'; sctx.clearRect(0,0,W,H);
+  for (const s of world._swimbots.values()){ if (s.getAlive()) drawBody(s); }
+  // PASS 2: composite the whole specimen onto the field ONCE, translucent -> transmission (density = opacity)
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.globalAlpha = Math.min(1, 0.4 + 0.55*P.density);
+  ctx.drawImage(spec, 0, 0);
+  ctx.globalAlpha = 1;
+  // PASS 3: continuous rim + organelles on top
+  for (const s of world._swimbots.values()){ if (s.getAlive()) drawDetail(s); }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+let frames=0, lastT=performance.now();
+function loop(){
+  if (running && world){ for (let i=0;i<ticksPerFrame;i++) world.tick(); }
+  render();
+  if (world){ document.getElementById('tick').textContent = world.getClock(); document.getElementById('pop').textContent = world.getLivingSwimbotCount(); }
+  frames++; const now=performance.now();
+  if (now-lastT>500){ document.getElementById('fps').textContent = Math.round(frames*1000/(now-lastT)); frames=0; lastT=now; document.getElementById('zoomv').textContent = cam.zoom.toFixed(1)+'×'; }
+  requestAnimationFrame(loop);
+}
+
+// --- controls ---
+document.getElementById('play').onclick = (e)=>{ running=!running; e.target.textContent = running?'Pause':'Play'; };
+document.getElementById('reset').onclick = ()=>{ seed++; build(); };
+document.getElementById('seedIn').onchange = (e)=>{ const v=parseInt(e.target.value,10); seed=Number.isFinite(v)&&v>=0?v:0; build(); };
+const speed=document.getElementById('speed'); speed.oninput=()=>{ ticksPerFrame=+speed.value; document.getElementById('speedv').textContent=ticksPerFrame+'×'; };
+// zoom + pan
+cv.addEventListener('wheel', (e)=>{ e.preventDefault(); const f=Math.exp(-e.deltaY*0.0015); cam.zoom=Math.max(0.5, Math.min(40, cam.zoom*f)); }, {passive:false});
+let dragging=false, lastX=0, lastY=0;
+cv.addEventListener('mousedown', (e)=>{ dragging=true; lastX=e.clientX; lastY=e.clientY; cv.classList.add('drag'); });
+window.addEventListener('mouseup', ()=>{ dragging=false; cv.classList.remove('drag'); });
+window.addEventListener('mousemove', (e)=>{ if(!dragging) return; const s=sc(); cam.x -= (e.clientX-lastX)/s; cam.y -= (e.clientY-lastY)/s; lastX=e.clientX; lastY=e.clientY; });
+
+// param panel
+const pe = document.getElementById('params'); pe.append('Look: ');
+for (const sp of SPEC){ const l=document.createElement('label'); l.textContent=sp.label+' '; const i=document.createElement('input'); i.type='range'; i.min=sp.min; i.max=sp.max; i.step=sp.step; i.value=P[sp.k]; i.style.width='90px'; i.oninput=()=>{ P[sp.k]=+i.value; }; l.appendChild(i); pe.appendChild(l); }
+const npar=document.createElement('label'); npar.textContent='Pop '; const npi=document.createElement('input'); npi.type='number'; npi.min=1; npi.max=1000; npi.step=20; npi.value=P.n; npi.onchange=()=>{ P.n=+npi.value; build(); }; npar.appendChild(npi); pe.appendChild(npar);
+
+cam.zoom = 6;   // start magnified so bodies + organelles are visible
+build();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
