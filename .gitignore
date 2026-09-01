@@ -5,3 +5,7 @@
 # editor / temp
 *.swp
 *~
+
+# run-recorder default outputs (written to the cwd) -- run artifacts, not source
+run.jsonl
+run.db
