@@ -117,5 +117,47 @@ export function resolveWorldConfig(config = {}) {
         maxFoodBitsPerType: config.maxFoodBitsPerType ?? MAX_FOODBITS_PER_TYPE,
     };
     for (const field of SCHEDULABLE_FIELDS) validateScheduleForm(field, resolved[field]); // §10: fail malformed schedules at config time
+
+    // L4 -- config VALUE validation (form, NOT behavioral limits). resolveWorldConfig is the path World uses (makeConfig
+    // is a separate entry with its own checks), so a malformed value would otherwise surface deep in a tick, on
+    // ACCEPTED input: childEnergyRatio drives contributeToOffspring (parent energy*(1-ratio) must stay >= 0 -> a ratio
+    // outside [0,1] trips `_energy >= 0` on every birth); a non-finite maximumLifeSpan/foodSpread breaks the timerDelta
+    // bound / corrupts food positions with NaN; a NaN rate silently disables crossover/mutation. Infinity stays LEGAL
+    // where it means "no limit" (immortal lifespan, global viewRadius, uncapped maxFood/maxPopulation) -- faithful
+    // north-star; only NaN (always malformed), a non-finite spawn RADIUS, and out-of-[0,1] rates/ratio are rejected.
+    // eachVal walks a field's EFFECTIVE value(s): a §10 schedule is validated at every STEP (its form is checked by
+    // validateScheduleForm above; here we check the VALUES a step would feed the tick), a scalar validates itself.
+    const eachVal = (f, fn) => {
+        const v = resolved[f];
+        if (v !== null && typeof v === 'object' && Array.isArray(v.schedule)) { for (const step of v.schedule) fn(step[1]); }
+        else fn(v);
+    };
+    // NON-schedulable numeric fields are read RAW (not via _sched) -> a schedule object would become NaN arithmetic
+    // mid-tick; require a plain number. Infinity stays legal (global view / immortal / uncapped-per-type).
+    const plainNumber = (f) => {
+        const v = resolved[f];
+        if (typeof v !== 'number') throw new Error(`config: ${f} must be a plain number -- it is not schedulable (got ${v !== null && typeof v === 'object' ? 'a schedule/object' : String(v)})`);
+        if (Number.isNaN(v)) throw new Error(`config: ${f} must not be NaN`);
+    };
+    plainNumber('viewRadius'); plainNumber('maximumLifeSpan'); plainNumber('maxFoodBitsPerType');
+    if (typeof resolved.childEnergyRatio !== 'number' || !Number.isFinite(resolved.childEnergyRatio) || resolved.childEnergyRatio < 0 || resolved.childEnergyRatio > 1) {
+        throw new Error(`config: childEnergyRatio must be a number in [0,1] (got ${resolved.childEnergyRatio})`); // energy*(1-ratio) must be a valid non-negative fraction
+    }
+    if (!Number.isInteger(resolved.numFoodTypes) || resolved.numFoodTypes < 1) {
+        throw new Error(`config: numFoodTypes must be an integer >= 1 (got ${resolved.numFoodTypes})`);
+    }
+    // SCHEDULABLE numeric fields (scalar OR every schedule step): reject NaN. foodSpread additionally must be a FINITE
+    // spawn radius >= 0 -- Infinity/NaN there yields NaN food positions that corrupt the grid (the others only degrade
+    // behaviorally). crossover/mutation are probabilities -> [0,1] (Infinity is caught by the >1 bound).
+    for (const f of ['foodRegenerationPeriod', 'reproductiveIsolation', 'maxFood', 'maxPopulation']) {
+        eachVal(f, (v) => { if (typeof v === 'number' && Number.isNaN(v)) throw new Error(`config: ${f} must not be NaN`); });
+    }
+    eachVal('foodSpread', (v) => { if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`config: foodSpread must be a finite number >= 0 (got ${v}) -- it is a spawn radius, not a "no limit" field`); });
+    for (const f of ['crossoverRate', 'mutationRate']) {
+        eachVal(f, (v) => {
+            if (typeof v !== 'number' || Number.isNaN(v)) throw new Error(`config: ${f} must not be NaN`);
+            if (v < 0 || v > 1) throw new Error(`config: ${f} must be in [0,1] (got ${v})`);
+        });
+    }
     return Object.freeze(resolved);
 }

@@ -19,6 +19,7 @@ import { growSwimbotBuffers, growFoodBuffers } from './grow-buffers.mjs';
 import { resolveWorldConfig, SCHEDULABLE_FIELDS } from '../config.js';
 import { NULL_INDEX } from '../constants.js';
 import { World } from '../world.js';
+import { requireFinite } from '../assert.js';
 
 const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './barrier.mjs';
@@ -207,6 +208,20 @@ function resolveAndGuard(who, { config, founders, food, ticks }) {
         throw new Error(`${who}: requires { config, founders: [...], food: [...], ticks }`);
     }
     if (founders.length === 0) throw new Error(`${who}: an empty founder pool has nothing to simulate`); // else chunk=0 -> workers share idStart 0 -> the all-workers-reported barrier never completes (hang)
+    // L4: the parallel path builds bots directly (bypassing World.loadSwimbot), so validate the same input FORM here
+    // -- else a malformed founder (a negative age -> the growthScale invariant) crashes a WORKER thread mid-run,
+    // which run.mjs turns into process.exit(1). Fail fast in the caller's thread with a clear, indexed error instead.
+    for (let i = 0; i < founders.length; i++) {
+        const s = founders[i];
+        requireFinite(s.age, `${who}: founders[${i}].age`); if (s.age < 0) throw new Error(`${who}: founders[${i}].age must be >= 0 (got ${s.age})`);
+        requireFinite(s.x, `${who}: founders[${i}].x`); requireFinite(s.y, `${who}: founders[${i}].y`);
+        requireFinite(s.angle, `${who}: founders[${i}].angle`); requireFinite(s.energy, `${who}: founders[${i}].energy`);
+    }
+    for (let i = 0; i < food.length; i++) {
+        const f = food[i];
+        requireFinite(f.x, `${who}: food[${i}].x`); requireFinite(f.y, `${who}: food[${i}].y`); requireFinite(f.energy, `${who}: food[${i}].energy`);
+        if (f.energy < 0) throw new Error(`${who}: food[${i}].energy must be >= 0 (got ${f.energy}); negative/"poison" food is not modeled`);
+    }
     const resolved = resolveWorldConfig(config); // same defaults world.js applies -> bit-identical
     const reject = (why) => { throw new Error(`${who}: ${why} is not modeled by the parallel engine -- run it on world.js single-thread`); };
     for (const f of SCHEDULABLE_FIELDS) { // the parallel path reads config values raw, not per-tick -> reject §10 schedules (would be silent NaN)

@@ -33,6 +33,7 @@ import { draw, makeStream, DOMAIN } from './rng.js';
 import { SpatialGrid } from './spatialGrid.js';
 import { FrozenSwimbot } from './snapshotView.js';
 import { Perception } from './perception.js';
+import { requireFinite } from './assert.js';
 import { makeTopology } from './topology.js';
 import { resolveWorldConfig, scheduleValue } from './config.js';
 import {
@@ -60,7 +61,7 @@ export class World {
     // options.useSpatialGrid (default true) picks the P2 spatial-grid perception; false = the brute-force
     // O(n^2) reference path (kept for the bit-for-bit A/B, and as a fallback).
     constructor(config, masterSeed, options = {}) {
-        config = resolveWorldConfig(config); // P3/§6: fill ecology/lifecycle/spatial defaults + scaling policy (foodSpread=W/2). Only fills UNDEFINED fields -> a full config is unchanged (byte-identical).
+        config = resolveWorldConfig(config); // P3/§6: fill ecology/lifecycle/spatial defaults + scaling policy (foodSpread=W/2) + L4 value validation. Only fills UNDEFINED fields -> a full config is unchanged (byte-identical).
         this._config = config;
         this._masterSeed = masterSeed;
         this._topology = makeTopology(config); // §7 seam: walls -> FLAT (bit-identical); torus is P4
@@ -197,6 +198,16 @@ export class World {
     // swimbots already used, resurrecting the ABA + an RNG-ABA (a reborn id replays the dead one's stream).
     // That persistence contract is a P5 deliverable (§13); until it exists, do not treat load* as resume. ---
     loadSwimbot(id, { age, x, y, angle, energy, genes, numOffspring = 0, numFoodBitsEaten = 0 }) {
+        // L4: validate the input FORM at the door (clear errors), so a malformed seed can't surface later as an
+        // obscure mid-tick assert abort or NaN corruption. Genes are canonicalized by setGenes (0..255); the
+        // numeric fields must be finite, and age is a tick count so it must be >= 0 (a negative age drives
+        // growthScale < 0 -> the `_growthScale >= 0.0` compute-invariant). Everything else the engine handles
+        // faithfully (a negative-energy bot simply starts dead; an over-age bot dies of old age).
+        requireFinite(age, `loadSwimbot(${id}).age`);
+        if (age < 0) throw new Error(`loadSwimbot(${id}).age must be >= 0 (got ${age})`);
+        requireFinite(x, `loadSwimbot(${id}).x`); requireFinite(y, `loadSwimbot(${id}).y`);
+        requireFinite(angle, `loadSwimbot(${id}).angle`); requireFinite(energy, `loadSwimbot(${id}).energy`);
+        requireFinite(numOffspring, `loadSwimbot(${id}).numOffspring`); requireFinite(numFoodBitsEaten, `loadSwimbot(${id}).numFoodBitsEaten`);
         const g = new Genotype(); g.setGenes(genes);
         const sb = this._makeSwimbot(id);
         sb.create(id, age, { x, y }, angle, energy, g);
@@ -214,6 +225,19 @@ export class World {
     }
 
     loadFood(id, { x, y, type, energy }) {
+        // L4: validate the input FORM at the door (see loadSwimbot). type indexes the food-type machinery, so it
+        // must be an integer within the configured numFoodTypes; position + energy must be finite.
+        requireFinite(x, `loadFood(${id}).x`); requireFinite(y, `loadFood(${id}).y`); requireFinite(energy, `loadFood(${id}).energy`);
+        // Food energy must be >= 0: eatChosenFoodBit asserts it (a bot that eats negative-energy food trips the
+        // `food energy >= ZERO` invariant mid-tick). This is JJ's "food gives energy" model assumption -- NOT a pure
+        // compute-invariant. Negative-energy ("poison") food is a plausible future arbitrary-worlds FEATURE, but it
+        // would need eatChosenFoodBit to define the behavior (subtract? kill? still count as eaten?); until that's a
+        // deliberate design choice, reject it here with a clear error rather than let it abort a tick on eat.
+        if (energy < 0) throw new Error(`loadFood(${id}).energy must be >= 0 (got ${energy}); negative/"poison" food is not modeled`);
+        const numTypes = this._config.numFoodTypes ?? 1;
+        if (!Number.isInteger(type) || type < 0 || type >= numTypes) {
+            throw new Error(`loadFood(${id}).type must be an integer in [0, ${numTypes}) (got ${type})`);
+        }
         const f = new FoodBit();
         f.setIndex(id);
         f.setPosition({ x, y });
@@ -717,6 +741,9 @@ export class World {
     }
 
     static restore(config, data) {
+        // `data` is a TRUSTED engine-produced checkpoint (World.serialize / the parallel bridge) -- unlike the
+        // loadSwimbot/loadFood SEEDING boundary, restore does NOT re-validate per-entity fields (a hand-edited or
+        // corrupted checkpoint is out of scope; the config still goes through resolveWorldConfig's L4 validation).
         // Resume on the SAME perception baseline the checkpoint was saved on (snapshot vs mixed-live are two
         // deliberately different deterministic trajectories) -- override the caller's config only if it disagrees.
         const savedMode = data.perceptionMode || 'mixed-live';
