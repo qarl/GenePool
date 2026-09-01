@@ -251,16 +251,26 @@ export class Partition {
     writeAndCount() {
         const f64 = this._f64, grid = this._coopGrid;
         for (const sb of this._bots) {
-            const alive = sb.getAlive();
+            if (!sb.getAlive()) {
+                // DEAD GHOST (kept ONE tick for a lingering chosenMate ref, applyDeltas above): mark not-alive but
+                // PRESERVE its last-alive frozen fields -- above all the genital. A dead bot skips update() (Phase 5),
+                // so getGenitalPosition() now returns its POST-final-update position; overwriting the slot with that
+                // would make a pursuer steer toward a different point than world.js, whose FrozenSwimbot ghost keeps
+                // the tick-START genital (markDead() never moves it). Leaving the slot's genital as this tick's
+                // writeAndCount wrote it (== that tick-start value) matches world.js exactly. Not counted into the
+                // grid (dead == unperceivable), same as before.
+                f64[sb.getIndex() * STRIDE + F_ALIVE] = 0;
+                continue;
+            }
             const crit = sb.getAttractionCriterion();
             const gp = sb.getGenitalPosition();
             const pos = sb.getPosition();
             writeSlot(f64, sb.getIndex(), {
-                alive, age: sb.getAge(), energy: sb.getEnergy(),
+                alive: true, age: sb.getAge(), energy: sb.getEnergy(),
                 genitalX: gp.x, genitalY: gp.y, rootX: pos.x, rootY: pos.y,
                 criterion: crit, metric: computeMetricForCriterion(sb, crit),
             });
-            if (alive) grid.countOne(gp.x, gp.y); // dead bots are not perceivable -> not in the grid
+            grid.countOne(gp.x, gp.y); // dead bots are not perceivable -> not in the grid
         }
     }
 
