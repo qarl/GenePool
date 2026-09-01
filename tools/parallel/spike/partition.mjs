@@ -8,7 +8,7 @@
 import { Swimbot } from '../../../engine/swimbot.js';
 import { Genotype } from '../../../engine/genotype.js';
 import { Embryology } from '../../../engine/embryology.js';
-import { Obstacle } from '../../../engine/obstacle.js';
+import { ObstacleField } from '../../../engine/obstacle-field.js';
 import { FoodBit } from '../../../engine/foodBit.js';
 import { Vector2D } from '../../../engine/vector2d.js';
 import { makeStream, draw, DOMAIN } from '../../../engine/rng.js';
@@ -36,9 +36,12 @@ export class Partition {
         this._embryology = new Embryology();
         this._matePref = (l, c, t, i) => draw(masterSeed, DOMAIN.MATE_PREF, l, c, t, i);
         this._viewRadius = config.viewRadius ?? SWIMBOT_VIEW_RADIUS;
-        this._obstacle = new Obstacle();
-        this._obstacle.setPoolBounds(config.pool); // match world.js: endpoint wall-clamp uses the config pool, not the 8000 default
-        this._obstacle.setEndpointPositions(obstacle[0], obstacle[1]);
+        // §8 obstacle FIELD -- reuse the engine's ObstacleField so the parallel path supports MULTIPLE obstacles +
+        // per-obstacle thickness/masks, bit-identical to world.js. FLAT only (torus is rejected by runPoolParallel).
+        // Built from config.obstacles when present (runPoolParallel), else the single workerData obstacle (the gates).
+        this._obstacleField = new ObstacleField();
+        this._obstacleField.setPoolBounds(config.pool); // endpoint wall-clamp uses the config pool, not the 8000 default
+        this._obstacleField.setObstacles(config.obstacles !== undefined ? config.obstacles : [{ a: obstacle[0], b: obstacle[1] }]);
         this._collisionForce = new Vector2D();
         this._coopGrid = coopGrid;
         this._w = w;
@@ -93,7 +96,7 @@ export class Partition {
             if (this._genomeU8) this._genomeU8.set(f.genes, id * NUM_GENES); // publish founder genome for worker 0
         }
         const foodCapacity = foodF64 ? (foodF64.length / FD_STRIDE) : 0; // views must cover regen-grown food ids
-        this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacle, coopGrid, config.numFoodTypes ?? 1, foodGrid, foodF64, foodCapacity);
+        this._perceiver = new Perceiver(f64, maxBots, this._matePref, this._viewRadius, this._obstacleField, coopGrid, config.numFoodTypes ?? 1, foodGrid, foodF64, foodCapacity);
     }
 
     // Grow-on-near-full (keep slot==id; ids still never reused). Main reallocated the SWIMBOT SABs bigger and
@@ -184,8 +187,8 @@ export class Partition {
             sb.update();
             if (!sb.getAlive()) continue;
             if (sb.getIsLookingForSensoryInput()) this._perceiver.perceive(sb, tick);
-            if (this._obstacle.getCollision(sb.getPosition(), sb.getBoundingRadius() * ONE_HALF)) {
-                this._collisionForce.set(this._obstacle.getCurrentCollisionForce());
+            if (this._obstacleField.getCollision(sb.getPosition(), sb.getBoundingRadius() * ONE_HALF)) {
+                this._collisionForce.set(this._obstacleField.getCurrentCollisionForce());
                 this._collisionForce.scale(1.2);
                 sb.addForce(this._collisionForce);
             }
@@ -290,8 +293,8 @@ export class Partition {
             sb.update();
             if (sb.getAlive()) {
                 if (sb.getIsLookingForSensoryInput()) this._perceiver.perceive(sb, tick);
-                if (this._obstacle.getCollision(sb.getPosition(), sb.getBoundingRadius() * ONE_HALF)) {
-                    this._collisionForce.set(this._obstacle.getCurrentCollisionForce());
+                if (this._obstacleField.getCollision(sb.getPosition(), sb.getBoundingRadius() * ONE_HALF)) {
+                    this._collisionForce.set(this._obstacleField.getCurrentCollisionForce());
                     this._collisionForce.scale(1.2);
                     sb.addForce(this._collisionForce);
                 }
@@ -419,7 +422,7 @@ export class Partition {
         let looking = true, num = 0;
         while (looking) {
             child.randomizeSpawnPosition(parent, this._foodRegenRng);
-            if (!this._obstacle.getObstruction(parent.getPosition(), child.getPosition())) looking = false;
+            if (!this._obstacleField.getObstruction(parent.getPosition(), child.getPosition())) looking = false;
             num++;
             if (num > 10) looking = false;
         }

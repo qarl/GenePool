@@ -17,7 +17,6 @@ import { makePostUpdateBuffer, makeResolutionBuffers } from './resolution-layout
 import { allocCoopGrid } from './coop-grid.mjs';
 import { growSwimbotBuffers, growFoodBuffers } from './grow-buffers.mjs';
 import { resolveWorldConfig, SCHEDULABLE_FIELDS } from '../../../engine/config.js';
-import { DEFAULT_THICKNESS } from '../../../engine/obstacle.js';
 
 const NUM_GENES = 256; // engine genome length (constants.js NUM_GENES) -- for the shared genome SoA
 import { CTL_TICKGEN, CTL_TICK, CTL_DONEGEN, CTL_SHUTDOWN, CTL_GROW, CTL_NEXTID, CTL_NEXTFOODID, CTL_SIZE } from './barrier.mjs';
@@ -148,9 +147,9 @@ export async function runParallel(N, ticks, W, poolSize, founders, config, food,
 // `founders` / `food` are the same records World.loadSwimbot / loadFood take.
 // SCOPE (= world.js snapshot mode MINUS what the spike doesn't model). Rather than silently diverge, runPoolParallel
 // REJECTS every world it can't reproduce bit-for-bit -- so a result you get back is guaranteed identical to the
-// single-thread engine. Rejected (run these on world.js single-thread instead): torus topology; numFoodTypes > 1;
-// more than one obstacle; a single obstacle with non-default thickness or a movement/vision mask; and §10 schedules.
-// Accepted: any pool size, one default obstacle or none, static ecology. Grows automatically (unbounded).
+// single-thread engine. Rejected (run these on world.js single-thread): torus topology; numFoodTypes > 1; and §10
+// schedules. ACCEPTED: any pool size; a full §8 obstacle FIELD (any count, per-obstacle thickness + movement/vision
+// masks -- honored via the engine ObstacleField, same as world.js); static ecology. Grows automatically (unbounded).
 export async function runPoolParallel({ config, seed = MASTER_SEED, founders, food, workers = 8, ticks }) {
     if (!config || !Array.isArray(founders) || !Array.isArray(food) || !Number.isInteger(ticks)) {
         throw new Error('runPoolParallel: requires { config, founders: [...], food: [...], ticks }');
@@ -163,15 +162,12 @@ export async function runPoolParallel({ config, seed = MASTER_SEED, founders, fo
     }
     if (resolved.topology === 'torus') reject('torus topology (the coop grid + LoS are flat-only)');
     if ((resolved.numFoodTypes ?? 1) > 1) reject(`numFoodTypes=${resolved.numFoodTypes}`);
-    const obs = resolved.obstacles;
-    if (obs && obs.length > 1) reject(`${obs.length} obstacles (a single obstacle only)`);
-    const o0 = obs && obs[0];
-    if (o0 && o0.thickness !== undefined && o0.thickness !== DEFAULT_THICKNESS) reject(`obstacle thickness ${o0.thickness} (only the default ${DEFAULT_THICKNESS})`);
-    if (o0 && o0.mask && (o0.mask.movement === false || o0.mask.vision === false)) reject('a masked obstacle (movement/vision off)');
 
-    const poolSize = resolved.pool ? (resolved.pool.right - resolved.pool.left) : 8000;
-    const obstacle = o0 ? [o0.a, o0.b] : [{ x: 0, y: 0 }, { x: 0, y: 0 }]; // none -> degenerate segment = a no-op
-    const r = await runParallel(founders.length, ticks, workers, poolSize, founders, resolved, food, 0, 0, 0, 0, 0, seed, obstacle);
+    // Force the ObstacleField path in the workers (config.obstacles defined, even []); the single-obstacle param is
+    // the gates' back-compat fallback only, so pass a no-op here.
+    const cfg = { ...resolved, obstacles: resolved.obstacles || [] };
+    const poolSize = cfg.pool ? (cfg.pool.right - cfg.pool.left) : 8000;
+    const r = await runParallel(founders.length, ticks, workers, poolSize, founders, cfg, food, 0, 0, 0, 0, 0, seed, [{ x: 0, y: 0 }, { x: 0, y: 0 }]);
     return { hash: r.hash, totalBots: r.totalBots, grows: r.grows, foodGrows: r.foodGrows, tps: r.tps, ms: r.ms, fingerprint: r.fp };
 }
 

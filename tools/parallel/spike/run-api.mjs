@@ -47,6 +47,14 @@ await check('obstacle near wall, pool 2500', { ...makeEcologyConfig(2500), obsta
 await check('no obstacle, seed 777', makeEcologyConfig(pool), 777)();
 // a MINIMAL config: only pool -> resolveWorldConfig fills the rest identically on both paths
 await check('minimal config {pool}, seed 42', { pool: { left: 0, top: 0, right: pool, bottom: pool } }, 42)();
+// a FULL obstacle FIELD -- multiple obstacles, a thick one, a vision-only masked one -- honored via ObstacleField
+await check('obstacle field (3, thickness+mask)', { ...makeEcologyConfig(pool), obstacles: [
+    { a: { x: 2000, y: 1000 }, b: { x: 2000, y: 7000 }, thickness: 60 },
+    { a: { x: 5000, y: 1000 }, b: { x: 5000, y: 7000 } },
+    { a: { x: 1000, y: 4000 }, b: { x: 7000, y: 4000 }, mask: { movement: false, vision: true } },
+] }, 314)();
+// >12 obstacles -> exercises the ObstacleField BROAD-PHASE grid in the parallel path (must still == world.js)
+await check('obstacle field (16, broad-phase)', { ...makeEcologyConfig(pool), obstacles: Array.from({ length: 16 }, (_, i) => ({ a: { x: 500 + i * 450, y: 500 }, b: { x: 500 + i * 450, y: 7500 }, thickness: 20 + (i % 4) * 15 })) }, 2718)();
 
 // NEGATIVE paths: runPoolParallel must LOUDLY REJECT every world it can't reproduce (not silently diverge).
 console.log(`\n  rejects unsupported configs:`);
@@ -60,9 +68,6 @@ const mustReject = async (label, cfg) => {
 };
 await mustReject('torus topology', { ...makeEcologyConfig(pool), topology: 'torus' });
 await mustReject('numFoodTypes: 2', { ...makeEcologyConfig(pool), numFoodTypes: 2 });
-await mustReject('two obstacles', { ...makeEcologyConfig(pool), obstacles: [{ a: { x: 40, y: 40 }, b: { x: 80, y: 40 } }, { a: { x: 200, y: 200 }, b: { x: 400, y: 200 } }] });
-await mustReject('non-default thickness', { ...makeEcologyConfig(pool), obstacles: [{ a: { x: 40, y: 40 }, b: { x: 80, y: 40 }, thickness: 60 }] });
-await mustReject('masked (vision-off) obstacle', { ...makeEcologyConfig(pool), obstacles: [{ a: { x: 40, y: 40 }, b: { x: 80, y: 40 }, mask: { movement: true, vision: false } }] });
 await mustReject('a §10 schedule', { ...makeEcologyConfig(pool), foodRegenerationPeriod: { schedule: [[0, 20], [100, 40]] } });
 
 const pass = allOk && rejOk;
