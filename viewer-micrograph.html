@@ -136,18 +136,29 @@ function partPoints(ph, p, gscale){
   // terminal segment -> a gene-shaped END CAP (JJ's endCapSpline): bulge the tip out along the segment axis by
   // width*endCapSpline (round when large, tapered/pointed when small) instead of ending on a flat cut.
   const terminal = !(part.child !== undefined && part.child >= 0);
+  const len = part.length || 1, nx = part.axis.x/len, ny = part.axis.y/len;
   let capC1 = null, capC2 = null;
   if (terminal){
-    const len = part.length || 1, nx = part.axis.x/len, ny = part.axis.y/len, s = width * (part.endCapSpline || 0);
+    const s = width * (part.endCapSpline || 0);
     capC1 = T(pos.x-ePX + nx*s, pos.y-ePY + ny*s);
     capC2 = T(pos.x+ePX + nx*s, pos.y+ePY + ny*s);
+  }
+  // root/mouth end (part 1 starts at the body origin): a rounded rim closing the flat start edge, bulging BACKWARD
+  // (-axis) by 4/3*startW so the bezier semicircle's apex sits flush with the filled mouth disk (radius startW).
+  // JJ caps this end with a disk + half-arc; the tips already get a rim, so this is the one end that was missing it.
+  const root = (p === 1);
+  let capS1 = null, capS2 = null;
+  if (root){
+    const s = startW * (4/3);
+    capS1 = T(ppos.x-sPX - nx*s, ppos.y-sPY - ny*s);
+    capS2 = T(ppos.x+sPX - nx*s, ppos.y+sPY - ny*s);
   }
   return {
     sL:T(ppos.x-sPX, ppos.y-sPY), c1L:T(ppos.x-sPX+c1vx, ppos.y-sPY+c1vy),
     c2L:T(pos.x-ePX+c2vx, pos.y-ePY+c2vy), eL:T(pos.x-ePX, pos.y-ePY),
     eR:T(pos.x+ePX, pos.y+ePY), c2R:T(pos.x+ePX+c2vx, pos.y+ePY+c2vy),
     c1R:T(ppos.x+sPX+c1vx, ppos.y+sPY+c1vy), sR:T(ppos.x+sPX, ppos.y+sPY),
-    joint:T(ppos.x, ppos.y), jointR: startW*sc(), terminal, capC1, capC2,
+    joint:T(ppos.x, ppos.y), jointR: startW*sc(), terminal, capC1, capC2, root, capS1, capS2,
   };
 }
 // the filled tapered segment (closed) -- into `g`. Terminal segments close with the gene-shaped end cap, not a flat cut.
@@ -161,12 +172,14 @@ function fillPart(g, pt){
   g.closePath(); g.fill();
 }
 // the two long outer edges only (they align across segments -> one continuous body outline, no per-segment cross-strokes);
-// a terminal segment's rim also wraps its end cap so the tip gets a refractive edge.
+// a terminal segment's rim also wraps its end cap so the tip gets a refractive edge, and the root segment (p===1)
+// wraps its rounded mouth cap so the mouth end gets a rim too (it was the one end left flat/undrawn).
 function strokeEdges(g, pt){
   g.beginPath();
   g.moveTo(pt.sL[0],pt.sL[1]); g.bezierCurveTo(pt.c1L[0],pt.c1L[1], pt.c2L[0],pt.c2L[1], pt.eL[0],pt.eL[1]);
   if (pt.terminal) g.bezierCurveTo(pt.capC1[0],pt.capC1[1], pt.capC2[0],pt.capC2[1], pt.eR[0],pt.eR[1]);
   g.moveTo(pt.sR[0],pt.sR[1]); g.bezierCurveTo(pt.c1R[0],pt.c1R[1], pt.c2R[0],pt.c2R[1], pt.eR[0],pt.eR[1]);
+  if (pt.root) { g.moveTo(pt.sR[0],pt.sR[1]); g.bezierCurveTo(pt.capS2[0],pt.capS2[1], pt.capS1[0],pt.capS1[1], pt.sL[0],pt.sL[1]); } // rounded mouth rim (sR->sL)
   g.stroke();
 }
 

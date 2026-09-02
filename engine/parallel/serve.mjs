@@ -7,7 +7,7 @@
 //          then open  http://localhost:8099/viewer-parallel.html   (Chrome; file:// will NOT work)
 
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,6 +23,23 @@ const MIME = {
 
 createServer(async (req, res) => {
     let path = decodeURIComponent((req.url || '/').split('?')[0]);
+    // POST /save-params : the micrograph viewer's "Save Defaults" button posts its slider state here; we write it to
+    // viewer-micrograph-params.json in the repo root (which the page loads on startup, and which can be baked into code).
+    if (req.method === 'POST' && (path === '/save-params' || path === '/save-swimmer')) {
+        const outFile = path === '/save-params' ? 'viewer-micrograph-params.json' : 'viewer-swimmer.json';
+        let data = '';
+        req.on('data', c => { data += c; });
+        req.on('end', async () => {
+            try {
+                JSON.parse(data);   // validate
+                await writeFile(join(ROOT, outFile), data);
+                res.writeHead(200, { 'Content-Type': 'text/plain', 'Cross-Origin-Resource-Policy': 'same-origin' });
+                res.end('saved');
+                console.log('saved', outFile, path === '/save-swimmer' ? '(swimmer capture)' : data);
+            } catch (e) { res.writeHead(400); res.end('bad json'); }
+        });
+        return;
+    }
     if (path === '/') path = '/viewer-parallel.html';
     const file = normalize(join(ROOT, path));
     if (!file.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; } // no path traversal
