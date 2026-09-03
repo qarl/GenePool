@@ -145,7 +145,15 @@ uniform float uGrain, uGrainScale;             // grain amount + fineness (drive
 uniform float uTime, uCytoDrift;               // sim clock + gentle cytoplasmic-streaming speed (0 = static)
 out vec4 frag;   // vTint carries the RAW genome colour; hair/cyto/grain read it raw, appearance is lit+desaturated below
 
-vec2 hash2(vec2 p){ p = vec2(dot(p, vec2(127.1,311.7)), dot(p, vec2(269.5,183.3))); return fract(sin(p)*43758.5453); }
+// integer hash (uint mul/xor/shift) -> bit-identical on every GPU/CPU/JIT backend (arm64 LLVM == x86-64 Subzero),
+// so goldens match cross-arch. Replaces fract(sin()*k), whose transcendentals diverge across backends. Callers pass
+// integer-valued cell corners; float()+÷ below are IEEE-exact. (docs/PLAN-visual-goldens.md)
+vec2 hash2(vec2 p){
+  uvec2 q = uvec2(ivec2(p));                                  // exact for integer p; negatives wrap (defined int->uint)
+  uint h = q.x*374761393u + q.y*668265263u; h = (h ^ (h >> 13u)) * 1274126177u; h ^= (h >> 16u);
+  uint g = h*2246822519u; g = (g ^ (g >> 15u)) * 3266489917u; g ^= (g >> 13u);
+  return vec2(float(h), float(g)) / 4294967296.0;             // -> [0,1)^2
+}
 // smooth value noise: interpolate the per-cell hash across cell corners -> no hard square grid, organic grain
 float vnoise(vec2 p){
   vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
@@ -995,7 +1003,9 @@ function render(){
   }
 }
 
+let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (running only gates ticks, not render)
 function loop(){
+  if (loopStopped) return;
   if (running && world){ for (let i=0;i<ticksPerFrame;i++) world.tick(); }
   render();
   requestAnimationFrame(loop);
@@ -1012,6 +1022,37 @@ cv.addEventListener('mousedown', (e)=>{ dragging=true; lastX=e.clientX; lastY=e.
 window.addEventListener('mouseup', ()=>{ dragging=false; cv.classList.remove('drag'); });
 window.addEventListener('mousemove', (e)=>{ if(!dragging) return; const s=sc(); cam.x -= (e.clientX-lastX)/s; cam.y -= (e.clientY-lastY)/s; lastX=e.clientX; lastY=e.clientY; });
 
+
+// ---- deterministic golden-capture hook (INERT unless called; see docs/PLAN-visual-goldens.md) ----
+// Stops the rAF loop, rebuilds at a fixed seed, ticks a fixed count, renders a fixed frame count, returns raw
+// pixels. The render is a pure function of (seed, ticks, frames); no wall-clock/random/DPR anywhere. camOv lets a
+// capture pick a zoom/centre (defaults = the standard view). Returns {w,h,b64} of default-framebuffer RGBA.
+window.__golden = function(s, ticks, frames, camOv){
+  loopStopped = true; running = false;
+  seed = (s>>>0); cam.zoom = 6; build();
+  gl.disable(gl.DITHER);
+  for (let i=0; i<(ticks|0); i++) world.tick();
+  if (camOv){                                    // apply AFTER ticks so focus sees settled positions
+    cam = { x: camOv.x ?? P.pool/2, y: camOv.y ?? P.pool/2, zoom: camOv.zoom ?? 6 };
+    if (camOv.focus === 'biggest' && world){      // centre on the largest grown living specimen (most grain to judge)
+      let best=null, bestR=-1;
+      for (const [id, sb] of world._swimbots){
+        if (!sb.getAlive()) continue;
+        const ph = sb._phenotype; if (!ph || ph.numParts <= 1) continue;
+        if ((sb._growthScale ?? 1) < 0.9) continue;
+        const c = sb.getPosition(); let wr=0;
+        for (let q=1;q<ph.numParts;q++){ const dx=ph.parts[q].position.x-c.x, dy=ph.parts[q].position.y-c.y, d=dx*dx+dy*dy; if (d>wr) wr=d; }
+        if (wr > bestR){ bestR=wr; best=c; }
+      }
+      if (best){ cam.x = best.x; cam.y = best.y; }
+    }
+  }
+  for (let f=0; f<Math.max(1, frames|0); f++) render();
+  const w = cv.width, h = cv.height, px = new Uint8Array(w*h*4);
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  let str=''; for (let i=0;i<px.length;i+=8192) str += String.fromCharCode.apply(null, px.subarray(i, i+8192));
+  return { w, h, b64: btoa(str) };
+};
 
 function boot(){
   if (gl){ initGL(); build(); requestAnimationFrame(loop); }   // params are baked into P; no live panel / runtime file
