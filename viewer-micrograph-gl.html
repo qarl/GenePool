@@ -20,7 +20,7 @@
   #err { color: #ff8f8f; }
   #wrap { display: flex; justify-content: center; padding: 14px; }
   #stage { position: relative; line-height: 0; }
-  canvas { border-radius: 10px; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: grab; touch-action: none; }
+  canvas { border-radius: 12px; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: grab; touch-action: none; }
   canvas.drag { cursor: grabbing; }
   /* species-tile count labels: HTML overlay over the right column (NOT drawn into the canvas, so goldens stay text-free) */
   .tileLabel { position: absolute; right: 12px; text-align: right; pointer-events: none; line-height: 1.15;
@@ -53,6 +53,7 @@ const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000, EGG_S
 const cv = document.getElementById('cv');
 const CANVAS_W = cv.width, CANVAS_H = cv.height;   // true backing-store size (1024x768), never changes
 const VIEW_MAIN = 768, VIEW_SMALL = 256;           // main micrograph = 768^2 (left); three species tiles = 256^2 (right column)
+const VIEW_ROUND = 12;                              // corner radius (px) — SAME on every view (main + tiles)
 let W = cv.width, H = cv.height;                    // ACTIVE view size — renderView sets this per view, then restores
 const errEl = document.getElementById('err');
 
@@ -316,11 +317,20 @@ void main(){
 const POST_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uScene, uBloom; uniform float uStrength;
-uniform ivec2 uOrigin;   // composite: this view fills a REGION of the canvas -> map window fragcoord back to view texels
+uniform ivec2 uOrigin;     // composite: this view fills a REGION of the canvas -> map window fragcoord back to view texels
+uniform vec2 uViewSize;    // view size (px) for the rounded-corner mask
+uniform float uRound;      // corner radius (px); same for every view so all four match
 out vec4 frag;
 void main(){
   ivec2 ip = ivec2(gl_FragCoord.xy) - uOrigin;
-  frag = vec4(texelFetch(uScene, ip, 0).rgb + texelFetch(uBloom, ip, 0).rgb * uStrength, 1.0);
+  vec3 c = texelFetch(uScene, ip, 0).rgb + texelFetch(uBloom, ip, 0).rgb * uStrength;
+  if (uRound > 0.0){                                       // rounded-box SDF -> mask corners to the (black) canvas
+    vec2 hs = uViewSize * 0.5;
+    vec2 q = abs((vec2(ip) + 0.5) - hs) - hs + vec2(uRound);
+    float sd = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - uRound;
+    c *= 1.0 - smoothstep(-0.75, 0.75, sd);               // ~1.5px antialiased edge
+  }
+  frag = vec4(c, 1.0);
 }`;
 
 // --- world-boundary box: flat-colour screen-space quads drawn on top ---
@@ -488,7 +498,7 @@ function initGL(){
   // bloom: scene target + ping-pong blur buffers + bright/blur/composite programs
   brightProg = makeProgram(COMP_VS, BRIGHT_FS); for (const n of ['uScene','uThresh']) uBr[n]=gl.getUniformLocation(brightProg,n);
   blurProg   = makeProgram(COMP_VS, BLUR_FS);   for (const n of ['uTex','uDir'])       uBl[n]=gl.getUniformLocation(blurProg,n);
-  postProg   = makeProgram(COMP_VS, POST_FS);   for (const n of ['uScene','uBloom','uStrength','uOrigin']) uPo[n]=gl.getUniformLocation(postProg,n);
+  postProg   = makeProgram(COMP_VS, POST_FS);   for (const n of ['uScene','uBloom','uStrength','uOrigin','uViewSize','uRound']) uPo[n]=gl.getUniformLocation(postProg,n);
   // scene + bloom targets live per-view inside makeFBOSet (mainSet/smallSet, created above).
 
   // world-boundary box (flat-colour quads)
@@ -902,7 +912,7 @@ function advanceFrame(){
 // state (known/fades/junk positions), never mutates it. Sets cam/W/H for the view and RESTORES them (so build(),
 // the wall, and the golden hook always see the canvas values). For the main view this is byte-identical to the old
 // render(); species tiles will call it with a different cam + size.
-function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true){
+function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, roundPx = 0){
   if (!gl) return;
   const _cam = cam, _W = W, _H = H;
   cam = viewCam; W = vw; H = vh;
@@ -1038,6 +1048,7 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true){
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, bloomA);   gl.uniform1i(uPo.uBloom, 1);
   gl.uniform1f(uPo.uStrength, P.bloom);   // 0 => bloom (possibly stale) contributes nothing
   gl.uniform2i(uPo.uOrigin, regionX, regionY);
+  gl.uniform2f(uPo.uViewSize, W, H); gl.uniform1f(uPo.uRound, roundPx);   // rounded corners (same radius on every view)
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
 
@@ -1092,13 +1103,30 @@ function render(){
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, CANVAS_W, CANVAS_H);
   gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);          // clear regions not covered by a view
-  renderView(cam, VIEW_MAIN, VIEW_MAIN, mainSet, 0, 0);             // main micrograph: left 768^2 (GL origin bottom-left)
+  renderView(cam, VIEW_MAIN, VIEW_MAIN, mainSet, 0, 0, true, VIEW_ROUND);   // main micrograph: left 768^2 (GL origin bottom-left)
   // three species tiles, stacked in the right column (top = largest species). Fixed shared zoom -> comparable sizes.
   for (let i = 0; i < 3; i++){
     const r = speciesReps[i];
     if (!r || !r.rep || !r.rep.getAlive()) continue;                 // <3 species or dead rep -> leave black (labels: step 5)
     const c = r.rep.getPosition();
-    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - i), false);
+    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - i), false, VIEW_ROUND);
+  }
+  // ---- 5px black gutters between the views (main | tile-column, and between the three tiles) ----
+  {
+    const G = 5, h = G / 2;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, CANVAS_W, CANVAS_H);
+    gl.useProgram(boxProg); gl.uniform2f(uBoxRes, CANVAS_W, CANVAS_H); gl.uniform4f(uBoxColor, 0, 0, 0, 1);
+    const R = (x0,y0,x1,y1) => [x0,y0, x1,y0, x1,y1, x0,y0, x1,y1, x0,y1];   // screen space (top-left origin)
+    const g = new Float32Array([
+      ...R(VIEW_MAIN - h, 0, VIEW_MAIN + h, CANVAS_H),                    // vertical: main | column
+      ...R(VIEW_MAIN, VIEW_SMALL - h, CANVAS_W, VIEW_SMALL + h),          // horizontal: tile 0 | 1
+      ...R(VIEW_MAIN, VIEW_SMALL*2 - h, CANVAS_W, VIEW_SMALL*2 + h),      // horizontal: tile 1 | 2
+    ]);
+    gl.bindVertexArray(boxVAO); gl.bindBuffer(gl.ARRAY_BUFFER, boxVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, g, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, g.length / 2);
+    gl.bindVertexArray(null);
   }
 }
 
