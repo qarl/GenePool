@@ -534,7 +534,7 @@ function build(){
   }
   for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
   known.clear(); fades.clear(); deathTick.clear();   // no stale death-fade ghosts across a rebuild
-  frameCount = 0; speciesReps = [];                   // reset the species-tile cadence -> deterministic from a fresh build
+  frameCount = 0; speciesReps = []; prevReps = []; nextSpeciesId = 1;   // reset species tiles -> deterministic from a fresh build
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
@@ -848,6 +848,7 @@ const SPECIES_K = 24;                // hard cap on tracked reps (perf bound on 
 const SPECIES_RECOMPUTE = 30;        // frames between reclusterings
 const TILE_ZOOM = 14;               // fixed shared zoom for all tiles -> tile fill is comparable across species
 let frameCount = 0, speciesReps = [];
+let prevReps = [], nextSpeciesId = 1;   // stable species identity across reclusters (seed-match) -> tiles don't reshuffle
 function junkOf(sb){ const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k=0;k<NJ;k++) a[k] = g.getGeneValue(USED+k); return a; }
 function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k]); return 1 - (d/256)/NJ; }   // engine metric (/BYTE_SIZE)
 function computeSpecies(){
@@ -871,6 +872,19 @@ function computeSpecies(){
     r.rep = best; r.count = r.members.length;
   }
   reps.sort((a, b) => b.count - a.count);                          // largest first (Array.sort is stable -> deterministic ties)
+  // STABLE IDENTITY: greedily match each new cluster (largest first) to a previous species by junk-seed similarity, so a
+  // species keeps its id (and, if the old rep still lives, its rep -> no camera jump) across reclusters. Split -> the
+  // largest fragment inherits the id; unmatched new clusters get a fresh id. (Rank/floor hysteresis: deferred, see plan.)
+  const usedPrev = new Set();
+  for (const r of reps){
+    let bestPrev = null, bestS = SPECIES_ISO;
+    for (const p of prevReps){ if (usedPrev.has(p.id)) continue; const s = junkSim(r.seed, p.seed); if (s > bestS){ bestS = s; bestPrev = p; } }
+    if (bestPrev){
+      r.id = bestPrev.id; usedPrev.add(bestPrev.id);
+      if (bestPrev.rep && bestPrev.rep.getAlive() && r.members.some(m => m.sb === bestPrev.rep)) r.rep = bestPrev.rep;   // rep continuity
+    } else r.id = nextSpeciesId++;
+  }
+  prevReps = reps.map(r => ({ id: r.id, seed: r.seed, rep: r.rep }));
   return reps;
 }
 // count labels (HTML overlay over the tiles; "counts first"). Updated on each recluster.
@@ -1107,7 +1121,12 @@ function render(){
   // three species tiles, stacked in the right column (top = largest species). Fixed shared zoom -> comparable sizes.
   for (let i = 0; i < 3; i++){
     const r = speciesReps[i];
-    if (!r || !r.rep || !r.rep.getAlive()) continue;                 // <3 species or dead rep -> leave black (labels: step 5)
+    if (!r) continue;                                                // <3 species -> leave the tile black (labels hidden)
+    if (!r.rep || !r.rep.getAlive()){                                // rep died between reclusters -> re-pick a living member
+      const alt = r.members && r.members.find(m => m.sb.getAlive());  //   (avoids the tile blinking black for up to 30 frames)
+      if (!alt) continue;                                            // whole species gone -> black tile
+      r.rep = alt.sb;
+    }
     const c = r.rep.getPosition();
     renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - i), false, VIEW_ROUND);
   }
