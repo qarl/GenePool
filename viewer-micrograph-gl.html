@@ -67,6 +67,7 @@ const P = {
   subsurface: 0.6,  // how much the gel re-emits its own tint
   cyto: 0.25,       // cytoplasm: strength of the cellular density spots
   cells: 0.3,       // cytoplasm: cell frequency (bigger = smaller, denser spots)
+  cytoDrift: 0.02,  // cytoplasm: gentle streaming speed (world units of drift per sim tick; 0 = static)
   grain: 0.25,      // grain: fine density speckle strength (driven by the blue component)
   grainScale: 2.0,  // grain fineness (bigger = finer)
   junk: 1.0,        // floating detritus amount (0..1 of the seeded pool)
@@ -95,6 +96,7 @@ const SPEC = [
   { k:'subsurface', label:'Subsurface', min:0,   max:2,    step:0.05 },
   { k:'cyto',       label:'Cyto',       min:0,   max:2,    step:0.05 },
   { k:'cells',      label:'Cells',      min:0.1, max:2,    step:0.05 },
+  { k:'cytoDrift',  label:'Cyto Flow',  min:0,   max:0.2,  step:0.005 },
   { k:'grain',      label:'Grain',      min:0,   max:2,    step:0.05 },
   { k:'grainScale', label:'G.Scale',    min:0.5, max:6,    step:0.1  },
   { k:'junk',       label:'Junk',       min:0,   max:1,    step:0.02 },
@@ -168,6 +170,7 @@ precision highp float;
 in float vCU; in float vRad; in float vV; in vec3 vTint; in float vBlur;
 uniform float uCyto, uCells, uLighten, uSat;   // cytoplasm amount, cell freq, lighten-to-white, desaturate (render only)
 uniform float uGrain, uGrainScale;             // grain amount + fineness (driven by the BLUE component)
+uniform float uTime, uCytoDrift;               // sim clock + gentle cytoplasmic-streaming speed (0 = static)
 out vec4 frag;   // vTint carries the RAW genome colour; hair/cyto/grain read it raw, appearance is lit+desaturated below
 
 vec2 hash2(vec2 p){ p = vec2(dot(p, vec2(127.1,311.7)), dot(p, vec2(269.5,183.3))); return fract(sin(p)*43758.5453); }
@@ -197,7 +200,11 @@ void main(){
   // Both in world units so cells are isotropic; welded to the material, so they flex with the body. No animation.
   if (uCyto > 0.0){
     float uW = vCU * vRad;
-    float f1 = worley(vec2(uW, vV) * uCells);
+    // gentle cytoplasmic streaming: drift the sample slowly over sim time (mostly ALONG the body, a little across) so the
+    // cells flow instead of sitting static. Welded per-instance offset is already baked into vV, so each creature flows its
+    // own pattern. (bounded well within float precision for any realistic clock.)
+    vec2 flow = vec2(uTime * uCytoDrift * 0.5, uTime * uCytoDrift);
+    float f1 = worley((vec2(uW, vV) + flow) * uCells);
     float spot = 1.0 - smoothstep(0.0, 0.5, f1);            // 1 at cell centres, 0 between
     float interior = 1.0 - smoothstep(0.6, 1.0, abs(vCU));  // fade out near the silhouette so the rim stays clean
     th *= 1.0 + uCyto * vTint.g * spot * interior * detail; // cytoplasm attenuated by RAW GREEN (washed out on death)
@@ -368,7 +375,7 @@ void main(){
 }`;
 
 const K_SLABS = 8;   // depth slabs for front-to-back compositing (more = finer occlusion ordering, more passes)
-let bodyProg=null, resolveProg=null, finalProg=null, uBodyRes=null, uBodyCyto=null, uBodyCells=null, uBodyLighten=null, uBodyGrain=null, uBodyGrainScale=null, uBodySat=null;
+let bodyProg=null, resolveProg=null, finalProg=null, uBodyRes=null, uBodyCyto=null, uBodyCells=null, uBodyLighten=null, uBodyGrain=null, uBodyGrainScale=null, uBodySat=null, uBodyTime=null, uBodyCytoDrift=null;
 const uR = {}, uF = {};                  // resolve / final uniform locations
 let slabTex=null, slabFBO=null, accA=null, accB=null;   // accX = { fbo, out, fa }
 let hairTex=null, hairFBO=null;                          // per-slab hair glow, folded into the composite
@@ -381,8 +388,9 @@ let boxProg=null, uBoxRes=null, uBoxColor=null, boxVAO=null, boxVBO=null;
 let hairTime = 0;
 // death fade: dead swimbots are swept from the world each tick, so keep the last reference per id and render it
 // fading out (thickness -> 0) over FADE_TICKS of SIM TIME before pruning. Tied to the clock, so it tracks sim
-// speed and freezes on pause. ~720 ticks ≈ 4 s at the default speed. Alive -> fade 1; dead -> fade by elapsed ticks.
-const known = new Map(), fades = new Map(), deathTick = new Map(), FADE_TICKS = 720;
+// speed and freezes on pause. 240 ticks = 4 s at 1x (60 ticks/s @ 60fps); at 60x it's 240/3600 = 4/60 s -- death
+// speeds up exactly with sim speed. Alive -> fade 1; dead -> fade by elapsed ticks.
+const known = new Map(), fades = new Map(), deathTick = new Map(), FADE_TICKS = 240;
 // floating detritus: persistent world-space particles that drift in the medium (specks + soft out-of-focus blobs)
 const MAX_JUNK = 600;
 let junk = [];
@@ -434,6 +442,8 @@ function initGL(){
   uBodyGrain = gl.getUniformLocation(bodyProg, 'uGrain');
   uBodyGrainScale = gl.getUniformLocation(bodyProg, 'uGrainScale');
   uBodySat = gl.getUniformLocation(bodyProg, 'uSat');
+  uBodyTime = gl.getUniformLocation(bodyProg, 'uTime');
+  uBodyCytoDrift = gl.getUniformLocation(bodyProg, 'uCytoDrift');
   for (const n of ['uSlab','uPrevOut','uPrevFA','uHairTex','uRes','uField','uDensity','uOpacity','uRim','uSub','uScaleRatio']) uR[n] = gl.getUniformLocation(resolveProg, n);
   for (const n of ['uOut','uFA','uRes','uField']) uF[n] = gl.getUniformLocation(finalProg, n);
 
@@ -579,7 +589,7 @@ function tri(A,acu,ar,av,aT, B,bcu,br,bv,bT, C,ccu,cr,cv,cT, blur){ if (CAP) CAP
 function quad(A,acu,ar,av, B,bcu,br,bv, C,ccu,cr,cv, D,dcu,dr,dv, tA, tB, blur){ tri(A,acu,ar,av,tA, B,bcu,br,bv,tA, C,ccu,cr,cv,tB, blur); tri(A,acu,ar,av,tA, C,ccu,cr,cv,tB, D,dcu,dr,dv,tB, blur); }
 
 const STEPS = 10, DOME_RINGS = 8, DOME_CROSS = 16, DISCK = 16;   // more strip steps -> smoother flexing; smooth caps
-function emitStrip(pt, tStart, tEnd, v0, v1, rs, blur, merge){
+function emitStrip(pt, tStart, tEnd, v0, v1, rs, blur, merge, steps=STEPS){
   // merge (branch base): thickness ramps up from 0, and the side edges spread ALONG the trunk axis (fillet) -- BOTH
   // measured in ARC-LENGTH from the branch base (merge.a0..a1 over merge.rw), so short first segments still fade smoothly.
   const arcAt = (u)=> merge.a0 + (merge.a1-merge.a0)*u;
@@ -595,8 +605,8 @@ function emitStrip(pt, tStart, tEnd, v0, v1, rs, blur, merge){
     return [merge.px + dx*c - dy*s, merge.py + dx*s + dy*c];
   } : (Pp)=>Pp;
   let pL=bend(pt.sL,0), pR=bend(pt.sR,0), pM=mid(pL,pR), pr=pt.wStart*rs*ramp(0), pv=v0, ptint=tStart;
-  for (let j=1;j<=STEPS;j++){
-    const u=j/STEPS;
+  for (let j=1;j<=steps;j++){
+    const u=j/steps;
     const L=bend(bez(pt.sL,pt.c1L,pt.c2L,pt.eL,u),u), R=bend(bez(pt.sR,pt.c1R,pt.c2R,pt.eR,u),u);
     const M=mid(L,R), r=lerp(pt.wStart,pt.wEnd,u)*rs*ramp(u), v=lerp(v0,v1,u), ct=lerp3(tStart,tEnd,u);
     quad(pL,-1,pr,pv, pM,0,pr,pv, M,0,r,v, L,-1,r,v, ptint, ct, blur);   // left half
@@ -608,7 +618,7 @@ function emitStrip(pt, tStart, tEnd, v0, v1, rs, blur, merge){
 // shrinking to a point at the tip. Rings step outward along the axis (R = wBase*sqrt(1-a^2)) while carrying cu across
 // the width and a tapering radius, so the fragment gets real 3D thickness (full at the base -> 0 at the tip) instead
 // of a transparent film. Base ring (a=0) == the segment's end edge, so it joins the strip seamlessly.
-function emitDome(baseA, baseB, axX, axY, capLenScreen, radWorld, t, vBase, vTip, blur){
+function emitDome(baseA, baseB, axX, axY, capLenScreen, radWorld, t, vBase, vTip, blur, lod=1){
   const cx=(baseA[0]+baseB[0])*0.5, cy=(baseA[1]+baseB[1])*0.5;
   const hx=(baseB[0]-baseA[0])*0.5, hy=(baseB[1]-baseA[1])*0.5;
   const wBase=Math.hypot(hx,hy)||1e-6, ux=hx/wBase, uy=hy/wBase;   // unit vector across the base width
@@ -619,8 +629,9 @@ function emitDome(baseA, baseB, axX, axY, capLenScreen, radWorld, t, vBase, vTip
   // the cap's aspect ratio: a long cap -> more rings, fewer cross; a flat one -> the reverse. Never faceted in one direction,
   // yet the same cost as the old fixed 8x16 (aspect=1 reproduces 8x16 exactly). Clamped so extreme aspects stay bounded.
   const aspect = Math.max(0.25, Math.min(4.0, capLenScreen / wBase));
-  const rings = Math.max(6, Math.min(24, Math.round(DOME_RINGS * Math.sqrt(aspect))));
-  const cross = Math.max(6, Math.min(24, Math.round(DOME_CROSS / Math.sqrt(aspect))));
+  const ld = Math.sqrt(Math.max(0.12, lod));   // LOD: shrink both counts (budget ~ lod) for small on-screen creatures
+  const rings = Math.max(3, Math.min(24, Math.round(DOME_RINGS * Math.sqrt(aspect) * ld)));
+  const cross = Math.max(3, Math.min(24, Math.round(DOME_CROSS / Math.sqrt(aspect) * ld)));
   for (let k=0;k<rings;k++){
     const a0=k/rings, a1=(k+1)/rings, r0=rad(a0), r1=rad(a1);
     const vA=lerp(vBase,vTip,a0), vB=lerp(vBase,vTip,a1);   // v continues along the cap axis -> spots stay 2D (not streaks)
@@ -674,9 +685,17 @@ function emitCapHairs(A, B, ax, ay, capLenScreen, radWorld, red, grow, fade, vAr
 
 // tessellate ONE segment (part p) of a creature at the current buffer cursor. Segments of the same CHAIN are emitted
 // into the same depth slab so they still fuse seamlessly (no joint disc needed -- sequential parts share their edge).
-function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge){
+function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   const part = ph.parts[p];
   const pt = partPointsGL(ph, p, g);
+  // LOD (lod: 1 = full, ->0 for tiny on-screen creatures): hairs (~half the geometry, invisible when small) drop first,
+  // then strip steps and dome resolution scale down. Full detail when lod>=~1 (a reasonably large creature on screen).
+  const steps = (lod >= 0.999) ? STEPS : Math.max(2, Math.round(STEPS * lod));
+  // hairs FADE OUT smoothly as the creature shrinks (no hard on/off pop). At the small end they'd just be a faint white
+  // halo anyway -- which the silhouette RIM already draws -- so as they fade they melt into that rim line. Below the fade
+  // floor they're skipped entirely (cost saved at full zoom-out); above it they're full strength.
+  const hairLOD = smoothstep(0.35, 0.6, lod);
+  const drawDome  = lod >= 0.4;   // rounded caps are the dominant zoom-out cost + invisible when tiny -> flat ends there
   // DEATH: swell the segment outward from the swimmer's centre (disperse) + soft-focus BLUR, while thickness fades
   let capLenT = pt.capLenT, capLenR = pt.capLenR;
   const blur = P.deathBlur * (1 - fade);   // 0 alive -> P.deathBlur when fully dead (feathers edges in the shader)
@@ -693,7 +712,7 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge){
   const pp = (part.parent >= 1) ? ph.parts[part.parent] : part;
   const tStart = [ pp.red, pp.green, pp.blue ];
   if (CAP){ CAP.part = p; CAP.kind = 0; }
-  emitStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge);   // merge (branch base fillet+fade) computed in render, arc-based
+  emitStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge, steps);   // merge (branch base fillet+fade) computed in render, arc-based
   if (CAP) CAP.kind = 1;
   // The strip's END is rotated by the branch BEND (inside emitStrip), but the tip dome attaches to the RAW eL/eR/axis. On a
   // SHORT limb the bend has not eased to 0 by the tip, so the dome is left misaligned from the strip end -> a cut at the tip
@@ -709,15 +728,15 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge){
     const rot=(Pp)=>{ const dx=Pp[0]-merge.px, dy=Pp[1]-merge.py; return [merge.px+dx*c-dy*s, merge.py+dx*s+dy*c]; };
     deL=rot(pt.eL); deR=rot(pt.eR); dnx=pt.nx*c-pt.ny*s; dny=pt.nx*s+pt.ny*c;
   }
-  if (pt.terminal)   emitDome(deL, deR,  dnx,  dny, capLenT*S, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT, blur); // tip
-  if (pt.capLenR > 0) emitDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S, pt.wStart*fade, tStart, v0, v0 - capLenR, blur); // mouth only now
+  if (pt.terminal && drawDome)   emitDome(deL, deR,  dnx,  dny, capLenT*S, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT, blur, lod); // tip
+  if (pt.capLenR > 0 && drawDome) emitDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S, pt.wStart*fade, tStart, v0, v0 - capLenR, blur, lod); // mouth only now
   if (CAP) CAP.kind = 2;
 
   // hairs along both side edges: roots welded to the body (follow the swim), tips beat in a metachronal wave along v,
   // length scales with the segment's local thickness, and they DRAG from this part's own velocity through the water.
   // GROWTH GATE (H.Grow): no hairs until this growth fraction, then ramp to full over ~0.4 -> newborns stay bald.
   const grow = smoothstep(P.hairGrow, Math.min(0.99, P.hairGrow + 0.4), g);
-  if (P.hair > 0 && part.red > 0.01 && grow > 0.001){
+  if (P.hair > 0 && part.red > 0.01 && grow > 0.001 && hairLOD > 0.01){
     const red = part.red, gLen = (part.length || 1) * g;   // grown segment length -> even hair spacing on babies too
     const n = Math.max(1, Math.round(gLen / P.hairSpace));
     const widS = Math.max(0.25, P.hairWid * S);
@@ -732,7 +751,7 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge){
       // hair LENGTH = local thickness * RED (gene trait) * growth-gate; brightness also gated -> smooth grow-in
       const lenS = P.hairLen * (lerp(pt.wStart, pt.wEnd, u) / 3.0) * red * grow * S;
       const beat = P.hairSway * Math.sin(lerp(v0,v1,u)*P.hairWave - hairTime*P.hairBeat);
-      const hbright = grow * fade;   // hairs fade out with the dying body too
+      const hbright = grow * fade * hairLOD;   // fade with death AND with the LOD hair-fade (smooth zoom transition)
       let lx=L[0]-M[0], ly=L[1]-M[1], ll=Math.hypot(lx,ly)||1; lx/=ll; ly/=ll;
       emitHair(L[0],L[1], lx, ly, lenS, widS,  beat - P.hairDrag*(vx*(-ly) + vy*lx), hbright);
       let rx=R[0]-M[0], ry=R[1]-M[1], rl=Math.hypot(rx,ry)||1; rx/=rl; ry/=rl;
@@ -741,8 +760,8 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge){
     // hairs on the CAPS (heads): radiate from every rounded end -- the tip, and the mouth/branch shoulder. The tip cap
     // hairs must root on the SAME bent + thickness-ramped cap the dome draws (deL/deR/dnx/dny, wEnd*rampEnd), or they float
     // off a short/bent limb (the dome moved + thinned but the hairs stayed on the old full-width, un-bent edge).
-    if (pt.terminal)    emitCapHairs(deL, deR,  dnx,  dny, capLenT*S, pt.wEnd*rampEnd, red, grow, fade, v1, vx, vy, S);
-    if (pt.capLenR > 0) emitCapHairs(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S, pt.wStart, red, grow, fade, v0, vx, vy, S);
+    if (pt.terminal)    emitCapHairs(deL, deR,  dnx,  dny, capLenT*S, pt.wEnd*rampEnd, red, grow, fade*hairLOD, v1, vx, vy, S);
+    if (pt.capLenR > 0) emitCapHairs(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S, pt.wStart, red, grow, fade*hairLOD, v0, vx, vy, S);
   }
 }
 const FOOD_TINT = [0.55, 0.78, 0.5];
@@ -753,13 +772,22 @@ function tessFood(f){
 
 // buildSegs: append one creature's per-part draw records (depth slab + arc-based Y-merge) to `segs`. Shared by render() and
 // the Copy-Swimmer capture, so the dumped geometry is exactly what the renderer draws (no separate path that could diverge).
-function buildSegs(id, sb, ph, g, fade, S, segs){
+function buildSegs(id, sb, ph, g, fade, S, segs, lodOverride){
   const base = pseudoDepth(id);
+  // PER-INSTANCE cytoplasm/grain: shift this creature's body-space v by a big per-id constant so its Worley/grain samples a
+  // different region of the (non-repeating, 2D-jittered) noise field -> every creature's pattern is unique instead of every
+  // identical shape sharing one pattern. Same offset for all its parts (welding + intra-creature continuity preserved); it
+  // also desyncs the hair beat per creature, which looks better. Content-addressed by id so it's stable frame to frame.
+  const vOff = (((id * 2654435761) >>> 0) / 4294967296) * 600;
   // per-chain layering, BUT the TRUNK is forced to the front and every branch one layer BEHIND it -> the trunk's gel masks
   // the branch bases from the front (hides the merge transition). Branch limbs still layer over the body.
   const chain = new Int32Array(ph.numParts);
   const arc = new Float64Array(ph.numParts);   // arc-length (world) to each part's START -> body-space `v`
-  for (let p=1;p<ph.numParts;p++){ const par = ph.parts[p].parent; chain[p] = ph.parts[p].branch ? p : chain[par]; arc[p] = arc[par] + ph.parts[par].length; }
+  let reach = 0;   // longest root->tip PATH length (world) -- a POSE-INDEPENDENT size (from fixed part lengths), so LOD
+  for (let p=1;p<ph.numParts;p++){ const par = ph.parts[p].parent; chain[p] = ph.parts[p].branch ? p : chain[par]; arc[p] = arc[par] + ph.parts[par].length; const tip = arc[p] + ph.parts[p].length; if (tip > reach) reach = tip; }
+  // LOD from the STABLE path length (not the flexing max-part-distance, which wobbled ~25% and made caps/hairs flicker).
+  // T=75 calibrated so this matches the old rs/60 aggressiveness on average. Capture forces full detail via lodOverride.
+  const lod = (lodOverride !== undefined) ? lodOverride : Math.max(0, Math.min(1, reach * S / 75));
   const trunkChain = chain[1];
   const rankOf = new Map([[trunkChain, 0]]); let nextRank = 1;
   for (let p=1;p<ph.numParts;p++){ const c=chain[p]; if (!rankOf.has(c)) rankOf.set(c, nextRank++); }
@@ -790,7 +818,7 @@ function buildSegs(id, sb, ph, g, fade, S, segs){
       const rampRw = Math.min(bw*4, Math.max(chainLen.get(cid), 1e-3));
       merge = { a0, a1: a0 + ph.parts[p].length, rw: bw*4, rampRw, px: ps[0], py: ps[1], da };
     }
-    segs.push({ sb, ph, p, g, S, fade, slab, v0: arc[p], v1: arc[p] + ph.parts[p].length, merge });
+    segs.push({ sb, ph, p, g, S, fade, slab, v0: arc[p]+vOff, v1: arc[p]+vOff + ph.parts[p].length, merge, lod });
   }
 }
 
@@ -800,7 +828,7 @@ function captureCreatureGeom(id, sb){
   const ph = sb._phenotype; if (!ph || !ph.parts) return null;
   const g = (sb._growthScale !== undefined) ? sb._growthScale : 1;
   const fade = fades.get(id) ?? 1, S = sc();
-  const segs = []; buildSegs(id, sb, ph, g, fade, S, segs);
+  const segs = []; buildSegs(id, sb, ph, g, fade, S, segs, 1);   // lodOverride=1: capture at FULL detail regardless of screen size
   const so = o, sho = ho;
   CAP = { tris: [], hairs: [], part: -1, kind: 0 };
   for (const s of segs) tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge);
@@ -835,16 +863,28 @@ function render(){
       }
     }
     const segs = [];
+    const mW = W + 40, mH = H + 40;   // small viewport margin
     for (const [id, sb] of known){
       const ph = sb._phenotype; if (!ph || !ph.parts || ph.numParts <= 1) continue;
       const g = (sb._growthScale !== undefined) ? sb._growthScale : 1;
+      // FRUSTUM CULL: skip any creature whose screen bounding box is fully off-view. The pool grows toward maxPopulation
+      // (2000), and the whole pool was tessellated+drawn every frame regardless of zoom -> zoomed in with a grown pool was
+      // slow even though only a few creatures are visible. Bound = farthest part from the swimmer centre (+ hair/cap slack).
+      const c = sb.getPosition();
+      let wr = 0; for (let q=1;q<ph.numParts;q++){ const dx=ph.parts[q].position.x-c.x, dy=ph.parts[q].position.y-c.y, d=dx*dx+dy*dy; if (d>wr) wr=d; }
+      const rs = (Math.sqrt(wr) + 30) * S;   // screen bounding radius (+ slack for hairs/caps) -- CULL bound only
+      const cs = toScreen(c.x, c.y);
+      if (cs[0]+rs < -40 || cs[0]-rs > mW || cs[1]+rs < -40 || cs[1]-rs > mH) continue;   // off-screen -> skip
+      // LOD is computed INSIDE buildSegs from the pose-independent path length (see there): dome-skip below lod 0.4, hairs
+      // below 0.5, strip steps + dome resolution scale with lod. Domes are the dominant zoom-out cost (~half the geometry)
+      // and invisible on tiny creatures, so at full zoom-out this is ~15x fewer triangles; detail returns as you zoom in.
       buildSegs(id, sb, ph, g, fades.get(id) ?? 1, S, segs);
     }
     segs.sort((a,b)=>a.slab-b.slab);
     let si = 0;
     for (let k=0;k<K_SLABS;k++){
       slabStart[k] = o/9; hairStart[k] = ho/3;
-      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge); si++; }  // body -> buf, hairs -> hairBuf
+      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // body -> buf, hairs -> hairBuf
       segCount[k] = (o/9) - slabStart[k]; hairCount[k] = (ho/3) - hairStart[k];
       // plain (no cyto/grain) stuff for this slab: floating detritus at this depth, + food in the deepest slab
       junkStart[k] = o/9;
@@ -880,6 +920,7 @@ function render(){
       gl.useProgram(bodyProg); gl.uniform2f(uBodyRes, W, H);
       gl.uniform1f(uBodyCyto, P.cyto); gl.uniform1f(uBodyCells, P.cells); gl.uniform1f(uBodyLighten, P.lighten);
       gl.uniform1f(uBodyGrain, P.grain); gl.uniform1f(uBodyGrainScale, P.grainScale); gl.uniform1f(uBodySat, P.desat);
+      gl.uniform1f(uBodyTime, hairTime); gl.uniform1f(uBodyCytoDrift, P.cytoDrift);
       gl.drawArrays(gl.TRIANGLES, slabStart[k], segCount[k]);
     }
     if (junkCount[k] > 0){   // detritus + food -> plain thickness discs (no cyto/grain)
@@ -962,13 +1003,24 @@ function render(){
   }
 }
 
-let frames=0, lastT=performance.now();
+let frames=0, lastT=performance.now(), simAcc=0, renAcc=0;
 function loop(){
+  const t0=performance.now();
   if (running && world){ for (let i=0;i<ticksPerFrame;i++) world.tick(); }
+  const t1=performance.now();
   render();
+  const t2=performance.now();
+  simAcc += t1-t0; renAcc += t2-t1;
   if (world){ document.getElementById('tick').textContent = world.getClock(); document.getElementById('pop').textContent = world.getLivingSwimbotCount(); }
   frames++; const now=performance.now();
-  if (now-lastT>500){ document.getElementById('fps').textContent = Math.round(frames*1000/(now-lastT)); frames=0; lastT=now; document.getElementById('zoomv').textContent = cam.zoom.toFixed(1)+'×'; }
+  if (now-lastT>500){
+    const fps = Math.round(frames*1000/(now-lastT));
+    const sim = (simAcc/frames), ren = (renAcc/frames);   // CPU ms: sim (ticks) vs render submit (tessellate + GL submit)
+    const bt = Math.round(o/9/3), ht = Math.round(ho/3/3);   // body triangles + hair triangles this frame
+    // fps + CPU split + tri counts. If fps is low but sim+ren are both small, the frame is waiting on the GPU (fill-rate).
+    document.getElementById('fps').textContent = `${fps}  sim${sim.toFixed(1)}/drw${ren.toFixed(1)}ms  ${(bt/1000).toFixed(0)}k+${(ht/1000).toFixed(0)}kt`;
+    frames=0; simAcc=0; renAcc=0; lastT=now; document.getElementById('zoomv').textContent = cam.zoom.toFixed(1)+'×';
+  }
   requestAnimationFrame(loop);
 }
 
