@@ -5,43 +5,43 @@
   },
   "scenes": {
     "founders": {
-      "w": 900,
-      "h": 760,
-      "sha256": "a909dcd6a2de54694c64b4ea1689ce9270ce68f1c8d3771db41a2147e6178bfc",
+      "w": 1024,
+      "h": 768,
+      "sha256": "5f9ad79201fe55c12882811c78b77ace1027b8196fb66f123347a9c0631d26ad",
       "thickFmt": "RGBA16F",
       "fading": 0,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
     "adults": {
-      "w": 900,
-      "h": 760,
-      "sha256": "9794fafaa3c7b60fef7f4a9133e9272509c04d6598511ecdaa9f88c2d9bc3add",
+      "w": 1024,
+      "h": 768,
+      "sha256": "f9f004a44a2d0f9ac40aa98b27baaef205373ce2102a899d888d0e1cdf0504cf",
       "thickFmt": "RGBA16F",
       "fading": 0,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
     "branchy": {
-      "w": 900,
-      "h": 760,
-      "sha256": "31f72a4ceb98e69a5c47d64032e304068c36031db9badc913cd41f30abd95d41",
+      "w": 1024,
+      "h": 768,
+      "sha256": "29c6628621c7939efa7ed635e8b49b9c5887929a3525a1d5bfae022cc691fe80",
       "thickFmt": "RGBA16F",
       "fading": 0,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
     "dying": {
-      "w": 900,
-      "h": 760,
-      "sha256": "ee1578d49a37300fe1486a4e65f8bc800e3931be7dc7c620b35c0e96a66ed6db",
+      "w": 1024,
+      "h": 768,
+      "sha256": "baaed273ec4afbcb9a575b485501562b8c9cf2c53580fae90474772fdacee357",
       "thickFmt": "RGBA16F",
       "fading": 4,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     }
   },
-  "recordedAt": "2026-09-03T20:44:55.685Z",
+  "recordedAt": "2026-09-03T23:30:38.440Z",
   "platform": "darwin",
   "arch": "arm64",
   "node": "v25.9.0"

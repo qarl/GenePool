@@ -34,7 +34,7 @@
   </div>
   <div class="row"><span id="err"></span> <span style="color:#5c6b80">scroll = zoom · drag = pan</span></div>
 </header>
-<div id="wrap"><canvas id="cv" width="900" height="760"></canvas></div>
+<div id="wrap"><canvas id="cv" width="1024" height="768"></canvas></div>
 
 <script type="module">
 import { World } from './engine/world.js';
@@ -42,7 +42,8 @@ import { Genotype } from './engine/genotype.js';
 
 const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000, EGG_SIZE = 5, SPLINE = 0.4;
 const cv = document.getElementById('cv');
-const CANVAS_W = cv.width, CANVAS_H = cv.height;   // true backing-store size (never changes)
+const CANVAS_W = cv.width, CANVAS_H = cv.height;   // true backing-store size (1024x768), never changes
+const VIEW_MAIN = 768, VIEW_SMALL = 256;           // main micrograph = 768^2 (left); three species tiles = 256^2 (right column)
 let W = cv.width, H = cv.height;                    // ACTIVE view size — renderView sets this per view, then restores
 const errEl = document.getElementById('err');
 
@@ -94,7 +95,7 @@ let seed = 1, world = null, running = true, ticksPerFrame = 3;
 let cam = { x: P.pool/2, y: P.pool/2, zoom: 6 };
 function fitZoom(){ return Math.min(W, H) / P.pool; }
 function sc(){ return fitZoom() * cam.zoom; }
-let SC_REF = fitZoom() * 6;   // reference scale (the default zoom) -> rim brightness is normalized to this view; reset in build()
+let SC_REF = (VIEW_MAIN / P.pool) * 6;   // reference scale (main view @ default zoom) -> rim brightness normalized to it; reset in build()
 function toScreen(wx, wy){ const s = sc(); return [ (wx - cam.x)*s + W/2, (wy - cam.y)*s + H/2 ]; }
 
 // ================================================================== WebGL2 setup
@@ -306,9 +307,10 @@ void main(){
 const POST_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uScene, uBloom; uniform float uStrength;
+uniform ivec2 uOrigin;   // composite: this view fills a REGION of the canvas -> map window fragcoord back to view texels
 out vec4 frag;
 void main(){
-  ivec2 ip = ivec2(gl_FragCoord.xy);
+  ivec2 ip = ivec2(gl_FragCoord.xy) - uOrigin;
   frag = vec4(texelFetch(uScene, ip, 0).rgb + texelFetch(uBloom, ip, 0).rgb * uStrength, 1.0);
 }`;
 
@@ -359,13 +361,11 @@ void main(){
 const K_SLABS = 8;   // depth slabs for front-to-back compositing (more = finer occlusion ordering, more passes)
 let bodyProg=null, resolveProg=null, finalProg=null, uBodyRes=null, uBodyCyto=null, uBodyCells=null, uBodyLighten=null, uBodyGrain=null, uBodyGrainScale=null, uBodySat=null, uBodyTime=null, uBodyCytoDrift=null;
 const uR = {}, uF = {};                  // resolve / final uniform locations
-let slabTex=null, slabFBO=null, accA=null, accB=null;   // accX = { fbo, out, fa }
-let hairTex=null, hairFBO=null;                          // per-slab hair glow, folded into the composite
+let mainSet=null, smallSet=null;   // per-VIEW FBO sets (makeFBOSet): { slabTex/FBO, accA/B (MRT), hairTex/FBO, sceneTex/FBO, bloomA/B(+FBO) }. Main=768^2, small=256^2.
 let bodyVAO=null, bodyVBO=null, emptyVAO=null;
 let hairProg=null, uHairRes=null, uHairColor=null, uHairBright=null, hairVAO=null, hairVBO=null;
 let junkProg=null, uJunkRes=null, uJunkSoft=null;
 let brightProg=null, blurProg=null, postProg=null; const uBr={}, uBl={}, uPo={};
-let sceneTex=null, sceneFBO=null, bloomA=null, bloomB=null, bloomAFBO=null, bloomBFBO=null;
 let boxProg=null, uBoxRes=null, uBoxColor=null, boxVAO=null, boxVBO=null;
 let hairTime = 0;
 // death fade: dead swimbots are swept from the world each tick, so keep the last reference per id and render it
@@ -392,24 +392,37 @@ function seedJunk(rng){
 // stable per-creature pseudo-depth in [0,1) (the pool is 2D, so we invent a depth): golden-ratio hash of the id.
 function pseudoDepth(id){ const f = (id * 0.61803398875) % 1; return f < 0 ? f + 1 : f; }
 
-function makeTex(){
+function makeTex(w, h){   // FBO-size decoupled from the canvas: caller passes the view size
   const t = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texImage2D(gl.TEXTURE_2D, 0, thickFmt.internal, W, H, 0, gl.RGBA, thickFmt.type, null);
+  gl.texImage2D(gl.TEXTURE_2D, 0, thickFmt.internal, w, h, 0, gl.RGBA, thickFmt.type, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   return t;
 }
-function makeAccum(){   // MRT pair: colour (emission) + frontAbsorb
-  const out = makeTex(), fa = makeTex(), f = gl.createFramebuffer();
+function makeAccum(w, h){   // MRT pair: colour (emission) + frontAbsorb
+  const out = makeTex(w,h), fa = makeTex(w,h), f = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, f);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, fa, 0);
   gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
   if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) errEl.textContent = 'Accum FBO incomplete';
   return { fbo: f, out, fa };
+}
+// One complete offscreen pipeline sized to a view (square). Main = 768^2; species tiles share a 256^2 set.
+function mkFBO1(tex){ const f=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0); return f; }
+function makeFBOSet(size){
+  const slabTex = makeTex(size,size), slabFBO = mkFBO1(slabTex);   // per-slab thickness
+  const hairTex = makeTex(size,size), hairFBO = mkFBO1(hairTex);   // per-slab hair glow (depth-attenuated in resolve)
+  const accA = makeAccum(size,size), accB = makeAccum(size,size);  // front-to-back ping-pong composite
+  const sceneTex = makeTex(size,size), sceneFBO = mkFBO1(sceneTex);// backlit scene (pre-bloom)
+  const bloomA = makeTex(size,size), bloomAFBO = mkFBO1(bloomA);   // bloom ping-pong
+  const bloomB = makeTex(size,size), bloomBFBO = mkFBO1(bloomB);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { size, slabTex, slabFBO, hairTex, hairFBO, accA, accB, sceneTex, sceneFBO, bloomA, bloomAFBO, bloomB, bloomBFBO };
 }
 
 function initGL(){
@@ -429,23 +442,10 @@ function initGL(){
   for (const n of ['uSlab','uPrevOut','uPrevFA','uHairTex','uRes','uField','uDensity','uOpacity','uRim','uSub','uScaleRatio']) uR[n] = gl.getUniformLocation(resolveProg, n);
   for (const n of ['uOut','uFA','uRes','uField']) uF[n] = gl.getUniformLocation(finalProg, n);
 
-  // per-slab thickness target
-  slabTex = makeTex();
-  slabFBO = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, slabFBO);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, slabTex, 0);
-  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) errEl.textContent = 'Slab FBO incomplete';
-
-  // per-slab hair glow target (so hairs get depth-attenuated in the resolve, not stacked additively on top)
-  hairTex = makeTex();
-  hairFBO = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, hairFBO);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, hairTex, 0);
-  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) errEl.textContent = 'Hair FBO incomplete';
-
-  // ping-pong accumulators for the front-to-back composite
-  accA = makeAccum(); accB = makeAccum();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // offscreen pipelines: one 768^2 set for the main micrograph, one 256^2 set shared serially by the species tiles.
+  // (Each holds its own slab/hair/accum/scene/bloom targets; see makeFBOSet.)
+  mainSet = makeFBOSet(VIEW_MAIN);
+  smallSet = makeFBOSet(VIEW_SMALL);
 
   // dynamic body geometry buffer
   bodyVAO = gl.createVertexArray(); gl.bindVertexArray(bodyVAO);
@@ -479,12 +479,8 @@ function initGL(){
   // bloom: scene target + ping-pong blur buffers + bright/blur/composite programs
   brightProg = makeProgram(COMP_VS, BRIGHT_FS); for (const n of ['uScene','uThresh']) uBr[n]=gl.getUniformLocation(brightProg,n);
   blurProg   = makeProgram(COMP_VS, BLUR_FS);   for (const n of ['uTex','uDir'])       uBl[n]=gl.getUniformLocation(blurProg,n);
-  postProg   = makeProgram(COMP_VS, POST_FS);   for (const n of ['uScene','uBloom','uStrength']) uPo[n]=gl.getUniformLocation(postProg,n);
-  const mkFBO = (tex)=>{ const f=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,f); gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0); return f; };
-  sceneTex = makeTex(); sceneFBO = mkFBO(sceneTex);
-  bloomA = makeTex();   bloomAFBO = mkFBO(bloomA);
-  bloomB = makeTex();   bloomBFBO = mkFBO(bloomB);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  postProg   = makeProgram(COMP_VS, POST_FS);   for (const n of ['uScene','uBloom','uStrength','uOrigin']) uPo[n]=gl.getUniformLocation(postProg,n);
+  // scene + bloom targets live per-view inside makeFBOSet (mainSet/smallSet, created above).
 
   // world-boundary box (flat-colour quads)
   boxProg = makeProgram(BOX_VS, BOX_FS);
@@ -518,7 +514,7 @@ function build(){
   }
   for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
   known.clear(); fades.clear(); deathTick.clear();   // no stale death-fade ghosts across a rebuild
-  SC_REF = fitZoom() * 6;   // recompute after params (P.pool) may have changed, so the rim scale stays calibrated
+  SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
   document.getElementById('seedIn').value = seed;
@@ -849,10 +845,12 @@ function advanceFrame(){
 // state (known/fades/junk positions), never mutates it. Sets cam/W/H for the view and RESTORES them (so build(),
 // the wall, and the golden hook always see the canvas values). For the main view this is byte-identical to the old
 // render(); species tiles will call it with a different cam + size.
-function renderView(viewCam, vw, vh){
+function renderView(viewCam, vw, vh, set, regionX, regionY){
   if (!gl) return;
   const _cam = cam, _W = W, _H = H;
   cam = viewCam; W = vw; H = vh;
+  // this view's offscreen pipeline; same local names the body already uses, so the pipeline code is unchanged
+  const { slabFBO, slabTex, hairFBO, hairTex, accA, accB, sceneFBO, sceneTex, bloomAFBO, bloomA, bloomBFBO, bloomB } = set;
   try {
   o = 0; ho = 0;
   // ---- tessellate every creature ONCE, bucketed into K depth slabs (sorted front->back); food joins the deepest slab
@@ -975,11 +973,14 @@ function renderView(viewCam, vw, vh){
     gl.bindFramebuffer(gl.FRAMEBUFFER, bloomAFBO); gl.bindTexture(gl.TEXTURE_2D, bloomB);
     gl.uniform2i(uBl.uDir, 0, 3); gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
+  // ---- COMPOSITE this view into its REGION of the canvas (viewport = region; uOrigin maps fragcoord -> view texels) ----
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(regionX, regionY, W, H);
   gl.useProgram(postProg);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneTex); gl.uniform1i(uPo.uScene, 0);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, bloomA);   gl.uniform1i(uPo.uBloom, 1);
   gl.uniform1f(uPo.uStrength, P.bloom);   // 0 => bloom (possibly stale) contributes nothing
+  gl.uniform2i(uPo.uOrigin, regionX, regionY);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
 
@@ -1022,8 +1023,16 @@ function renderView(viewCam, vw, vh){
   } finally { cam = _cam; W = _W; H = _H; }   // restore the active view to the canvas view
 }
 
-// The whole frame: advance per-frame state once, then render the main view. (Species tiles add more renderView calls.)
-function render(){ if (!gl) return; advanceFrame(); renderView(cam, CANVAS_W, CANVAS_H); }
+// The whole frame: advance per-frame state once, clear the canvas, then render the main view into the left 768^2.
+// (Species tiles render into the right 256-wide column next — step 3.)
+function render(){
+  if (!gl) return;
+  advanceFrame();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, CANVAS_W, CANVAS_H);
+  gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);          // clear regions not covered by a view
+  renderView(cam, VIEW_MAIN, VIEW_MAIN, mainSet, 0, 0);             // main micrograph: left 768^2 (GL origin bottom-left)
+}
 
 let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (running only gates ticks, not render)
 function loop(){
