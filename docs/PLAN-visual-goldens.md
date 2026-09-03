@@ -5,7 +5,15 @@ so a refactor that changes the picture fails a test instead of Karl's eyes. This
 behind the species-viewers **2a byte-identical gate** (`docs/PLAN-species-viewers.md`) — that gate is unbuildable
 without it.
 
-Status: **capability PROVEN** (headless WebGL2 render captured). Harness + hook NOT built yet. Plan for review.
+Status: **capability PROVEN** — headless WebGL2 render captured; the `__golden` hook + arch-stable integer-hash noise
+are BUILT & committed (`4413146`); **gate (a) empirically proven** (3 separate arm64 launches of the noisiest frame →
+identical sha256, byte-identical PNGs → same-machine 0-diff holds, and `maxΔ=1` is confined to the cross-arch axis).
+The `test/visual/` harness is **BUILT & green** (all 4-lens fixes baked in): `capture`/`compare`/`server`/`browser`/
+`png` libs, `scenes.mjs` (founders/adults/branchy/dying), `record.mjs` (arch-guarded), `gate-a.mjs`, and
+`goldens.visual.mjs` (`node --test`, 4/4 pass exact-0 on arm64). Goldens + METADATA committed. Core zero-dep suite
+still 299/0 (glob doesn't sweep `*.visual.mjs`). Reviewed twice (a first-draft agent + a 4-lens review vs committed
+code): correctness=sound-with-fixes, hash-quality=ship-as-is, harness-design=ready-with-fixes, flakiness=robust-with-fixes.
+Remaining: step 4 (wire the actual 2a refactor when it exists) + the deferred `empty` scene (needs a skip-founders hook arg).
 
 ## What's already de-risked (proof done, 2026-09-03)
 - Headless **Chromium** renders the viewer's **WebGL2** via **SwiftShader** (`ANGLE … SwiftShader Device, Vulkan
@@ -32,12 +40,17 @@ with the README's existing "goldens pinned to a Node version" note). Goldens det
 "what Karl's GPU shows."
 
 ## Prerequisites (P1 — not Karl-local accidents)
-- **Browser provisioning must be scripted, not assumed.** The POC's "no download" only holds because Karl's venv
-  already cached `chromium_headless_shell-1217`; on a fresh checkout / CI the cache lookup throws. Prereq: a pinned
-  `npx playwright install chromium-headless-shell` at the Playwright version matching **build 1217**, on the
-  **golden-recording arch**. Document it; don't rely on the ambient cache.
-- **`.gitignore`:** add `test/visual/node_modules/` (the repo `.gitignore` currently ignores none). Ensure
-  `test/visual/goldens/*.png` are **committed** (not ignored) — they're the reference.
+- **Browser provisioning must be scripted AND asserted, not assumed.** The POC's "no download" only holds because
+  Karl's venv already cached `chromium_headless_shell-1217`; on a fresh checkout / CI the cache lookup throws. Prereq:
+  a pinned `npx playwright install chromium-headless-shell` at the Playwright version matching **build 1217**, on the
+  recording arch. **ASSERT the running build == 1217** — `capture.mjs`'s prototype does `readdirSync(...).find(d =>
+  d.startsWith('chromium_headless_shell-'))`, which grabs *any* cached build (a silent SwiftShader bump → false golden
+  diffs); pin it, and derive platform/arch from `process.platform`/`process.arch`, not a hardcoded `mac-arm64`. Pin an
+  exact `playwright-core` in `package.json`. Record browser build + `process.version` in `goldens/METADATA.json` and
+  fail the compare on mismatch.
+- **`.gitignore`:** add `test/visual/node_modules/`. (The repo `.gitignore` DOES exist — it ignores `.DS_Store`,
+  `*.swp`, `run.jsonl`, etc. — just not node_modules.) Ensure `test/visual/goldens/*.png` are **committed** (never
+  slip a `*.png` ignore in) — they're the reference.
 
 ## Architecture
 - **Location:** `test/visual/` — repo-native Node, its **own `package.json` + gitignored `node_modules`** (only
@@ -77,48 +90,68 @@ with the README's existing "goldens pinned to a Node version" note). Goldens det
     cross-arch with a trivial **`maxΔ ≤ 1`** tolerance (a real regression is many pixels off by a lot; nothing like a
     few 1-LSB pixels). The residual 1 LSB is a couple of pixels from some other transcendental (hair `sin` / rim
     `exp` at an AA edge) — not worth chasing to literal 0. Karl to eyeball the grain look (`grain-compare.png`).
-  - On any mismatch, write a **highlighted diff PNG** as a human artifact only (encode in-page via canvas → data URL).
-- **Two gates:** (a) render the same scene **twice** in one run → **0 diff** proves the *harness* is deterministic;
-  (b) render vs stored golden → 0 diff proves *no regression*. Gate (a) is the first thing to green.
+  - **Compare rule (codified — closes the masking hole):** pass iff **`maxΔ ≤ 1` AND nonzero-diff-pixel-fraction ≤ ε**
+    (ε ≈ 0.05%; measured residual was 0.000%). `maxΔ≤1` ALONE silently passes a *systematic* whole-frame 1-LSB shift
+    (a gamma/tone/AA-feather regression) — the **count cap is the real guard**. On the **recording arch (arm64 dev
+    loop) require exact 0**; the tolerance is only for the rare cross-arch check.
+  - On any mismatch, write a **highlighted diff PNG to a FILE** the harness/CI can archive (not just an in-page data URL).
+- **Two gates:** (a) **PROVEN 2026-09-03** — same scene, **two SEPARATE browser launches** on arm64 → identical
+  sha256 / byte-identical (twice-in-one-process shares a warm JIT, so it's weaker; the two-launch form is the real
+  guard and it's green). (b) render vs stored golden → passes the compare rule above. Gate (a) greens before any
+  golden is trusted.
 
 ## Golden scenes (few + meaningful; each one PNG under `test/visual/goldens/`)
 - `founders` — seed 1, ticks 0 (fresh pool layout).
 - `adults` — seed 1, ticks ~3000 (grown, posed, mid-undulation; exercises ribbons/domes/hairs/cyto).
 - `branchy` — a seed known to grow a multi-branch specimen (exercises the branch-merge/dome path — the hard-won fix).
-- `empty` — a scene with no swimbots (wall + detritus only; catches background/wall regressions).
+- `dying` — **interleaved tick→render** so a specimen dies MID-capture and the death-fade path (`fades`/`deathTick`)
+  actually renders. **Required to gate 2a** — that death-fade bookkeeping is precisely what 2a hoists; a plain
+  ticks-then-render capture never exercises it, so this scene is load-bearing, not optional.
+- `empty` — no swimbots (wall + detritus only). NOTE the hook always seeds founders → needs a skip-founders/config
+  override on `__golden`, or drop it and cover wall/background via a corner crop of another scene.
 - (later) species-viewers layout once it exists.
 
 ## Build order
-1. **Harness skeleton** `test/visual/` — `package.json` (playwright-core), `.gitignore` line, scripted browser
-   provisioning (pinned build 1217 / recording arch), a `capture.mjs` (start serve.mjs on a private port → launch
-   Chromium w/ SwiftShader → `page.evaluate(__golden…)` → readPixels → raw RGBA), and a `compare.mjs` (hash + delta +
-   human diff image). Seed from `scratchpad/visual-poc/shoot.mjs`.
-2. **Add `window.__golden` hook** to the viewer (inert-by-default): `loopStopped` guard, `gl.disable(DITHER)`,
-   explicit `cam`, `thickFmt` log. Prove **gate (a)**: two runs of `adults` → 0 diff (proves harness determinism
-   before any golden is trusted).
-3. **Record goldens** for the scene set; **eyeball `founders`@0** first (confirm posed bodies, not a degenerate
-   rest-frame). Add a `test/visual/*.test.js` that renders each and asserts 0 diff (skipped unless `GP_VISUAL=1` +
-   install present). Document `--update-goldens`.
-4. **Wire into the species-viewers 2a gate:** capture `adults`+`branchy` goldens on the CURRENT 900×760, do the
-   `render()`→`renderView` refactor, re-run → require 0 diff. (This *is* PLAN-species-viewers Step 2a's gate.)
-5. **CI note / README** — extend `test/README.md` with the visual-test invocation + version-pinning caveats.
+1. **Harness skeleton** `test/visual/` — `package.json` (pinned playwright-core), `.gitignore` line, a scripted+
+   **asserted** browser install (build 1217; NOT glob-any-cached). `capture.mjs`: start serve.mjs on an **ephemeral
+   port** (`listen(0)`, read `address().port`) with a real **readiness wait** (poll until 200) and a serve.mjs
+   **`.on('error')`** so a bind failure is loud, not silent; launch Chromium w/ SwiftShader; wait on
+   **`waitForFunction(()=>window.__golden)`** (drop flaky `networkidle`); **throw on any pageerror/console.error**;
+   `__golden`→readPixels→raw RGBA; **assert `thickFmt`==RGBA16F, fail loudly on RGBA8 fallback.** `compare.mjs`: lean —
+   exact-hash + `maxΔ` + nonzero-fraction + a diff PNG **to disk** (do NOT port arch-probe's `blur()` — blur is OUT).
+   Factor the copy-pasted PNG encoder into one `png.mjs`.
+2. **Hook — DONE & committed (`4413146`)** (`loopStopped`, DITHER off, explicit cam, focus-on-biggest). So this step is
+   **verify gate (a)** — two SEPARATE arm64 launches of the noisiest scene → 0 diff (**PROVEN 2026-09-03**). Hook TODO
+   still: **return `thickFmt`/`floatRT`**, and add an **interleaved tick→render mode** (for the `dying` scene, step 4).
+3. **Record goldens.** Spec files named **`*.visual.mjs`, NOT `*.test.js`** — the core `node --test 'test/**/*.test.js'`
+   glob imports playwright-core at load and would break the zero-dep suite + ubuntu CI (reproduced). Run via a separate
+   `GP_VISUAL=1 node --test 'test/visual/**/*.visual.mjs'`. **Eyeball `founders`@0** first. Add a
+   `record.mjs`/`--update-goldens` that **refuses to run off the recording arch / wrong build**.
+4. **Wire the species-viewers 2a gate:** capture `adults`+`branchy`+**`dying`** on the CURRENT 900×760, do the
+   `render()`→`renderView` refactor, require **exact 0**. ⚠ The death-fade bookkeeping (`known`/`deathTick`/`fades`)
+   that 2a HOISTS is ONLY exercised by the interleaved **`dying`** scene — so it's load-bearing, or the gate has a hole
+   exactly where 2a's risk is.
+5. **CI/README** — state the visual gate is a **local/opt-in arm64 gate, NOT part of the ubuntu `node --test` CI**
+   (measured arm64 vs Rosetta-x64 only; ubuntu is x64, unmeasured, no playwright). If ever in CI → arm64 runner or
+   re-measure. Extend `test/README.md` with the invocation + version/arch-pinning caveats.
 
 ## Risks / limits
 - SwiftShader pixels ≠ real-GPU pixels; goldens are regression sentinels, not ground-truth-appearance. Fine for the
   refactor-safety mission.
-- **Cross-arch (P0, Karl's directive = ONE committed golden set, approximate match — NOT per-arch).** SwiftShader
-  JITs to the host CPU, so bytes differ arm64↔x86-64. But the difference is *structurally benign*: correctly-rounded
-  IEEE add/mul/sub carry geometry + absorption + rim identically (worst case 1-ULP silhouette jitter from FMA
-  contraction); the real disagreement is the high-frequency `fract(sin())` noise in cyto/grain. → the **blur→
-  tolerance** compare mode above is what makes a single golden portable. **Measure the actual delta before locking
-  the tolerance** (synthetic shader probe rendered on arm64 native + x86-64 under Rosetta; browserVersion
-  147.0.7727.15 mac-x64 headless-shell). A browser/Node bump still needs a deliberate rebaseline (log it).
+- **Cross-arch — RESOLVED (ONE committed golden, not per-arch).** SwiftShader JITs per-arch (arm64 LLVM / x86-64
+  Subzero); everything is bit-identical EXCEPT transcendentals. The old `fract(sin())` noise diverged badly (maxΔ=255,
+  ~20% >16, cell-coherent so **blur-tolerance was measured and REJECTED**), so it was **swapped to an integer hash**
+  (DONE) → real-viewer cross-arch `maxΔ=1`. The residual couple of `pow`/`exp` LSBs are handled by the codified
+  `maxΔ≤1 + fraction≤ε` rule. **Scope:** local/opt-in **arm64** gate, exact-0 on arm64; the cross-arch number was
+  arm64-vs-**Rosetta**-x64 (strong proxy, not native Intel — so `maxΔ=1` is indicative; a definitive cross-arch
+  rebaseline should eventually run native x64, or just treat goldens as arm64 regression sentinels). Any
+  browser/Node/arch bump needs a deliberate, ASSERTED rebaseline.
 - **Probe `EXT_color_buffer_float` in the hook** — if SwiftShader lacks it, `thickFmt` falls back RGBA16F→RGBA8
-  (viewer ~105–107) and the golden then tests a *degraded, thickness-clipped* path unlike Karl's GPU. Assert/log the
-  chosen format; if it's RGBA8, the harness is measuring the wrong pipeline — flag loudly.
-- **Coverage gap — the death-fade path is not exercised** by build→tick→render (no frame history, so a bot that dies
-  vanishes rather than fading). Either add a scene that drives several `render()` calls across some deaths, or note
-  the gap so nobody assumes fade-rendering is golden-protected.
+  (viewer ~105–107) and the golden then tests a *degraded, thickness-clipped* path unlike Karl's GPU. **Hard-fail**
+  (not just log): the hook must return the format and the harness aborts on RGBA8.
+- **Death-fade path** is unreachable by plain ticks-then-render (build() clears `fades`; no ticks between frames) —
+  and it's exactly the bookkeeping 2a HOISTS, so it's load-bearing. The **`dying` scene + interleaved tick→render hook
+  mode** (build order steps 2–4) is REQUIRED, not optional.
 - **2a tie-in gates MAIN-VIEW invariance only.** This harness proves `render()`→`renderView` keeps the 900×760 output
   byte-identical — exactly the extraction guarantee. It cannot yet gate the new 256² small-tile renders (`W`/`H` are
   module consts; the variable-size FBO path is new code with no prior golden). Don't over-trust the gate past that.

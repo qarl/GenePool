@@ -1024,15 +1024,19 @@ window.addEventListener('mousemove', (e)=>{ if(!dragging) return; const s=sc(); 
 
 
 // ---- deterministic golden-capture hook (INERT unless called; see docs/PLAN-visual-goldens.md) ----
-// Stops the rAF loop, rebuilds at a fixed seed, ticks a fixed count, renders a fixed frame count, returns raw
-// pixels. The render is a pure function of (seed, ticks, frames); no wall-clock/random/DPR anywhere. camOv lets a
-// capture pick a zoom/centre (defaults = the standard view). Returns {w,h,b64} of default-framebuffer RGBA.
-window.__golden = function(s, ticks, frames, camOv){
+// Stops the rAF loop, rebuilds at a fixed seed, advances/renders a fixed amount, returns raw default-framebuffer RGBA.
+// The render is a pure function of (seed, ticks, frames, opts); no wall-clock/random/DPR anywhere.
+//   camOv  = {x?,y?,zoom?,focus?}  pick a view (focus:'biggest' centres on the largest grown living specimen).
+//   opts.interleave = N > 0  => advance N ticks BETWEEN renders (tick N, render, repeat) so the death-fade path
+//     (deathTick/fades, updated inside render()) actually populates — a plain ticks-then-render never exercises it.
+// Returns {w,h,b64, thickFmt:'RGBA16F'|'RGBA8', floatRT, fading} (fading = count of mid-fade dead ghosts in-frame).
+window.__golden = function(s, ticks, frames, camOv, opts){
+  opts = opts || {};
   loopStopped = true; running = false;
   seed = (s>>>0); cam.zoom = 6; build();
   gl.disable(gl.DITHER);
-  for (let i=0; i<(ticks|0); i++) world.tick();
-  if (camOv){                                    // apply AFTER ticks so focus sees settled positions
+  const applyCam = () => {
+    if (!camOv) return;
     cam = { x: camOv.x ?? P.pool/2, y: camOv.y ?? P.pool/2, zoom: camOv.zoom ?? 6 };
     if (camOv.focus === 'biggest' && world){      // centre on the largest grown living specimen (most grain to judge)
       let best=null, bestR=-1;
@@ -1046,12 +1050,24 @@ window.__golden = function(s, ticks, frames, camOv){
       }
       if (best){ cam.x = best.x; cam.y = best.y; }
     }
+  };
+  const T = ticks|0, every = opts.interleave|0;
+  if (every > 0){                                 // interleaved tick->render (exercises death-fade)
+    applyCam();                                   // static cam across the interleave
+    let done = 0;
+    while (done < T){ const step = Math.min(every, T - done); for (let i=0;i<step;i++) world.tick(); done += step; render(); }
+    if (T === 0) render();
+  } else {
+    for (let i=0; i<T; i++) world.tick();
+    applyCam();                                   // apply AFTER ticks so focus sees settled positions
+    for (let f=0; f<Math.max(1, frames|0); f++) render();
   }
-  for (let f=0; f<Math.max(1, frames|0); f++) render();
+  let fading = 0; for (const v of fades.values()) if (v > 0 && v < 1) fading++;
   const w = cv.width, h = cv.height, px = new Uint8Array(w*h*4);
   gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
   let str=''; for (let i=0;i<px.length;i+=8192) str += String.fromCharCode.apply(null, px.subarray(i, i+8192));
-  return { w, h, b64: btoa(str) };
+  const floatRT = !!(thickFmt && thickFmt.internal === gl.RGBA16F);
+  return { w, h, b64: btoa(str), thickFmt: floatRT ? 'RGBA16F' : 'RGBA8', floatRT, fading };
 };
 
 function boot(){

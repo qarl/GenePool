@@ -11,3 +11,7 @@ run.jsonl
 run.db
 viewer-micrograph-params.json
 viewer-swimmer.json
+
+# visual-goldens harness: isolated deps + transient diff artifacts (goldens/*.png ARE committed)
+test/visual/node_modules/
+test/visual/goldens/*.diff.png

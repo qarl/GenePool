@@ -1,0 +1,48 @@
+{
+  "canvas": {
+    "w": 900,
+    "h": 760
+  },
+  "scenes": {
+    "founders": {
+      "w": 900,
+      "h": 760,
+      "sha256": "a909dcd6a2de54694c64b4ea1689ce9270ce68f1c8d3771db41a2147e6178bfc",
+      "thickFmt": "RGBA16F",
+      "fading": 0,
+      "browserBuild": "1217",
+      "chrome": "147.0.7727.15"
+    },
+    "adults": {
+      "w": 900,
+      "h": 760,
+      "sha256": "9794fafaa3c7b60fef7f4a9133e9272509c04d6598511ecdaa9f88c2d9bc3add",
+      "thickFmt": "RGBA16F",
+      "fading": 0,
+      "browserBuild": "1217",
+      "chrome": "147.0.7727.15"
+    },
+    "branchy": {
+      "w": 900,
+      "h": 760,
+      "sha256": "31f72a4ceb98e69a5c47d64032e304068c36031db9badc913cd41f30abd95d41",
+      "thickFmt": "RGBA16F",
+      "fading": 0,
+      "browserBuild": "1217",
+      "chrome": "147.0.7727.15"
+    },
+    "dying": {
+      "w": 900,
+      "h": 760,
+      "sha256": "ee1578d49a37300fe1486a4e65f8bc800e3931be7dc7c620b35c0e96a66ed6db",
+      "thickFmt": "RGBA16F",
+      "fading": 4,
+      "browserBuild": "1217",
+      "chrome": "147.0.7727.15"
+    }
+  },
+  "recordedAt": "2026-09-03T20:44:55.685Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "node": "v25.9.0"
+}

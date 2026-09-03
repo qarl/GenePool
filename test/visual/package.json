@@ -1,0 +1,15 @@
+{
+  "name": "genepool-visual-goldens",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless WebGL2 golden-master tests for viewer-micrograph-gl.html. OPT-IN, isolated deps; the zero-dep core suite (node --test 'test/**/*.test.js') never touches this dir because specs are named *.visual.mjs.",
+  "scripts": {
+    "test": "node --test \"goldens.visual.mjs\"",
+    "record": "node record.mjs",
+    "gate-a": "node gate-a.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.62.1"
+  }
+}
