@@ -499,7 +499,8 @@ function build(){
     maximumLifeSpan: MAX_LIFESPAN, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
     crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: P.pool/2,
     foodBitEnergy: 50, attractionCriterion: 10, maxPopulation: 2000, maxFood: 2000,
-    viewRadius: 300, pool: { left:0, top:0, right:P.pool, bottom:P.pool },
+    viewRadius: 300, reproductiveIsolation: SPECIES_ISO,   // junk-DNA gate ON -> reproductive species emerge over time
+    pool: { left:0, top:0, right:P.pool, bottom:P.pool },
   };
   try { world = new World(config, seed, {}); }
   catch(e){ world = null; errEl.textContent = 'Cannot build: ' + e.message; return; }
@@ -514,6 +515,7 @@ function build(){
   }
   for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
   known.clear(); fades.clear(); deathTick.clear();   // no stale death-fade ghosts across a rebuild
+  frameCount = 0; speciesReps = [];                   // reset the species-tile cadence -> deterministic from a fresh build
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
@@ -817,6 +819,42 @@ function captureCreatureGeom(id, sb){
   return out;
 }
 
+// ================================================================== species clustering (engine-native junk-DNA gate)
+// Cluster living swimbots on the junk genes [USED, NUM_GENES) with the engine's EXACT metric (sim = 1 - mean|Δ|/256),
+// same-species iff sim > reproductiveIsolation. Top-3 by living head-count feed the side tiles. Recomputed every
+// SPECIES_RECOMPUTE frames (deterministic — frame-count based, reset in build()). Stable IDs / hysteresis = later step.
+const NJ = NUM_GENES - USED;         // 144 junk genes
+const SPECIES_ISO = 0.9;             // = NON_REPRODUCING_JUNK_DNA_LIMIT (engine default); matches the birth gate exactly
+const SPECIES_K = 24;                // hard cap on tracked reps (perf bound on N*K*NJ)
+const SPECIES_RECOMPUTE = 30;        // frames between reclusterings
+const TILE_ZOOM = 14;               // fixed shared zoom for all tiles -> tile fill is comparable across species
+let frameCount = 0, speciesReps = [];
+function junkOf(sb){ const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k=0;k<NJ;k++) a[k] = g.getGeneValue(USED+k); return a; }
+function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k]); return 1 - (d/256)/NJ; }   // engine metric (/BYTE_SIZE)
+function computeSpecies(){
+  if (!world) return [];
+  const reps = [];
+  for (const [id, sb] of world._swimbots){
+    if (!sb.getAlive()) continue;
+    const ph = sb._phenotype; if (!ph || ph.numParts <= 1) continue;
+    const jg = junkOf(sb);
+    let best = null, bestS = SPECIES_ISO;                          // assign to the MOST-similar rep above the isolation gate
+    for (const r of reps){ const s = junkSim(jg, r.seed); if (s > bestS){ bestS = s; best = r; } }
+    if (best) best.members.push({ sb, jg });
+    else if (reps.length < SPECIES_K) reps.push({ seed: jg, members: [{ sb, jg }] });
+    else { let nb = reps[0], ns = -1; for (const r of reps){ const s = junkSim(jg, r.seed); if (s > ns){ ns = s; nb = r; } } nb.members.push({ sb, jg }); }
+  }
+  for (const r of reps){                                           // rep = member closest to the species' MEAN junk genome
+    const mean = new Float64Array(NJ);
+    for (const m of r.members) for (let k=0;k<NJ;k++) mean[k] += m.jg[k];
+    for (let k=0;k<NJ;k++) mean[k] /= r.members.length;
+    let best = null, bestS = -1; for (const m of r.members){ const s = junkSim(m.jg, mean); if (s > bestS){ bestS = s; best = m.sb; } }
+    r.rep = best; r.count = r.members.length;
+  }
+  reps.sort((a, b) => b.count - a.count);                          // largest first (Array.sort is stable -> deterministic ties)
+  return reps;
+}
+
 // ================================================================== render
 // Per-FRAME state, advanced ONCE per frame regardless of how many views render (main + species tiles). Hoisted out of
 // renderView so detritus drift + death-fade bookkeeping don't advance 4x. See docs/PLAN-species-viewers.md.
@@ -845,7 +883,7 @@ function advanceFrame(){
 // state (known/fades/junk positions), never mutates it. Sets cam/W/H for the view and RESTORES them (so build(),
 // the wall, and the golden hook always see the canvas values). For the main view this is byte-identical to the old
 // render(); species tiles will call it with a different cam + size.
-function renderView(viewCam, vw, vh, set, regionX, regionY){
+function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true){
   if (!gl) return;
   const _cam = cam, _W = W, _H = H;
   cam = viewCam; W = vw; H = vh;
@@ -986,7 +1024,9 @@ function renderView(viewCam, vw, vh, set, regionX, regionY){
 
   // ---- wall marking the world boundary: a FIXED-WORLD-THICKNESS frame drawn ENTIRELY OUTSIDE the play area (never
   //      covers it), so it scales with zoom -- ~5px when the whole pool fits (zoom 1) and thicker as you zoom in. ----
-  {
+  //      SKIPPED for tiles: at tile zoom the wall is huge (thick*zoom) and its darkening quads blacken a tile whose
+  //      specimen sits near a pool edge. Tiles are interior close-ups; the boundary isn't meaningful there.
+  if (drawWall) {
     const T = P.wallThick * cam.zoom;   // wall thickness (screen px): P.wallThick at zoom 1, scales with zoom
     const a = toScreen(0,0), c = toScreen(P.pool, P.pool);
     const x0=Math.min(a[0],c[0]), x1=Math.max(a[0],c[0]), y0=Math.min(a[1],c[1]), y1=Math.max(a[1],c[1]);
@@ -1028,10 +1068,19 @@ function renderView(viewCam, vw, vh, set, regionX, regionY){
 function render(){
   if (!gl) return;
   advanceFrame();
+  if (world && (frameCount % SPECIES_RECOMPUTE) === 0) speciesReps = computeSpecies();   // top-3 species for the tiles
+  frameCount++;
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, CANVAS_W, CANVAS_H);
   gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);          // clear regions not covered by a view
   renderView(cam, VIEW_MAIN, VIEW_MAIN, mainSet, 0, 0);             // main micrograph: left 768^2 (GL origin bottom-left)
+  // three species tiles, stacked in the right column (top = largest species). Fixed shared zoom -> comparable sizes.
+  for (let i = 0; i < 3; i++){
+    const r = speciesReps[i];
+    if (!r || !r.rep || !r.rep.getAlive()) continue;                 // <3 species or dead rep -> leave black (labels: step 5)
+    const c = r.rep.getPosition();
+    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - i), false);
+  }
 }
 
 let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (running only gates ticks, not render)
@@ -1098,7 +1147,9 @@ window.__golden = function(s, ticks, frames, camOv, opts){
   gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
   let str=''; for (let i=0;i<px.length;i+=8192) str += String.fromCharCode.apply(null, px.subarray(i, i+8192));
   const floatRT = !!(thickFmt && thickFmt.internal === gl.RGBA16F);
-  return { w, h, b64: btoa(str), thickFmt: floatRT ? 'RGBA16F' : 'RGBA8', floatRT, fading };
+  const species = speciesReps.slice(0,4).map(r => ({ n: r.count, alive: !!(r.rep && r.rep.getAlive()),
+    pos: r.rep ? r.rep.getPosition() : null }));
+  return { w, h, b64: btoa(str), thickFmt: floatRT ? 'RGBA16F' : 'RGBA8', floatRT, fading, species };
 };
 
 function boot(){

@@ -18,6 +18,10 @@ export const SCENES = [
   // Tuned (seed 3 / 900 ticks / every 30) to leave ~4 mid-fade ghosts in the final frame; asserted > 0 in the test.
   { name: 'dying', seed: 3, ticks: 900, opts: { interleave: 30 } },
 
+  // Speciation has emerged (~10 reproductive clusters by 60k): exercises all THREE tiles at once (top-3 by head-count).
+  // Slow (~20s: 60k ticks) but it's the only scene that covers the multi-tile path; the test asserts >=3 species.
+  { name: 'speciated', seed: 1, ticks: 60000 },
+
   // ('empty' — wall+detritus only — deferred: the hook always seeds founders; needs a skip-founders override first.)
 ];
 

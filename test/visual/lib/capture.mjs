@@ -25,7 +25,7 @@ export async function capture(scene, { exe, arch } = {}){
       `capture the DEGRADED, thickness-clipped pipeline, not the real one. Aborting.`);
     return {
       w: r.w, h: r.h, rgba: Buffer.from(r.b64, 'base64'),            // bottom-up; self-consistent for hashing/compare
-      meta: { thickFmt: r.thickFmt, fading: r.fading, browserBuild: resolved.build,
+      meta: { thickFmt: r.thickFmt, fading: r.fading, species: r.species, browserBuild: resolved.build,
               platArch: arch ? exeFor({ arch }).platArch : resolved.platArch, chrome: browser.version(), node: process.version },
     };
   } finally { await browser.close(); await server.close(); }

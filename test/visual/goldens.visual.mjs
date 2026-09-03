@@ -30,6 +30,8 @@ for (const scene of SCENES){
     const cap = await capture(scene);
     if (scene.name === 'dying')
       assert.ok(cap.meta.fading > 0, `dying scene must exercise the death-fade path, but fading=${cap.meta.fading}`);
+    if (scene.name === 'speciated')
+      assert.ok(cap.meta.species?.length >= 3, `speciated scene must populate all 3 tiles, but species=${cap.meta.species?.length}`);
     const gold = toBottomUp(decode(readFileSync(goldPath)));
     const res = compare(cap.rgba, gold, { exact: isRecordingArch() });
     if (!res.pass){
