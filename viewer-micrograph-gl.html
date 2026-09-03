@@ -19,8 +19,15 @@
   .params { color: #8fa0b5; }
   #err { color: #ff8f8f; }
   #wrap { display: flex; justify-content: center; padding: 14px; }
+  #stage { position: relative; line-height: 0; }
   canvas { border-radius: 10px; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: grab; touch-action: none; }
   canvas.drag { cursor: grabbing; }
+  /* species-tile count labels: HTML overlay over the right column (NOT drawn into the canvas, so goldens stay text-free) */
+  .tileLabel { position: absolute; right: 12px; text-align: right; pointer-events: none; line-height: 1.15;
+    color: #eaf0f8; font-family: system-ui, sans-serif; text-shadow: 0 1px 4px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.85); }
+  .tileLabel .n { display: block; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tileLabel .rank { font-size: 11px; font-weight: 600; color: #9fb0c6; letter-spacing: .04em; }
+  #lab0 { top: 12px; } #lab1 { top: calc(33.333% + 12px); } #lab2 { top: calc(66.666% + 12px); }
 </style>
 </head>
 <body>
@@ -34,7 +41,9 @@
   </div>
   <div class="row"><span id="err"></span> <span style="color:#5c6b80">scroll = zoom · drag = pan</span></div>
 </header>
-<div id="wrap"><canvas id="cv" width="1024" height="768"></canvas></div>
+<div id="wrap"><div id="stage"><canvas id="cv" width="1024" height="768"></canvas>
+  <div class="tileLabel" id="lab0"></div><div class="tileLabel" id="lab1"></div><div class="tileLabel" id="lab2"></div>
+</div></div>
 
 <script type="module">
 import { World } from './engine/world.js';
@@ -854,6 +863,16 @@ function computeSpecies(){
   reps.sort((a, b) => b.count - a.count);                          // largest first (Array.sort is stable -> deterministic ties)
   return reps;
 }
+// count labels (HTML overlay over the tiles; "counts first"). Updated on each recluster.
+const tileLabels = ['lab0','lab1','lab2'].map(id => document.getElementById(id));
+function updateTileLabels(){
+  for (let i = 0; i < 3; i++){
+    const el = tileLabels[i]; if (!el) continue;
+    const r = speciesReps[i];
+    if (r && r.rep && r.rep.getAlive()){ el.innerHTML = `<span class="n">${r.count}</span><span class="rank">#${i+1} species</span>`; el.hidden = false; }
+    else el.hidden = true;
+  }
+}
 
 // ================================================================== render
 // Per-FRAME state, advanced ONCE per frame regardless of how many views render (main + species tiles). Hoisted out of
@@ -1068,7 +1087,7 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true){
 function render(){
   if (!gl) return;
   advanceFrame();
-  if (world && (frameCount % SPECIES_RECOMPUTE) === 0) speciesReps = computeSpecies();   // top-3 species for the tiles
+  if (world && (frameCount % SPECIES_RECOMPUTE) === 0){ speciesReps = computeSpecies(); updateTileLabels(); }   // top-3 for the tiles
   frameCount++;
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, CANVAS_W, CANVAS_H);
