@@ -31,9 +31,7 @@
     <button id="reset">Reset</button>
     <label>Seed <input id="seedIn" type="number" min="0" step="1" value="1"></label>
     <label>Speed <input id="speed" type="range" min="1" max="60" value="3"> <span id="speedv">3×</span></label>
-    <div class="hud">tick <b id="tick">0</b> · pop <b id="pop">0</b> · <b id="fps">0</b> fps · <span id="zoomv">1.0×</span></div>
   </div>
-  <div class="row params" id="params"></div>
   <div class="row"><span id="err"></span> <span style="color:#5c6b80">scroll = zoom · drag = pan</span></div>
 </header>
 <div id="wrap"><canvas id="cv" width="900" height="760"></canvas></div>
@@ -57,13 +55,13 @@ function bez(a,b,c,d,t){ const m=1-t, m2=m*m, t2=t*t; const w0=m2*m,w1=3*m2*t,w2
 // ------------------------------------------------------------------ live look/params
 const P = {
   pool: 3000, n: 220, food: 700,
-  // --- defaults baked from Karl's tuned "Save Defaults" (2026-09-02); the runtime params file overrides these ---
+  // --- defaults baked from Karl's tuned "Save Defaults" (2026-09-02); the live slider panel + runtime file were removed ---
   field: 0.68,      // condenser backlight brightness (0..1)
   density: 0.45,    // tinted (Beer-Lambert) absorption scale -- how strongly the gel eats its complementary colour
   opacity: 0.05,    // flat colourless absorption -- milky/opaque even for pale gel (independent of tint)
   lighten: 0.7,     // mix segment pigment toward white -> less tinted absorption, brighter specimen
-  desat: 0.5,       // desaturate the rendered body colour toward grey (render only; hair/cyto/grain stay raw)
-  rim: 1.2,         // refractive Becke-line rim strength
+  desat: 0.75,      // desaturate the rendered body colour toward grey (render only; hair/cyto/grain stay raw)
+  rim: 1.05,        // refractive Becke-line rim strength
   subsurface: 0.6,  // how much the gel re-emits its own tint
   cyto: 0.25,       // cytoplasm: strength of the cellular density spots
   cells: 0.3,       // cytoplasm: cell frequency (bigger = smaller, denser spots)
@@ -71,50 +69,24 @@ const P = {
   grain: 0.25,      // grain: fine density speckle strength (driven by the blue component)
   grainScale: 2.0,  // grain fineness (bigger = finer)
   junk: 1.0,        // floating detritus amount (0..1 of the seeded pool)
-  junkOpacity: 0.45,// detritus density/darkness
+  junkOpacity: 0.3, // detritus density/darkness
   junkSoft: 3.0,    // detritus edge softness (0.5 = sharp, higher = soft/out-of-focus)
   hair: 0.15,       // hairs: glow brightness (0 = off)
-  hairLen: 5.5,     // hair length (world units)
-  hairSpace: 2.5,   // spacing between hairs along the perimeter (world units; smaller = denser)
-  hairWid: 0.6,     // hair strand thickness (world units at the root)
+  hairLen: 4,       // hair length (world units)
+  hairSpace: 1,     // spacing between hairs along the perimeter (world units; smaller = denser)
+  hairWid: 0.35,    // hair strand thickness (world units at the root)
   hairSway: 0.8,    // hair beat amplitude (radians of tip deflection)
   hairBeat: 0.06,   // beat speed (per sim tick)
   hairWave: 0.12,   // metachronal wavelength along the body (per world arc-unit)
   hairDrag: 1.0,    // how much the hairs trail/bend from the part's motion through the water
   hairGrow: 0.38,   // growth fraction at which hairs start appearing (baby-hair gate; ramps to full ~0.4 above it)
-  bloom: 0.5,       // full-image bloom strength (0 = off)
-  bloomThresh: 0.55,// brightness above which pixels bloom
+  bloom: 0.2,       // full-image bloom strength (0 = off)
+  bloomThresh: 0,   // brightness above which pixels bloom
   deathBlur: 2.5,   // soft-focus blur on dying swimmers (edge-feather exponent added as they fade out)
+  wallThick: 11,    // world-boundary wall thickness (screen px at zoom 1; scales with zoom)
+  wallDark: 0.2,    // darkening of the region OUTSIDE the wall (0 = none .. 1 = black)
+  hairFade: 0.1,    // LOD hair fade-out band width (larger = hairs fade over a wider zoom range = gentler)
 };
-const SPEC = [
-  { k:'field',      label:'Field',      min:0.4, max:1,    step:0.02 },
-  { k:'density',    label:'Density',    min:0,   max:2,    step:0.05 },
-  { k:'opacity',    label:'Opacity',    min:0,   max:0.5,  step:0.01 },
-  { k:'lighten',    label:'Lighten',    min:0,   max:1,    step:0.05 },
-  { k:'desat',      label:'Desat',      min:0,   max:1,    step:0.05 },
-  { k:'rim',        label:'Rim',        min:0,   max:3,    step:0.05 },
-  { k:'subsurface', label:'Subsurface', min:0,   max:2,    step:0.05 },
-  { k:'cyto',       label:'Cyto',       min:0,   max:2,    step:0.05 },
-  { k:'cells',      label:'Cells',      min:0.1, max:2,    step:0.05 },
-  { k:'cytoDrift',  label:'Cyto Flow',  min:0,   max:0.2,  step:0.005 },
-  { k:'grain',      label:'Grain',      min:0,   max:2,    step:0.05 },
-  { k:'grainScale', label:'G.Scale',    min:0.5, max:6,    step:0.1  },
-  { k:'junk',       label:'Junk',       min:0,   max:1,    step:0.02 },
-  { k:'junkOpacity',label:'J.Opac',     min:0,   max:2,    step:0.05 },
-  { k:'junkSoft',   label:'J.Soft',     min:0.3, max:3,    step:0.05 },
-  { k:'hair',       label:'H.Bright',   min:0,   max:2,    step:0.05 },
-  { k:'hairLen',    label:'H.Len',      min:1,   max:20,   step:0.5  },
-  { k:'hairSpace',  label:'H.Space',    min:1,   max:8,    step:0.25 },
-  { k:'hairWid',    label:'H.Wid',      min:0.05,max:1.5,  step:0.05 },
-  { k:'hairSway',   label:'H.Sway',     min:0,   max:2,    step:0.05 },
-  { k:'hairBeat',   label:'H.Beat',     min:0,   max:0.3,  step:0.005 },
-  { k:'hairWave',   label:'H.Wave',     min:0,   max:0.5,  step:0.01 },
-  { k:'hairDrag',   label:'H.Drag',     min:0,   max:1,    step:0.02 },
-  { k:'hairGrow',   label:'H.Grow',     min:0,   max:0.9,  step:0.02 },
-  { k:'bloom',      label:'Bloom',      min:0,   max:2,    step:0.05 },
-  { k:'bloomThresh',label:'B.Thresh',   min:0,   max:1.5,  step:0.05 },
-  { k:'deathBlur',  label:'D.Blur',     min:0,   max:6,    step:0.1  },
-];
 
 let seed = 1, world = null, running = true, ticksPerFrame = 3;
 let cam = { x: P.pool/2, y: P.pool/2, zoom: 6 };
@@ -338,9 +310,9 @@ uniform vec2 uRes;
 void main(){ gl_Position = vec4(aPos.x/uRes.x*2.0-1.0, 1.0-aPos.y/uRes.y*2.0, 0.0, 1.0); }`;
 const BOX_FS = `#version 300 es
 precision highp float;
-uniform vec3 uColor;
+uniform vec4 uColor;
 out vec4 frag;
-void main(){ frag = vec4(uColor, 1.0); }`;
+void main(){ frag = uColor; }`;   // rgba -> alpha lets the outside-wall darkening be semi-transparent
 
 // --- hairs: thin glowing rim-coloured strands, drawn additively on top of the composite ---
 const HAIR_VS = `#version 300 es
@@ -694,8 +666,10 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   // hairs FADE OUT smoothly as the creature shrinks (no hard on/off pop). At the small end they'd just be a faint white
   // halo anyway -- which the silhouette RIM already draws -- so as they fade they melt into that rim line. Below the fade
   // floor they're skipped entirely (cost saved at full zoom-out); above it they're full strength.
-  const hairLOD = smoothstep(0.35, 0.6, lod);
-  const drawDome  = lod >= 0.4;   // rounded caps are the dominant zoom-out cost + invisible when tiny -> flat ends there
+  const hairLOD = smoothstep(0.6 - P.hairFade, 0.6, lod);   // P.hairFade = fade-band width (wider = gentler fade-out)
+  // caps GROW IN smoothly (bulge length scaled by domeLOD) rather than hard on/off -> no pop as you zoom. A zero-length cap
+  // is just the flat strip end, so scaling from 0 emerges invisibly; we still skip the draw while it's ~flat (perf kept).
+  const domeLOD = smoothstep(0.3, 0.55, lod);
   // DEATH: swell the segment outward from the swimmer's centre (disperse) + soft-focus BLUR, while thickness fades
   let capLenT = pt.capLenT, capLenR = pt.capLenR;
   const blur = P.deathBlur * (1 - fade);   // 0 alive -> P.deathBlur when fully dead (feathers edges in the shader)
@@ -728,8 +702,8 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
     const rot=(Pp)=>{ const dx=Pp[0]-merge.px, dy=Pp[1]-merge.py; return [merge.px+dx*c-dy*s, merge.py+dx*s+dy*c]; };
     deL=rot(pt.eL); deR=rot(pt.eR); dnx=pt.nx*c-pt.ny*s; dny=pt.nx*s+pt.ny*c;
   }
-  if (pt.terminal && drawDome)   emitDome(deL, deR,  dnx,  dny, capLenT*S, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT, blur, lod); // tip
-  if (pt.capLenR > 0 && drawDome) emitDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S, pt.wStart*fade, tStart, v0, v0 - capLenR, blur, lod); // mouth only now
+  if (pt.terminal && domeLOD > 0.02)   emitDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur, lod); // tip
+  if (pt.capLenR > 0 && domeLOD > 0.02) emitDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur, lod); // mouth only now
   if (CAP) CAP.kind = 2;
 
   // hairs along both side edges: roots welded to the body (follow the swim), tips beat in a metachronal wave along v,
@@ -983,44 +957,47 @@ function render(){
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
 
-  // ---- thick black box marking the world boundary (screen-space, tracks the camera) ----
+  // ---- wall marking the world boundary: a FIXED-WORLD-THICKNESS frame drawn ENTIRELY OUTSIDE the play area (never
+  //      covers it), so it scales with zoom -- ~5px when the whole pool fits (zoom 1) and thicker as you zoom in. ----
   {
-    const T = 54;   // half-thickness in screen px (108px thick frame -- 3x the original 36px)
+    const T = P.wallThick * cam.zoom;   // wall thickness (screen px): P.wallThick at zoom 1, scales with zoom
     const a = toScreen(0,0), c = toScreen(P.pool, P.pool);
     const x0=Math.min(a[0],c[0]), x1=Math.max(a[0],c[0]), y0=Math.min(a[1],c[1]), y1=Math.max(a[1],c[1]);
     const R=(rx0,ry0,rx1,ry1)=>[rx0,ry0, rx1,ry0, rx1,ry1,  rx0,ry0, rx1,ry1, rx0,ry1];
-    const bv = new Float32Array([
-      ...R(x0-T, y0-T, x1+T, y0+T),   // top
-      ...R(x0-T, y1-T, x1+T, y1+T),   // bottom
-      ...R(x0-T, y0-T, x0+T, y1+T),   // left
-      ...R(x1-T, y0-T, x1+T, y1+T),   // right
-    ]);
-    gl.useProgram(boxProg); gl.uniform2f(uBoxRes, W, H); gl.uniform3f(uBoxColor, 0, 0, 0);
+    gl.useProgram(boxProg); gl.uniform2f(uBoxRes, W, H);
+    gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.bindVertexArray(boxVAO); gl.bindBuffer(gl.ARRAY_BUFFER, boxVBO);
+    // 1) DARKEN everything outside the wall's outer edge (semi-transparent black; clipped to the canvas). Four quads that
+    //    tile the outside region without overlap, so the alpha darkening is even (no double-darkened seams).
+    if (P.wallDark > 0){
+      const ox0=x0-T, oy0=y0-T, ox1=x1+T, oy1=y1+T;
+      const dv = new Float32Array([
+        ...R(0, 0,   W,   oy0),   // above the wall
+        ...R(0, oy1, W,   H),     // below
+        ...R(0, oy0, ox0, oy1),   // left
+        ...R(ox1, oy0, W, oy1),   // right
+      ]);
+      gl.uniform4f(uBoxColor, 0, 0, 0, P.wallDark);
+      gl.bufferData(gl.ARRAY_BUFFER, dv, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, dv.length/2);
+    }
+    // 2) the WALL frame itself (opaque black), just OUTSIDE the play area [x0,x1]x[y0,y1] -- never covers the interior
+    const bv = new Float32Array([
+      ...R(x0-T, y0-T, x1+T, y0),   // top
+      ...R(x0-T, y1,   x1+T, y1+T), // bottom
+      ...R(x0-T, y0,   x0,   y1),   // left
+      ...R(x1,   y0,   x1+T, y1),   // right
+    ]);
+    gl.uniform4f(uBoxColor, 0, 0, 0, 1.0);
     gl.bufferData(gl.ARRAY_BUFFER, bv, gl.DYNAMIC_DRAW);
     gl.drawArrays(gl.TRIANGLES, 0, bv.length/2);
-    gl.bindVertexArray(null);
+    gl.bindVertexArray(null); gl.disable(gl.BLEND);
   }
 }
 
-let frames=0, lastT=performance.now(), simAcc=0, renAcc=0;
 function loop(){
-  const t0=performance.now();
   if (running && world){ for (let i=0;i<ticksPerFrame;i++) world.tick(); }
-  const t1=performance.now();
   render();
-  const t2=performance.now();
-  simAcc += t1-t0; renAcc += t2-t1;
-  if (world){ document.getElementById('tick').textContent = world.getClock(); document.getElementById('pop').textContent = world.getLivingSwimbotCount(); }
-  frames++; const now=performance.now();
-  if (now-lastT>500){
-    const fps = Math.round(frames*1000/(now-lastT));
-    const sim = (simAcc/frames), ren = (renAcc/frames);   // CPU ms: sim (ticks) vs render submit (tessellate + GL submit)
-    const bt = Math.round(o/9/3), ht = Math.round(ho/3/3);   // body triangles + hair triangles this frame
-    // fps + CPU split + tri counts. If fps is low but sim+ren are both small, the frame is waiting on the GPU (fill-rate).
-    document.getElementById('fps').textContent = `${fps}  sim${sim.toFixed(1)}/drw${ren.toFixed(1)}ms  ${(bt/1000).toFixed(0)}k+${(ht/1000).toFixed(0)}kt`;
-    frames=0; simAcc=0; renAcc=0; lastT=now; document.getElementById('zoomv').textContent = cam.zoom.toFixed(1)+'×';
-  }
   requestAnimationFrame(loop);
 }
 
@@ -1035,55 +1012,9 @@ cv.addEventListener('mousedown', (e)=>{ dragging=true; lastX=e.clientX; lastY=e.
 window.addEventListener('mouseup', ()=>{ dragging=false; cv.classList.remove('drag'); });
 window.addEventListener('mousemove', (e)=>{ if(!dragging) return; const s=sc(); cam.x -= (e.clientX-lastX)/s; cam.y -= (e.clientY-lastY)/s; lastX=e.clientX; lastY=e.clientY; });
 
-const pe = document.getElementById('params');
-function buildParamPanel(){
-  pe.textContent = ''; pe.append('Look: ');
-  for (const sp of SPEC){ const l=document.createElement('label'); l.textContent=sp.label+' '; const i=document.createElement('input'); i.type='range'; i.min=sp.min; i.max=sp.max; i.step=sp.step; i.value=P[sp.k]; i.style.width='90px'; i.oninput=()=>{ P[sp.k]=+i.value; }; l.appendChild(i); pe.appendChild(l); }
-  const npar=document.createElement('label'); npar.textContent='Pop '; const npi=document.createElement('input'); npi.type='number'; npi.min=1; npi.max=1000; npi.step=20; npi.value=P.n; npi.onchange=()=>{ P.n=+npi.value; build(); }; npar.appendChild(npi); pe.appendChild(npar);
-  // Save Defaults: records the current slider state -> server file (viewer-micrograph-params.json) + localStorage.
-  // On the next load the page starts from these values, and the file can be baked in as the code defaults.
-  const save=document.createElement('button'); save.textContent='Save Defaults'; save.style.marginLeft='10px';
-  save.onclick=()=>{ const j=JSON.stringify(P);
-    try { localStorage.setItem('micrographParams', j); } catch {}
-    fetch('/save-params', {method:'POST', body:j}).then(r=>{ save.textContent = r.ok?'Saved ✓':'Save (local only)'; })
-      .catch(()=>{ save.textContent='Saved (local only)'; }).finally(()=>setTimeout(()=>{ save.textContent='Save Defaults'; }, 1600));
-    console.log('micrograph params:', j);
-  };
-  pe.appendChild(save);
-  // Copy Swimmer: capture the swimbot nearest the camera centre (the one you're zoomed on) -> viewer-swimmer.json,
-  // so its exact genome can be reproduced headlessly to debug a specific creature's geometry.
-  const copy=document.createElement('button'); copy.textContent='Copy Swimmer'; copy.style.marginLeft='6px';
-  copy.onclick=()=>{
-    if (!world) return;
-    let best=null, bestD=Infinity;
-    for (const [id,sb] of world._swimbots){ if(!sb.getAlive()) continue; const p=sb.getPosition(); const d=(p.x-cam.x)**2+(p.y-cam.y)**2; if(d<bestD){ bestD=d; best={id,sb}; } }
-    if (!best) return;
-    const sb=best.sb, ph=sb._phenotype;
-    // Snapshot the EXACT live phenotype geometry of the current frame (not just the genome) so the precise
-    // undulation phase where the "cut" appears can be analysed without re-guessing the motion state.
-    const geom = ph ? Array.from({length:ph.numParts}, (_,p)=>{ const q=ph.parts[p]; return {
-      parent:q.parent, branch:!!q.branch, child:(q.child!==undefined?q.child:-1),
-      length:q.length, width:q.width, endCapSpline:q.endCapSpline,
-      pos:[q.position.x, q.position.y], perp:[q.perpendicular.x, q.perpendicular.y], axis:[q.axis.x, q.axis.y],
-      red:q.red, green:q.green, blue:q.blue }; }) : [];
-    // ACTUAL rendered geometry: the exact screen-space triangles the renderer draws for this creature (body strip + domes
-    // + hairs), so the cut can be seen/analysed verbatim without any headless re-derivation that could diverge.
-    const render = captureCreatureGeom(best.id, sb);
-    const payload = JSON.stringify({ id:best.id, age:sb._age, growthScale:sb._growthScale, numParts: ph?ph.numParts:0,
-      cam:{x:cam.x, y:cam.y, zoom:cam.zoom}, geom, render, genes: Array.from(sb.getGenotype().getGenes()) });
-    fetch('/save-swimmer', {method:'POST', body:payload}).then(r=>{ copy.textContent = r.ok?'Copied ✓':'Copy failed'; }).catch(()=>{ copy.textContent='Copy failed'; }).finally(()=>setTimeout(()=>{ copy.textContent='Copy Swimmer'; }, 1600));
-    console.log('swimmer capture:', payload);
-  };
-  pe.appendChild(copy);
-}
 
-async function boot(){
-  // load recorded defaults: prefer the server file (so it can be baked into code), else localStorage
-  let loaded=false;
-  try { const r = await fetch('/viewer-micrograph-params.json', {cache:'no-store'}); if (r.ok){ Object.assign(P, await r.json()); loaded=true; } } catch {}
-  if (!loaded){ try { const ls = localStorage.getItem('micrographParams'); if (ls) Object.assign(P, JSON.parse(ls)); } catch {} }
-  buildParamPanel();
-  if (gl){ initGL(); build(); requestAnimationFrame(loop); }
+function boot(){
+  if (gl){ initGL(); build(); requestAnimationFrame(loop); }   // params are baked into P; no live panel / runtime file
 }
 boot();
 </script>
