@@ -968,7 +968,7 @@ function advanceFrame(){
 // state (known/fades/junk positions), never mutates it. Sets cam/W/H for the view and RESTORES them (so build(),
 // the wall, and the golden hook always see the canvas values). For the main view this is byte-identical to the old
 // render(); species tiles will call it with a different cam + size.
-function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, roundPx = 0){
+function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, roundPx = 0, onlyBot = null){
   if (!gl) return;
   const _cam = cam, _W = W, _H = H;
   cam = viewCam; W = vw; H = vh;
@@ -986,6 +986,7 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     const segs = [];
     const mW = W + 40, mH = H + 40;   // small viewport margin
     for (const [id, sb] of known){
+      if (onlyBot && sb !== onlyBot) continue;                        // species tile: render ONLY the representative
       const ph = sb._phenotype; if (!ph || !ph.parts || ph.numParts <= 1) continue;
       const g = (sb._growthScale !== undefined) ? sb._growthScale : 1;
       // FRUSTUM CULL: skip any creature whose screen bounding box is fully off-view. The pool grows toward maxPopulation
@@ -1170,7 +1171,7 @@ function render(){
       rep = r.t.rep = alt.sb;
     }
     const c = rep.getPosition();
-    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - s), false, VIEW_ROUND);
+    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - s), false, VIEW_ROUND, rep);
   }
   // ---- 5px black gutters between the views (main | tile-column, and between the three tiles) ----
   {

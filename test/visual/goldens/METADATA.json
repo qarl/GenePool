@@ -7,7 +7,7 @@
     "founders": {
       "w": 1024,
       "h": 768,
-      "sha256": "297fad917ca1a391da5953cb9aca1c57642d98b376bd92d8c533e002faeeec44",
+      "sha256": "9bdf4aa1c6241fed6d6c28bd5642cc055e446e72a86a75b77d881e5c4fa4ff5b",
       "thickFmt": "RGBA16F",
       "fading": 0,
       "browserBuild": "1217",
@@ -16,7 +16,7 @@
     "adults": {
       "w": 1024,
       "h": 768,
-      "sha256": "4ec1ee31e287e0fa7ee0302204a1f18fc7ab0b27147b6156a751f50546f6ca74",
+      "sha256": "2a9d4f4dcba95c2d85c37b9474ee441f61105dfa6956ce0f92e95bf442160c22",
       "thickFmt": "RGBA16F",
       "fading": 0,
       "browserBuild": "1217",
@@ -25,7 +25,7 @@
     "branchy": {
       "w": 1024,
       "h": 768,
-      "sha256": "195ccc16464b45a5d4393ba54b5d732ebdd7dfd93d5b840bc4084f203c622726",
+      "sha256": "83ef9276b69301448b3348c6197e1c0270dcc98f01d93c8e35d7eca48031e142",
       "thickFmt": "RGBA16F",
       "fading": 0,
       "browserBuild": "1217",
@@ -34,7 +34,7 @@
     "dying": {
       "w": 1024,
       "h": 768,
-      "sha256": "716c6c2764fc64d865a124ef73a964442de07e0401bd204d6e03c161a9e0fbc8",
+      "sha256": "cc389a3a8d148d8fa6e494faf4351adabfb534f805e4853419cbc44a4a58eb35",
       "thickFmt": "RGBA16F",
       "fading": 4,
       "browserBuild": "1217",
@@ -43,14 +43,14 @@
     "speciated": {
       "w": 1024,
       "h": 768,
-      "sha256": "cde73f6ca64c341ff024a1f8e62d4af706a9b3202ff2e6b8dfa240cf7efd59c4",
+      "sha256": "b8d809e822ae15499840e46b5fb359a58256825fae320479315d2cae9f825362",
       "thickFmt": "RGBA16F",
       "fading": 0,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     }
   },
-  "recordedAt": "2026-09-03T23:54:39.014Z",
+  "recordedAt": "2026-09-04T02:13:20.527Z",
   "platform": "darwin",
   "arch": "arm64",
   "node": "v25.9.0"
