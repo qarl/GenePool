@@ -30,7 +30,7 @@
   .tileLabel .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tileLabel .sig { font-size: 12px; font-weight: 500; letter-spacing: 2px; }
   #lab0 { top: 12px; } #lab1 { top: calc(33.333% + 12px); } #lab2 { top: calc(66.666% + 12px); }
-  #labMain { top: 12px; left: 12px; right: auto; text-align: left; }   /* total population, in the MAIN view's corner */
+  #labMain { top: 12px; right: calc(25% + 12px); }   /* total population, top-RIGHT of the main view (25% = tile column) */
 </style>
 </head>
 <body>
@@ -955,7 +955,7 @@ function computeSpecies(){
 const tileLabels = ['lab0','lab1','lab2'].map(id => document.getElementById(id));
 const labMain = document.getElementById('labMain');
 function updateTileLabels(){
-  if (labMain && world) labMain.innerHTML = `<span class="n">${world.getLivingSwimbotCount()}</span><span class="sig">living</span>`;
+  if (labMain && world) labMain.innerHTML = `<span class="n">${world.getLivingSwimbotCount()}</span>`;
   for (let s = 0; s < 3; s++){
     const el = tileLabels[s]; if (!el) continue;
     const id = slotIds[s], r = id != null ? speciesById.get(id) : null;
