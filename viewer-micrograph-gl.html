@@ -855,7 +855,7 @@ function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k
 // 5-symbol species SIGNATURE from a junk genome: 5 contiguous block-means, each quantized to base36 over [0,SIG_MAX].
 // Locality-preserving (close junk -> close string, by symbol distance) and zeroed founders -> "00000". Computed on a
 // species' centroid so it's a stable per-species "licence plate".
-const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_MAX = 96;
+const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_MAX = 48;   // ceiling tuned so real junk drift spreads into the LETTERS (00000 stays the founder anchor)
 function signatureOf(jg){
   let s = '';
   for (let b = 0; b < 5; b++){ const lo = Math.floor(b*NJ/5), hi = Math.floor((b+1)*NJ/5);
