@@ -400,14 +400,14 @@ let hairTime = 0;
 const known = new Map(), fades = new Map(), deathTick = new Map(), deathFade0 = new Map(), FADE_TICKS = 240;
 const OLD_AGE_DURATION = 1000;   // mirrors the engine: the decline window before old-age death (pre-death decompose ramp)
 // floating detritus: persistent world-space particles that drift in the medium (specks + soft out-of-focus blobs)
-const MAX_JUNK = 600;
-let junk = [];
+const MAX_JUNK = 1500;   // floating detritus particle pool (denser medium)
+let junk = [], lastJunkClock = 0;   // lastJunkClock: junk drift is advanced by ELAPSED SIM TICKS (freezes on pause, scales with speed)
 function seedJunk(rng){
   junk = [];
   for (let i=0;i<MAX_JUNK;i++){
     const blob = rng() < 0.3;
     junk.push({
-      x: rng()*P.pool, y: rng()*P.pool, vx: (rng()-0.5)*0.25, vy: (rng()-0.5)*0.25,
+      x: rng()*P.pool, y: rng()*P.pool, vx: (rng()-0.5)*0.083, vy: (rng()-0.5)*0.083,   // per-TICK velocity (x elapsed ticks)
       r: blob ? 9 + rng()*18 : 2.5 + rng()*5,          // world visual radius (bigger)
       th: blob ? 0.3 + rng()*0.4 : 0.6 + rng()*1.0,    // world thickness (less opaque)
       tint: blob ? [0.62,0.55,0.48] : [0.35+rng()*0.15, 0.30+rng()*0.12, 0.25+rng()*0.10],
@@ -540,7 +540,7 @@ function build(){
     world.loadSwimbot(i, { age, x:p.x, y:p.y, angle: rng()*360-180, energy: 50, genes });
   }
   for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
-  known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear();   // no stale death-fade ghosts across a rebuild
+  known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;   // no stale death-fade ghosts / junk drift across a rebuild
   frameCount = 0; nextSpeciesId = 1; tracked = new Map(); slotIds = [null,null,null]; speciesById = new Map(); speciesList = [];   // reset species tiles -> deterministic from a fresh build
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
@@ -964,11 +964,14 @@ function updateTileLabels(){
 // Per-FRAME state, advanced ONCE per frame regardless of how many views render (main + species tiles). Hoisted out of
 // renderView so detritus drift + death-fade bookkeeping don't advance 4x. See docs/PLAN-species-viewers.md.
 function advanceFrame(){
-  hairTime = world ? world.getClock() : 0;
-  // drift the floating detritus (independent of sim pause -- it's suspended in the medium)
+  const clock = world ? world.getClock() : 0;
+  hairTime = clock;
+  // drift the floating detritus by ELAPSED SIM TICKS (dt) -> freezes on pause, scales with speed. modulo-wrap handles
+  // any dt (a big jump at high speed / in the golden hook stays in-bounds).
+  const dt = clock - lastJunkClock; lastJunkClock = clock;
   const nJunk = Math.floor(P.junk * MAX_JUNK);
-  for (let i=0;i<nJunk;i++){ const j=junk[i]; j.x+=j.vx; j.y+=j.vy;
-    if(j.x<0)j.x+=P.pool; else if(j.x>P.pool)j.x-=P.pool; if(j.y<0)j.y+=P.pool; else if(j.y>P.pool)j.y-=P.pool; }
+  for (let i=0;i<nJunk;i++){ const j=junk[i]; j.x += j.vx*dt; j.y += j.vy*dt;
+    j.x = ((j.x % P.pool) + P.pool) % P.pool; j.y = ((j.y % P.pool) + P.pool) % P.pool; }
   if (world){
     // death-fade bookkeeping: refresh refs from the live map, then fade the dead by elapsed SIM TICKS
     const nowClock = world.getClock();
