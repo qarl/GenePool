@@ -9,7 +9,7 @@
       "h": 768,
       "sha256": "66722aab515eac836b69c29e16b4381e9461ca1fc73f95168b5d2ddb65b88cae",
       "thickFmt": "RGBA16F",
-      "fading": 0,
+      "fading": 5,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
@@ -18,7 +18,7 @@
       "h": 768,
       "sha256": "bcb0746adff738ac68c5d091c4f492965b5dd24775e29d03fd62061a9ff7fdef",
       "thickFmt": "RGBA16F",
-      "fading": 0,
+      "fading": 1,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
@@ -27,7 +27,7 @@
       "h": 768,
       "sha256": "fa830cf314d4576b63da93efd8312d0c79355be0fbbf4a512f7dc014de06dbb5",
       "thickFmt": "RGBA16F",
-      "fading": 0,
+      "fading": 7,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
@@ -36,7 +36,7 @@
       "h": 768,
       "sha256": "71a1d269cc62ce492ae7221f78f85141ecf4ddfd1f93e6ebe0f263ba6aaba19b",
       "thickFmt": "RGBA16F",
-      "fading": 4,
+      "fading": 8,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
@@ -45,12 +45,12 @@
       "h": 768,
       "sha256": "8a11a843c7b91e1cff09baddc21bbb5b62d735766b52e30518711e11855c725e",
       "thickFmt": "RGBA16F",
-      "fading": 0,
+      "fading": 2,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     }
   },
-  "recordedAt": "2026-09-04T14:55:01.814Z",
+  "recordedAt": "2026-09-04T15:22:32.553Z",
   "platform": "darwin",
   "arch": "arm64",
   "node": "v25.9.0"

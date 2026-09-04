@@ -100,6 +100,8 @@ const P = {
   bloom: 0.2,       // full-image bloom strength (0 = off)
   bloomThresh: 0,   // brightness above which pixels bloom
   deathBlur: 2.5,   // soft-focus blur on dying swimmers (edge-feather exponent added as they fade out)
+  deathFadeFloor: 0.45, // decompose BEGINS before death: a dying swimmer (aging/starving) fades toward this while still
+                        // alive & twitching, reaching it at the moment of death, then dissolves the rest of the way to 0
   wallThick: 11,    // world-boundary wall thickness (screen px at zoom 1; scales with zoom)
   wallDark: 0.2,    // darkening of the region OUTSIDE the wall (0 = none .. 1 = black)
   hairFade: 0.1,    // LOD hair fade-out band width (larger = hairs fade over a wider zoom range = gentler)
@@ -395,7 +397,8 @@ let hairTime = 0;
 // fading out (thickness -> 0) over FADE_TICKS of SIM TIME before pruning. Tied to the clock, so it tracks sim
 // speed and freezes on pause. 240 ticks = 4 s at 1x (60 ticks/s @ 60fps); at 60x it's 240/3600 = 4/60 s -- death
 // speeds up exactly with sim speed. Alive -> fade 1; dead -> fade by elapsed ticks.
-const known = new Map(), fades = new Map(), deathTick = new Map(), FADE_TICKS = 240;
+const known = new Map(), fades = new Map(), deathTick = new Map(), deathFade0 = new Map(), FADE_TICKS = 240;
+const OLD_AGE_DURATION = 1000;   // mirrors the engine: the decline window before old-age death (pre-death decompose ramp)
 // floating detritus: persistent world-space particles that drift in the medium (specks + soft out-of-focus blobs)
 const MAX_JUNK = 600;
 let junk = [];
@@ -537,7 +540,7 @@ function build(){
     world.loadSwimbot(i, { age, x:p.x, y:p.y, angle: rng()*360-180, energy: 50, genes });
   }
   for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
-  known.clear(); fades.clear(); deathTick.clear();   // no stale death-fade ghosts across a rebuild
+  known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear();   // no stale death-fade ghosts across a rebuild
   frameCount = 0; nextSpeciesId = 1; tracked = new Map(); slotIds = [null,null,null]; speciesById = new Map(); speciesList = [];   // reset species tiles -> deterministic from a fresh build
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
@@ -969,11 +972,20 @@ function advanceFrame(){
     const nowClock = world.getClock();
     for (const [id, sb] of world._swimbots) known.set(id, sb);
     for (const [id, sb] of known){
-      if (sb.getAlive()){ fades.set(id, 1); deathTick.delete(id); }
-      else {
-        if (!deathTick.has(id)) deathTick.set(id, nowClock);   // record the tick of death
-        const f = 1 - (nowClock - deathTick.get(id)) / FADE_TICKS;
-        if (f <= 0){ known.delete(id); fades.delete(id); deathTick.delete(id); } else fades.set(id, f);
+      if (sb.getAlive()){
+        // DECOMPOSE BEFORE DEATH: once a swimmer enters its old-age decline (the last OLD_AGE_DURATION ticks before
+        // death) it thins/blurs while still ALIVE (and still twitching + slowing), reaching deathFadeFloor exactly at
+        // death; it then dissolves the rest of the way post-death. Age-based -> only the genuinely dying decompose
+        // (newborns/adults stay at 1); the engine's _timerDelta can't be used raw (it also dips at birth + when starving).
+        const oldThresh = MAX_LIFESPAN - OLD_AGE_DURATION;
+        const age = sb.getAge();
+        const vit = age <= oldThresh ? 1 : Math.max(0, 1 - (age - oldThresh) / OLD_AGE_DURATION);
+        fades.set(id, P.deathFadeFloor + (1 - P.deathFadeFloor) * vit);
+        deathTick.delete(id); deathFade0.delete(id);
+      } else {
+        if (!deathTick.has(id)){ deathTick.set(id, nowClock); deathFade0.set(id, fades.get(id) ?? P.deathFadeFloor); }  // fade level AT death -> continue from there
+        const f = (deathFade0.get(id) ?? 1) * (1 - (nowClock - deathTick.get(id)) / FADE_TICKS);
+        if (f <= 0){ known.delete(id); fades.delete(id); deathTick.delete(id); deathFade0.delete(id); } else fades.set(id, f);
       }
     }
   }
