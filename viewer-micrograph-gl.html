@@ -876,18 +876,17 @@ const SLOT_MARGIN = 1.3;           // a challenger must exceed the smallest slot
 const SPECIES_MATCH = 0.94;        // EMA-centroid similarity to treat a cluster as the SAME lineage across reclusters
 function junkOf(sb){ const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k=0;k<NJ;k++) a[k] = g.getGeneValue(USED+k); return a; }
 function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k]); return 1 - (d/256)/NJ; }   // engine metric (/BYTE_SIZE)
-// 5-symbol species SIGNATURE from a junk genome: 5 contiguous block-means, each quantized to base36 over [0,SIG_MAX].
-// Locality-preserving (close junk -> close string, by symbol distance) and zeroed founders -> "00000". Computed on a
-// species' centroid so it's a stable per-species "licence plate".
-// GAMMA curve over the FULL [0,255]: anchors zeroed founders at "00000", spreads the (small) real junk drift up into
-// the LETTERS, and NEVER saturates -- so a long-drifted species keeps changing instead of locking on "ZZZZZ" (block
-// means climb to ~50-90 over long runs; a fixed low ceiling clamped them all to Z, losing distinct-but-diverged species).
+// 5-symbol species SIGNATURE from the USED (functional, body/brain) genes [0,USED) -- NOT the junk. Junk is neutral:
+// it random-walks to a uniform ~127 equilibrium, so junk plates converged to "QQQQQ" and jittered (no structure). The
+// used genes are under selection, so they carry real STRUCTURE. And we SAMPLE 5 individual genes (per-gene) rather than
+// block-MEANS: a mean over ~a block averages back to the population mean (washes structure out), whereas 5 sampled genes
+// keep it. base36 via a gamma curve over [0,255]; locality-preserving (close genome -> close plate by symbol distance).
+// (Trade-off Karl accepted: founders start with RANDOM used genes, so there is no "00000" origin anymore.)
 const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_GAMMA = 0.4;
-function signatureOf(jg){
+const SIG_SAMPLE = [0,1,2,3,4].map(i => Math.floor(USED * (i + 0.5) / 5));   // 5 used genes spread across [0,USED)
+function signatureOf(vec){   // vec = a used-gene vector (or centroid); 5 sampled genes -> base36
   let s = '';
-  for (let b = 0; b < 5; b++){ const lo = Math.floor(b*NJ/5), hi = Math.floor((b+1)*NJ/5);
-    let sum = 0; for (let k = lo; k < hi; k++) sum += jg[k];
-    s += SIG_ALPHA[Math.min(35, Math.round(Math.pow((sum/(hi-lo)) / 255, SIG_GAMMA) * 35))]; }
+  for (const k of SIG_SAMPLE) s += SIG_ALPHA[Math.min(35, Math.round(Math.pow((vec[k] || 0) / 255, SIG_GAMMA) * 35))];
   return s;
 }
 function computeSpecies(){
@@ -904,12 +903,14 @@ function computeSpecies(){
     else if (reps.length < SPECIES_K) reps.push({ seed: jg, members: [{ sb, jg }] });
     else { let nb = reps[0], ns = -1; for (const r of reps){ const s = junkSim(jg, r.seed); if (s > ns){ ns = s; nb = r; } } nb.members.push({ sb, jg }); }
   }
-  // 2. per cluster: centroid, closest-to-mean rep candidate, and member set (for overlap-based lineage matching)
+  // 2. per cluster: junk centroid (lineage identity) + USED-gene centroid (the plate) + closest-to-mean rep + member set
   for (const r of reps){
-    const mean = new Float64Array(NJ);
-    for (const m of r.members) for (let k=0;k<NJ;k++) mean[k] += m.jg[k];
+    const mean = new Float64Array(NJ), meanUsed = new Float64Array(USED);
+    for (const m of r.members){ for (let k=0;k<NJ;k++) mean[k] += m.jg[k];
+      const gt = m.sb.getGenotype(); for (let k=0;k<USED;k++) meanUsed[k] += gt.getGeneValue(k); }   // per-gene (no per-member alloc)
     for (let k=0;k<NJ;k++) mean[k] /= r.members.length;
-    r.mean = mean; r.count = r.members.length; r.idset = new Set(r.members.map(m => m.sb));
+    for (let k=0;k<USED;k++) meanUsed[k] /= r.members.length;
+    r.mean = mean; r.meanUsed = meanUsed; r.count = r.members.length; r.idset = new Set(r.members.map(m => m.sb));
     let best = null, bs = -1; for (const m of r.members){ const s = junkSim(m.jg, mean); if (s > bs){ bs = s; best = m.sb; } }
     r.newRep = best;
   }
@@ -929,11 +930,12 @@ function computeSpecies(){
   for (const r of reps){
     seen.add(r.id);
     let t = tracked.get(r.id);
-    if (!t){ t = { ema: Float64Array.from(r.mean) }; tracked.set(r.id, t); }
-    else for (let k=0;k<NJ;k++) t.ema[k] += SIG_EMA * (r.mean[k] - t.ema[k]);
+    if (!t){ t = { ema: Float64Array.from(r.mean), emaUsed: Float64Array.from(r.meanUsed) }; tracked.set(r.id, t); }
+    else { for (let k=0;k<NJ;k++) t.ema[k] += SIG_EMA * (r.mean[k] - t.ema[k]);            // junk centroid (lineage identity)
+           for (let k=0;k<USED;k++) t.emaUsed[k] += SIG_EMA * (r.meanUsed[k] - t.emaUsed[k]); }   // used centroid (the plate)
     t.misses = 0; t.seed = r.seed; t.idset = r.idset; t.count = r.count;
     if (!(t.rep && t.rep.getAlive() && r.idset.has(t.rep))) t.rep = r.newRep;
-    t.sig = signatureOf(t.ema); r.t = t;
+    t.sig = signatureOf(t.emaUsed); r.t = t;
   }
   for (const [tid, t] of tracked) if (!seen.has(tid) && ++t.misses > 4) tracked.delete(tid);   // retire long-absent lineages
   // 5. STICKY tile slots: a species holds its slot; free slots fill by size; one hysteresis swap/recompute (challenger
