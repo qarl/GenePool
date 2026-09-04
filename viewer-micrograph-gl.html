@@ -535,7 +535,7 @@ function build(){
   }
   for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
   known.clear(); fades.clear(); deathTick.clear();   // no stale death-fade ghosts across a rebuild
-  frameCount = 0; speciesReps = []; prevReps = []; nextSpeciesId = 1;   // reset species tiles -> deterministic from a fresh build
+  frameCount = 0; nextSpeciesId = 1; tracked = new Map(); slotIds = [null,null,null]; speciesById = new Map(); speciesList = [];   // reset species tiles -> deterministic from a fresh build
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
@@ -841,15 +841,21 @@ function captureCreatureGeom(id, sb){
 
 // ================================================================== species clustering (engine-native junk-DNA gate)
 // Cluster living swimbots on the junk genes [USED, NUM_GENES) with the engine's EXACT metric (sim = 1 - mean|Δ|/256),
-// same-species iff sim > reproductiveIsolation. Top-3 by living head-count feed the side tiles. Recomputed every
-// SPECIES_RECOMPUTE frames (deterministic — frame-count based, reset in build()). Stable IDs / hysteresis = later step.
+// same-species iff sim > reproductiveIsolation. Clusters are tracked as PERSISTENT LINEAGES (membership-overlap match)
+// with an EMA'd centroid, so a species' plate crawls with real drift instead of scrambling; three STICKY tile slots
+// (hysteresis) hold species so tiles don't reshuffle. Recomputed every SPECIES_RECOMPUTE frames (deterministic).
 const NJ = NUM_GENES - USED;         // 144 junk genes
 const SPECIES_ISO = 0.9;             // = NON_REPRODUCING_JUNK_DNA_LIMIT (engine default); matches the birth gate exactly
 const SPECIES_K = 24;                // hard cap on tracked reps (perf bound on N*K*NJ)
 const SPECIES_RECOMPUTE = 30;        // frames between reclusterings
 const TILE_ZOOM = 14;               // fixed shared zoom for all tiles -> tile fill is comparable across species
-let frameCount = 0, speciesReps = [];
-let prevReps = [], nextSpeciesId = 1;   // stable species identity across reclusters (seed-match) -> tiles don't reshuffle
+let frameCount = 0, nextSpeciesId = 1;
+let tracked = new Map();           // id -> { ema:Float64Array(NJ), sig, count, rep, idset:Set, seed, misses } — persistent lineages
+let slotIds = [null, null, null];  // the 3 tile slots -> a persistent species id (sticky, with hysteresis)
+let speciesById = new Map(), speciesList = [];   // this recompute's clusters (by id; sorted by count for labels/tests)
+const SIG_EMA = 0.15;              // centroid smoothing per recompute -> the plate CRAWLS (slow drift, stays close)
+const SLOT_MARGIN = 1.3;           // a challenger must exceed the smallest slotted species by this factor to take its slot
+const SPECIES_MATCH = 0.94;        // EMA-centroid similarity to treat a cluster as the SAME lineage across reclusters
 function junkOf(sb){ const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k=0;k<NJ;k++) a[k] = g.getGeneValue(USED+k); return a; }
 function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k]); return 1 - (d/256)/NJ; }   // engine metric (/BYTE_SIZE)
 // 5-symbol species SIGNATURE from a junk genome: 5 contiguous block-means, each quantized to base36 over [0,SIG_MAX].
@@ -864,48 +870,69 @@ function signatureOf(jg){
   return s;
 }
 function computeSpecies(){
-  if (!world) return [];
+  if (!world) return;
+  // 1. cluster living bots -> clusters, each assigned to its MOST-similar rep above the isolation gate (K-capped)
   const reps = [];
   for (const [id, sb] of world._swimbots){
     if (!sb.getAlive()) continue;
     const ph = sb._phenotype; if (!ph || ph.numParts <= 1) continue;
     const jg = junkOf(sb);
-    let best = null, bestS = SPECIES_ISO;                          // assign to the MOST-similar rep above the isolation gate
+    let best = null, bestS = SPECIES_ISO;
     for (const r of reps){ const s = junkSim(jg, r.seed); if (s > bestS){ bestS = s; best = r; } }
     if (best) best.members.push({ sb, jg });
     else if (reps.length < SPECIES_K) reps.push({ seed: jg, members: [{ sb, jg }] });
     else { let nb = reps[0], ns = -1; for (const r of reps){ const s = junkSim(jg, r.seed); if (s > ns){ ns = s; nb = r; } } nb.members.push({ sb, jg }); }
   }
-  for (const r of reps){                                           // rep = member closest to the species' MEAN junk genome
+  // 2. per cluster: centroid, closest-to-mean rep candidate, and member set (for overlap-based lineage matching)
+  for (const r of reps){
     const mean = new Float64Array(NJ);
     for (const m of r.members) for (let k=0;k<NJ;k++) mean[k] += m.jg[k];
     for (let k=0;k<NJ;k++) mean[k] /= r.members.length;
-    let best = null, bestS = -1; for (const m of r.members){ const s = junkSim(m.jg, mean); if (s > bestS){ bestS = s; best = m.sb; } }
-    r.rep = best; r.count = r.members.length; r.sig = signatureOf(mean);   // stable per-species "licence plate"
+    r.mean = mean; r.count = r.members.length; r.idset = new Set(r.members.map(m => m.sb));
+    let best = null, bs = -1; for (const m of r.members){ const s = junkSim(m.jg, mean); if (s > bs){ bs = s; best = m.sb; } }
+    r.newRep = best;
   }
-  reps.sort((a, b) => b.count - a.count);                          // largest first (Array.sort is stable -> deterministic ties)
-  // STABLE IDENTITY: greedily match each new cluster (largest first) to a previous species by junk-seed similarity, so a
-  // species keeps its id (and, if the old rep still lives, its rep -> no camera jump) across reclusters. Split -> the
-  // largest fragment inherits the id; unmatched new clusters get a fresh id. (Rank/floor hysteresis: deferred, see plan.)
-  const usedPrev = new Set();
+  reps.sort((a, b) => b.count - a.count);
+  // 3. match each cluster to a persistent lineage by EMA-CENTROID SIMILARITY, greedy largest-first. The centroid is
+  //    steady even when the whole membership turns over between reclusters (a species' genetic centre barely moves), so
+  //    this tracks a lineage far more stably than membership overlap does at the live recompute interval. None -> new id.
+  const usedTracked = new Set();
   for (const r of reps){
-    let bestPrev = null, bestS = SPECIES_ISO;
-    for (const p of prevReps){ if (usedPrev.has(p.id)) continue; const s = junkSim(r.seed, p.seed); if (s > bestS){ bestS = s; bestPrev = p; } }
-    if (bestPrev){
-      r.id = bestPrev.id; usedPrev.add(bestPrev.id);
-      if (bestPrev.rep && bestPrev.rep.getAlive() && r.members.some(m => m.sb === bestPrev.rep)) r.rep = bestPrev.rep;   // rep continuity
-    } else r.id = nextSpeciesId++;
+    let bestId = null, bestS = SPECIES_MATCH;   // >0.94: stricter than the 0.9 isolation gate so distinct lineages don't merge
+    for (const [tid, t] of tracked){ if (usedTracked.has(tid)) continue; const s = junkSim(r.mean, t.ema); if (s > bestS){ bestS = s; bestId = tid; } }
+    r.id = bestId || nextSpeciesId++; usedTracked.add(r.id);
   }
-  prevReps = reps.map(r => ({ id: r.id, seed: r.seed, rep: r.rep }));
-  return reps;
+  // 4. update each lineage: EMA its centroid so the plate CRAWLS (new lineages START at their centroid, not 00000 -- a
+  //    splinter species is already diverged; only the founder line begins at 00000 and drifts out). Keep a continuous rep.
+  const seen = new Set();
+  for (const r of reps){
+    seen.add(r.id);
+    let t = tracked.get(r.id);
+    if (!t){ t = { ema: Float64Array.from(r.mean) }; tracked.set(r.id, t); }
+    else for (let k=0;k<NJ;k++) t.ema[k] += SIG_EMA * (r.mean[k] - t.ema[k]);
+    t.misses = 0; t.seed = r.seed; t.idset = r.idset; t.count = r.count;
+    if (!(t.rep && t.rep.getAlive() && r.idset.has(t.rep))) t.rep = r.newRep;
+    t.sig = signatureOf(t.ema); r.t = t;
+  }
+  for (const [tid, t] of tracked) if (!seen.has(tid) && ++t.misses > 4) tracked.delete(tid);   // retire long-absent lineages
+  // 5. STICKY tile slots: a species holds its slot; free slots fill by size; one hysteresis swap/recompute (challenger
+  //    must beat the smallest slotted species by SLOT_MARGIN) -> tiles stop reshuffling on every count wobble.
+  for (let s=0;s<3;s++) if (slotIds[s] != null && !seen.has(slotIds[s])) slotIds[s] = null;
+  const slotted = new Set(slotIds.filter(x => x != null));
+  for (let s=0;s<3;s++) if (slotIds[s] == null){ const cand = reps.find(r => !slotted.has(r.id)); if (cand){ slotIds[s] = cand.id; slotted.add(cand.id); } }
+  const cntOf = id => { const r = reps.find(x => x.id === id); return r ? r.count : 0; };
+  let smin = -1, sminC = Infinity; for (let s=0;s<3;s++){ if (slotIds[s] == null) continue; const c = cntOf(slotIds[s]); if (c < sminC){ sminC = c; smin = s; } }
+  const chall = reps.find(r => !slotted.has(r.id));
+  if (smin >= 0 && chall && chall.count > sminC * SLOT_MARGIN){ slotIds[smin] = chall.id; }
+  speciesById = new Map(reps.map(r => [r.id, r])); speciesList = reps;
 }
-// count labels (HTML overlay over the tiles; "counts first"). Updated on each recluster.
+// count + signature labels (HTML overlay; "counts first"). Follows the sticky slots.
 const tileLabels = ['lab0','lab1','lab2'].map(id => document.getElementById(id));
 function updateTileLabels(){
-  for (let i = 0; i < 3; i++){
-    const el = tileLabels[i]; if (!el) continue;
-    const r = speciesReps[i];
-    if (r && r.rep && r.rep.getAlive()){ el.innerHTML = `<span class="n">${r.count}</span><span class="sig">${r.sig}</span>`; el.hidden = false; }
+  for (let s = 0; s < 3; s++){
+    const el = tileLabels[s]; if (!el) continue;
+    const id = slotIds[s], r = id != null ? speciesById.get(id) : null;
+    if (r && r.t){ el.innerHTML = `<span class="n">${r.count}</span><span class="sig">${r.t.sig}</span>`; el.hidden = false; }
     else el.hidden = true;
   }
 }
@@ -1124,23 +1151,23 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
 function render(){
   if (!gl) return;
   advanceFrame();
-  if (world && (frameCount % SPECIES_RECOMPUTE) === 0){ speciesReps = computeSpecies(); updateTileLabels(); }   // top-3 for the tiles
+  if (world && (frameCount % SPECIES_RECOMPUTE) === 0){ computeSpecies(); updateTileLabels(); }   // recluster + refresh tiles
   frameCount++;
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, CANVAS_W, CANVAS_H);
   gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);          // clear regions not covered by a view
   renderView(cam, VIEW_MAIN, VIEW_MAIN, mainSet, 0, 0, true, VIEW_ROUND);   // main micrograph: left 768^2 (GL origin bottom-left)
   // three species tiles, stacked in the right column (top = largest species). Fixed shared zoom -> comparable sizes.
-  for (let i = 0; i < 3; i++){
-    const r = speciesReps[i];
-    if (!r) continue;                                                // <3 species -> leave the tile black (labels hidden)
-    if (!r.rep || !r.rep.getAlive()){                                // rep died between reclusters -> re-pick a living member
-      const alt = r.members && r.members.find(m => m.sb.getAlive());  //   (avoids the tile blinking black for up to 30 frames)
-      if (!alt) continue;                                            // whole species gone -> black tile
-      r.rep = alt.sb;
+  for (let s = 0; s < 3; s++){
+    const id = slotIds[s]; if (id == null) continue;                 // empty slot -> black tile
+    const r = speciesById.get(id); if (!r || !r.t) continue;
+    let rep = r.t.rep;
+    if (!rep || !rep.getAlive()){                                    // rep died between reclusters -> re-pick a living member
+      const alt = r.members.find(m => m.sb.getAlive()); if (!alt) continue;
+      rep = r.t.rep = alt.sb;
     }
-    const c = r.rep.getPosition();
-    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - i), false, VIEW_ROUND);
+    const c = rep.getPosition();
+    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - s), false, VIEW_ROUND);
   }
   // ---- 5px black gutters between the views (main | tile-column, and between the three tiles) ----
   {
@@ -1225,8 +1252,8 @@ window.__golden = function(s, ticks, frames, camOv, opts){
   gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
   let str=''; for (let i=0;i<px.length;i+=8192) str += String.fromCharCode.apply(null, px.subarray(i, i+8192));
   const floatRT = !!(thickFmt && thickFmt.internal === gl.RGBA16F);
-  const species = speciesReps.slice(0,4).map(r => ({ n: r.count, alive: !!(r.rep && r.rep.getAlive()),
-    pos: r.rep ? r.rep.getPosition() : null }));
+  const species = speciesList.slice(0,4).map(r => ({ n: r.count, sig: r.t ? r.t.sig : null,
+    alive: !!(r.t && r.t.rep && r.t.rep.getAlive()) }));
   return { w, h, b64: btoa(str), thickFmt: floatRT ? 'RGBA16F' : 'RGBA8', floatRT, fading, species };
 };
 
