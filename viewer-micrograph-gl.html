@@ -30,6 +30,7 @@
   .tileLabel .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tileLabel .sig { font-size: 12px; font-weight: 500; letter-spacing: 2px; }
   #lab0 { top: 12px; } #lab1 { top: calc(33.333% + 12px); } #lab2 { top: calc(66.666% + 12px); }
+  #labMain { top: 12px; left: 12px; right: auto; text-align: left; }   /* total population, in the MAIN view's corner */
 </style>
 </head>
 <body>
@@ -44,6 +45,7 @@
   <div class="row"><span id="err"></span> <span style="color:#5c6b80">scroll = zoom · drag = pan</span></div>
 </header>
 <div id="wrap"><div id="stage"><canvas id="cv" width="1024" height="768"></canvas>
+  <div class="tileLabel" id="labMain"></div>
   <div class="tileLabel" id="lab0"></div><div class="tileLabel" id="lab1"></div><div class="tileLabel" id="lab2"></div>
 </div></div>
 
@@ -951,7 +953,9 @@ function computeSpecies(){
 }
 // count + signature labels (HTML overlay; "counts first"). Follows the sticky slots.
 const tileLabels = ['lab0','lab1','lab2'].map(id => document.getElementById(id));
+const labMain = document.getElementById('labMain');
 function updateTileLabels(){
+  if (labMain && world) labMain.innerHTML = `<span class="n">${world.getLivingSwimbotCount()}</span><span class="sig">living</span>`;
   for (let s = 0; s < 3; s++){
     const el = tileLabels[s]; if (!el) continue;
     const id = slotIds[s], r = id != null ? speciesById.get(id) : null;
