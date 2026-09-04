@@ -27,6 +27,7 @@
     color: #eaf0f8; font-family: system-ui, sans-serif; text-shadow: 0 1px 4px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.85); }
   .tileLabel .n { display: block; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .tileLabel .rank { font-size: 11px; font-weight: 600; color: #9fb0c6; letter-spacing: .04em; }
+  .tileLabel .sig { font: 700 13px/1.2 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 3px; color: #cdd9e8; }
   #lab0 { top: 12px; } #lab1 { top: calc(33.333% + 12px); } #lab2 { top: calc(66.666% + 12px); }
 </style>
 </head>
@@ -851,6 +852,17 @@ let frameCount = 0, speciesReps = [];
 let prevReps = [], nextSpeciesId = 1;   // stable species identity across reclusters (seed-match) -> tiles don't reshuffle
 function junkOf(sb){ const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k=0;k<NJ;k++) a[k] = g.getGeneValue(USED+k); return a; }
 function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k]); return 1 - (d/256)/NJ; }   // engine metric (/BYTE_SIZE)
+// 5-symbol species SIGNATURE from a junk genome: 5 contiguous block-means, each quantized to base36 over [0,SIG_MAX].
+// Locality-preserving (close junk -> close string, by symbol distance) and zeroed founders -> "00000". Computed on a
+// species' centroid so it's a stable per-species "licence plate".
+const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_MAX = 96;
+function signatureOf(jg){
+  let s = '';
+  for (let b = 0; b < 5; b++){ const lo = Math.floor(b*NJ/5), hi = Math.floor((b+1)*NJ/5);
+    let sum = 0; for (let k = lo; k < hi; k++) sum += jg[k];
+    s += SIG_ALPHA[Math.min(35, Math.round(Math.min(sum/(hi-lo), SIG_MAX) / SIG_MAX * 35))]; }
+  return s;
+}
 function computeSpecies(){
   if (!world) return [];
   const reps = [];
@@ -869,7 +881,7 @@ function computeSpecies(){
     for (const m of r.members) for (let k=0;k<NJ;k++) mean[k] += m.jg[k];
     for (let k=0;k<NJ;k++) mean[k] /= r.members.length;
     let best = null, bestS = -1; for (const m of r.members){ const s = junkSim(m.jg, mean); if (s > bestS){ bestS = s; best = m.sb; } }
-    r.rep = best; r.count = r.members.length;
+    r.rep = best; r.count = r.members.length; r.sig = signatureOf(mean);   // stable per-species "licence plate"
   }
   reps.sort((a, b) => b.count - a.count);                          // largest first (Array.sort is stable -> deterministic ties)
   // STABLE IDENTITY: greedily match each new cluster (largest first) to a previous species by junk-seed similarity, so a
@@ -893,7 +905,7 @@ function updateTileLabels(){
   for (let i = 0; i < 3; i++){
     const el = tileLabels[i]; if (!el) continue;
     const r = speciesReps[i];
-    if (r && r.rep && r.rep.getAlive()){ el.innerHTML = `<span class="n">${r.count}</span><span class="rank">#${i+1} species</span>`; el.hidden = false; }
+    if (r && r.rep && r.rep.getAlive()){ el.innerHTML = `<span class="n">${r.count}</span><span class="sig">${r.sig}</span>`; el.hidden = false; }
     else el.hidden = true;
   }
 }
