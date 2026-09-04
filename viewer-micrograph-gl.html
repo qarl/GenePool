@@ -94,6 +94,8 @@ const P = {
   hairBeat: 0.06,   // beat speed (per sim tick)
   hairWave: 0.12,   // metachronal wavelength along the body (per world arc-unit)
   hairDrag: 1.0,    // how much the hairs trail/bend from the part's motion through the water
+  hairLenJit: 0.35, // per-hair random LENGTH variation (fraction, +/-): each strand a bit longer/shorter
+  hairAngJit: 0.30, // per-hair random ANGLE offset (radians, +/-): each strand splays a bit differently
   hairGrow: 0.38,   // growth fraction at which hairs start appearing (baby-hair gate; ramps to full ~0.4 above it)
   bloom: 0.2,       // full-image bloom strength (0 = off)
   bloomThresh: 0,   // brightness above which pixels bloom
@@ -652,6 +654,14 @@ let hairBuf = new Float32Array(1 << 19), ho = 0;
 function hairVtx(x, y, a){ if (ho+3 > hairBuf.length){ const nb=new Float32Array(hairBuf.length*2); nb.set(hairBuf); hairBuf=nb; } hairBuf[ho++]=x; hairBuf[ho++]=y; hairBuf[ho++]=a; }
 function hairTri(ax,ay,aa, bx,by,ba, cx,cy,ca){ if (CAP) CAP.hairs.push([CAP.part, ax,ay, bx,by, cx,cy]); hairVtx(ax,ay,aa); hairVtx(bx,by,ba); hairVtx(cx,cy,ca); }
 // one strand: root (rx,ry), outward unit normal (nx,ny), screen length/width, total tip deflection `theta`.
+// per-HAIR stable pseudo-random: hash an integer key -> [0,1). Keyed on the hair's arc position/index (NOT time), so
+// each strand's length/angle offset is fixed (organic jitter, not flicker) and identical frame to frame.
+function hair01(k){ let h = k>>>0; h = Math.imul(h ^ (h>>>16), 0x45d9f3b); h = Math.imul(h ^ (h>>>16), 0x45d9f3b); h ^= h>>>16; return (h>>>0)/4294967296; }
+// jitter a hair's outward direction (nx,ny) + length by small per-strand random offsets. Returns [dx,dy,len].
+function hairJit(nx, ny, len, key){
+  const a = (hair01(key ^ 0x9e3779b9)*2 - 1) * P.hairAngJit, c = Math.cos(a), s = Math.sin(a);
+  return [nx*c - ny*s, nx*s + ny*c, len * (1 + (hair01(key)*2 - 1) * P.hairLenJit)];
+}
 // Steps outward while rotating by theta/NSEG each step (curved sway), tapering width + glow to the tip.
 const HAIR_NSEG = 4;
 function emitHair(rx, ry, nx, ny, len, wid, theta, bright){
@@ -680,7 +690,8 @@ function emitCapHairs(A, B, ax, ay, capLenScreen, radWorld, red, grow, fade, vAr
     const dx = hx*s + ax*capLenScreen*co, dy = hy*s + ay*capLenScreen*co;   // outline offset from the cap centre
     const px = cx + dx*IN, py = cy + dy*IN;                                 // root slightly inside -> attaches to the body
     let ol=Math.hypot(dx,dy)||1, ox=dx/ol, oy=dy/ol;                        // radial outward normal
-    emitHair(px, py, ox, oy, lenS, widS, beat - P.hairDrag*(vx*(-oy)+vy*ox), hb);
+    const [jox,joy,jlen] = hairJit(ox, oy, lenS, (Math.floor(vArc*13) + i*131) >>> 0);
+    emitHair(px, py, jox, joy, jlen, widS, beat - P.hairDrag*(vx*(-joy)+vy*jox), hb);
   }
 }
 
@@ -755,10 +766,13 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
       const lenS = P.hairLen * (lerp(pt.wStart, pt.wEnd, u) / 3.0) * red * grow * S;
       const beat = P.hairSway * Math.sin(lerp(v0,v1,u)*P.hairWave - hairTime*P.hairBeat);
       const hbright = grow * fade * hairLOD;   // fade with death AND with the LOD hair-fade (smooth zoom transition)
+      const kb = (Math.floor(lerp(v0,v1,u)*13)*2) >>> 0;   // per-hair key from arc position (L=kb, R=kb|1)
       let lx=L[0]-M[0], ly=L[1]-M[1], ll=Math.hypot(lx,ly)||1; lx/=ll; ly/=ll;
-      emitHair(L[0],L[1], lx, ly, lenS, widS,  beat - P.hairDrag*(vx*(-ly) + vy*lx), hbright);
+      const [jlx,jly,jll] = hairJit(lx, ly, lenS, kb);
+      emitHair(L[0],L[1], jlx, jly, jll, widS,  beat - P.hairDrag*(vx*(-jly) + vy*jlx), hbright);
       let rx=R[0]-M[0], ry=R[1]-M[1], rl=Math.hypot(rx,ry)||1; rx/=rl; ry/=rl;
-      emitHair(R[0],R[1], rx, ry, lenS, widS, -beat - P.hairDrag*(vx*(-ry) + vy*rx), hbright);   // beat mirrored; drag physical
+      const [jrx,jry,jrl] = hairJit(rx, ry, lenS, kb|1);
+      emitHair(R[0],R[1], jrx, jry, jrl, widS, -beat - P.hairDrag*(vx*(-jry) + vy*jrx), hbright);   // beat mirrored; drag physical
     }
     // hairs on the CAPS (heads): radiate from every rounded end -- the tip, and the mouth/branch shoulder. The tip cap
     // hairs must root on the SAME bent + thickness-ramped cap the dome draws (deL/deR/dnx/dny, wEnd*rampEnd), or they float
