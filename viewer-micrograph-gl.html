@@ -847,13 +847,13 @@ function captureCreatureGeom(id, sb){
 const NJ = NUM_GENES - USED;         // 144 junk genes
 const SPECIES_ISO = 0.9;             // = NON_REPRODUCING_JUNK_DNA_LIMIT (engine default); matches the birth gate exactly
 const SPECIES_K = 24;                // hard cap on tracked reps (perf bound on N*K*NJ)
-const SPECIES_RECOMPUTE = 30;        // frames between reclusterings
+const SPECIES_RECOMPUTE = 1;         // recluster EVERY frame (~0.6ms at this pool size) -> smooth counts + fine drift
 const TILE_ZOOM = 14;               // fixed shared zoom for all tiles -> tile fill is comparable across species
 let frameCount = 0, nextSpeciesId = 1;
 let tracked = new Map();           // id -> { ema:Float64Array(NJ), sig, count, rep, idset:Set, seed, misses } — persistent lineages
 let slotIds = [null, null, null];  // the 3 tile slots -> a persistent species id (sticky, with hysteresis)
 let speciesById = new Map(), speciesList = [];   // this recompute's clusters (by id; sorted by count for labels/tests)
-const SIG_EMA = 0.15;              // centroid smoothing per recompute -> the plate CRAWLS (slow drift, stays close)
+const SIG_EMA = 0.08;              // centroid smoothing per recompute (now every frame) -> the plate CRAWLS, stays close
 const SLOT_MARGIN = 1.3;           // a challenger must exceed the smallest slotted species by this factor to take its slot
 const SPECIES_MATCH = 0.94;        // EMA-centroid similarity to treat a cluster as the SAME lineage across reclusters
 function junkOf(sb){ const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k=0;k<NJ;k++) a[k] = g.getGeneValue(USED+k); return a; }
@@ -861,12 +861,15 @@ function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k
 // 5-symbol species SIGNATURE from a junk genome: 5 contiguous block-means, each quantized to base36 over [0,SIG_MAX].
 // Locality-preserving (close junk -> close string, by symbol distance) and zeroed founders -> "00000". Computed on a
 // species' centroid so it's a stable per-species "licence plate".
-const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_MAX = 48;   // ceiling tuned so real junk drift spreads into the LETTERS (00000 stays the founder anchor)
+// GAMMA curve over the FULL [0,255]: anchors zeroed founders at "00000", spreads the (small) real junk drift up into
+// the LETTERS, and NEVER saturates -- so a long-drifted species keeps changing instead of locking on "ZZZZZ" (block
+// means climb to ~50-90 over long runs; a fixed low ceiling clamped them all to Z, losing distinct-but-diverged species).
+const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_GAMMA = 0.4;
 function signatureOf(jg){
   let s = '';
   for (let b = 0; b < 5; b++){ const lo = Math.floor(b*NJ/5), hi = Math.floor((b+1)*NJ/5);
     let sum = 0; for (let k = lo; k < hi; k++) sum += jg[k];
-    s += SIG_ALPHA[Math.min(35, Math.round(Math.min(sum/(hi-lo), SIG_MAX) / SIG_MAX * 35))]; }
+    s += SIG_ALPHA[Math.min(35, Math.round(Math.pow((sum/(hi-lo)) / 255, SIG_GAMMA) * 35))]; }
   return s;
 }
 function computeSpecies(){
