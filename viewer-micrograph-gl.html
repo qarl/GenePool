@@ -899,14 +899,22 @@ let rowMap = new Map();            // id -> the collapsed <div.srow> in #species
 let expanded = new Set();          // ids currently expanded into a live mini-viewer
 let miniCursor = 0; const MINI_BUDGET = 6;   // <=6 live minis rendered per frame; extras refresh round-robin (thumbnails)
 let speciesById = new Map(), speciesList = [];   // this recompute's clusters (by id; sorted by count; present-this-frame)
-let popUsedEMA = null, popSig = '00000';         // EMA'd USED-gene centroid of the WHOLE living population -> the main plate
-let popDivEMA = null;                            // EMA'd USED-gene diversity (mean per-gene std) of the whole population
+let popUsedEMA = null, popSig = '00000';         // EMA'd EXPRESSED-gene centroid of the WHOLE living population -> the main plate
+let popDivEMA = null;                            // EMA'd EXPRESSED-gene diversity (mean per-gene std) of the whole population
 const DIV_MAX = 60;                              // reference mean-per-gene std that reads 100 (founding ~73 pins at 100; punchy)
 const divPct = std => Math.round(Math.min(100, Math.max(0, 100 * std / DIV_MAX)));   // mean per-gene std -> 0..100
 const SIG_EMA = 0.08;              // centroid smoothing per recompute (now every frame) -> the plate CRAWLS, stays close
 const SPECIES_MATCH = 0.94;        // EMA-centroid similarity to treat a cluster as the SAME lineage across reclusters
 function junkOf(sb){ const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k=0;k<NJ;k++) a[k] = g.getGeneValue(USED+k); return a; }
 function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k]); return 1 - (d/256)/NJ; }   // engine metric (/BYTE_SIZE)
+// EXPRESSED = the coding genes ACTUALLY under selection: [0,EXPRESSED). Genes [EXPRESSED,USED) are decoded but NEVER
+// expressed, so they drift like junk and carry NO structure -- we EXCLUDE them from the plate / PCA basis / diversity.
+// (The speciation gate above is faithful and UNCHANGED: it still uses the full junk region [USED,NUM_GENES).) Two causes:
+//   * genes 83..109 = body-part CATEGORY 3, never selected -- JJ's off-by-one: branchCategory = floor(3*gene/256) tops out
+//     at 2 (he bumped NUM_CATEGORIES 3->4 but /256-vs-/255 leaves the 4th category unreachable). engine/embryology.js:100-139.
+//   * genes 110..111 = food-type preferences, only read when numFoodTypes===2; we HARDCODE one food type for now.
+// TODO: when JJ's category-3 bug is fixed and/or two food types return, raise EXPRESSED back toward 112 (re-add 110-111).
+const EXPRESSED = 83;   // = 2 (freq,cutoff) + 3 categories x 27 genes; the live analysis span [0,EXPRESSED)
 // 5-symbol species SIGNATURE from the USED (functional, body/brain) genes [0,USED) -- NOT the junk. Junk is neutral:
 // it random-walks to a uniform ~127 equilibrium, so junk plates converged to "QQQQQ" and jittered (no structure). The
 // used genes are under selection, so they carry real STRUCTURE. And we SAMPLE 5 individual genes (per-gene) rather than
@@ -915,8 +923,8 @@ function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k
 // Z,Y,X,... (wrapping the base36 ring, so '0' is neutral and the two directions read as up/down). Founders (centroid at
 // the midpoint) therefore read "00000" again; SIG_SPREAD = base36 steps across the full [0,255] range (bigger = touchier).
 const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_SPREAD = 36;
-const SIG_SAMPLE = [0,1,2,3,4].map(i => Math.floor(USED * (i + 0.5) / 5));   // 5 used genes spread across [0,USED)
-function signatureOf(vec){   // vec = a used-gene vector (or centroid); 5 sampled genes -> signed base36 around '0'
+const SIG_SAMPLE = [0,1,2,3,4].map(i => Math.floor(EXPRESSED * (i + 0.5) / 5));   // 5 expressed genes spread across [0,EXPRESSED)
+function signatureOf(vec){   // vec = an expressed-gene vector (or centroid); 5 sampled genes -> signed base36 around '0'
   let s = '';
   for (const k of SIG_SAMPLE){
     const idx = Math.round(((vec[k] || 0) / 255 - 0.5) * SIG_SPREAD);   // signed steps from the midpoint
@@ -938,29 +946,29 @@ function computeSpecies(){
     else if (reps.length < SPECIES_K) reps.push({ seed: jg, members: [{ sb, jg }] });
     else { let nb = reps[0], ns = -1; for (const r of reps){ const s = junkSim(jg, r.seed); if (s > ns){ ns = s; nb = r; } } nb.members.push({ sb, jg }); }
   }
-  // 2. per cluster: junk centroid (lineage identity) + USED-gene centroid (the plate) + USED-gene DIVERSITY (mean per-gene
-  //    std, via the Σg²/n - mean² identity, same reads as the plate) + closest-to-mean rep + member set
+  // 2. per cluster: junk centroid (lineage identity) + EXPRESSED-gene centroid (the plate) + EXPRESSED-gene DIVERSITY (mean
+  //    per-gene std, via the Σg²/n - mean² identity, same reads as the plate) + closest-to-mean rep + member set
   for (const r of reps){
-    const mean = new Float64Array(NJ), meanUsed = new Float64Array(USED), sumSqUsed = new Float64Array(USED);
+    const mean = new Float64Array(NJ), meanUsed = new Float64Array(EXPRESSED), sumSqUsed = new Float64Array(EXPRESSED);
     for (const m of r.members){ for (let k=0;k<NJ;k++) mean[k] += m.jg[k];
-      const gt = m.sb.getGenotype(); for (let k=0;k<USED;k++){ const v = gt.getGeneValue(k); meanUsed[k] += v; sumSqUsed[k] += v*v; } }
+      const gt = m.sb.getGenotype(); for (let k=0;k<EXPRESSED;k++){ const v = gt.getGeneValue(k); meanUsed[k] += v; sumSqUsed[k] += v*v; } }
     for (let k=0;k<NJ;k++) mean[k] /= r.members.length;
-    for (let k=0;k<USED;k++) meanUsed[k] /= r.members.length;
-    let ss = 0; for (let k=0;k<USED;k++){ const vr = sumSqUsed[k]/r.members.length - meanUsed[k]*meanUsed[k]; ss += Math.sqrt(vr>0?vr:0); }
-    r.mean = mean; r.meanUsed = meanUsed; r.sumSqUsed = sumSqUsed; r.divRaw = ss/USED;   // mean per-gene std, [0, ~127.5]
+    for (let k=0;k<EXPRESSED;k++) meanUsed[k] /= r.members.length;
+    let ss = 0; for (let k=0;k<EXPRESSED;k++){ const vr = sumSqUsed[k]/r.members.length - meanUsed[k]*meanUsed[k]; ss += Math.sqrt(vr>0?vr:0); }
+    r.mean = mean; r.meanUsed = meanUsed; r.sumSqUsed = sumSqUsed; r.divRaw = ss/EXPRESSED;   // mean per-gene std, [0, ~127.5]
     r.count = r.members.length; r.idset = new Set(r.members.map(m => m.sb));
     let best = null, bs = -1; for (const m of r.members){ const s = junkSim(m.jg, mean); if (s > bs){ bs = s; best = m.sb; } }
     r.newRep = best;
   }
-  // 2b. whole-population USED-gene centroid (-> the MAIN plate) + whole-population diversity (-> the MAIN index), EMA'd for calm
-  let popTot = 0; const popSum = new Float64Array(USED), popSumSq = new Float64Array(USED);
-  for (const r of reps){ popTot += r.count; for (let k=0;k<USED;k++){ popSum[k] += r.meanUsed[k] * r.count; popSumSq[k] += r.sumSqUsed[k]; } }
+  // 2b. whole-population EXPRESSED-gene centroid (-> the MAIN plate) + whole-population diversity (-> the MAIN index), EMA'd
+  let popTot = 0; const popSum = new Float64Array(EXPRESSED), popSumSq = new Float64Array(EXPRESSED);
+  for (const r of reps){ popTot += r.count; for (let k=0;k<EXPRESSED;k++){ popSum[k] += r.meanUsed[k] * r.count; popSumSq[k] += r.sumSqUsed[k]; } }
   if (popTot > 0){
-    if (!popUsedEMA){ popUsedEMA = new Float64Array(USED); for (let k=0;k<USED;k++) popUsedEMA[k] = popSum[k]/popTot; }
-    else for (let k=0;k<USED;k++) popUsedEMA[k] += SIG_EMA * (popSum[k]/popTot - popUsedEMA[k]);
+    if (!popUsedEMA){ popUsedEMA = new Float64Array(EXPRESSED); for (let k=0;k<EXPRESSED;k++) popUsedEMA[k] = popSum[k]/popTot; }
+    else for (let k=0;k<EXPRESSED;k++) popUsedEMA[k] += SIG_EMA * (popSum[k]/popTot - popUsedEMA[k]);
     popSig = signatureOf(popUsedEMA);
-    let ss = 0; for (let k=0;k<USED;k++){ const m = popSum[k]/popTot, vr = popSumSq[k]/popTot - m*m; ss += Math.sqrt(vr>0?vr:0); }
-    const popDivRaw = ss/USED;
+    let ss = 0; for (let k=0;k<EXPRESSED;k++){ const m = popSum[k]/popTot, vr = popSumSq[k]/popTot - m*m; ss += Math.sqrt(vr>0?vr:0); }
+    const popDivRaw = ss/EXPRESSED;
     popDivEMA = popDivEMA==null ? popDivRaw : popDivEMA + SIG_EMA * (popDivRaw - popDivEMA);
   }
   reps.sort((a, b) => b.count - a.count);
@@ -981,7 +989,7 @@ function computeSpecies(){
     let t = tracked.get(r.id);
     if (!t){ t = { ema: Float64Array.from(r.mean), emaUsed: Float64Array.from(r.meanUsed), divEMA: r.divRaw }; tracked.set(r.id, t); }
     else { for (let k=0;k<NJ;k++) t.ema[k] += SIG_EMA * (r.mean[k] - t.ema[k]);            // junk centroid (lineage identity)
-           for (let k=0;k<USED;k++) t.emaUsed[k] += SIG_EMA * (r.meanUsed[k] - t.emaUsed[k]);   // used centroid (the plate)
+           for (let k=0;k<EXPRESSED;k++) t.emaUsed[k] += SIG_EMA * (r.meanUsed[k] - t.emaUsed[k]);   // expressed centroid (the plate)
            t.divEMA += SIG_EMA * (r.divRaw - t.divEMA); }                                  // used-gene diversity (the index)
     t.misses = 0; t.seed = r.seed; t.idset = r.idset; t.count = r.count;
     if (!(t.rep && t.rep.getAlive() && r.idset.has(t.rep))) t.rep = r.newRep;
