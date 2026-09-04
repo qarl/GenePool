@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <title>GenePool — micrograph (GL)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; background: #0b0e13; color: #cfd6e0; font: 13px/1.5 system-ui, sans-serif; }
@@ -23,11 +26,11 @@
   canvas { border-radius: 12px; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: grab; touch-action: none; }
   canvas.drag { cursor: grabbing; }
   /* species-tile count labels: HTML overlay over the right column (NOT drawn into the canvas, so goldens stay text-free) */
-  .tileLabel { position: absolute; right: 12px; text-align: right; pointer-events: none; line-height: 1.15;
-    color: #eaf0f8; font-family: system-ui, sans-serif; text-shadow: 0 1px 4px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.85); }
-  .tileLabel .n { display: block; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .tileLabel .rank { font-size: 11px; font-weight: 600; color: #9fb0c6; letter-spacing: .04em; }
-  .tileLabel .sig { font: 700 13px/1.2 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 3px; color: #cdd9e8; }
+  /* science-lab label: black, no shadow, technical monospace (IBM Plex Mono) -> reads like specimen data */
+  .tileLabel { position: absolute; right: 12px; text-align: right; pointer-events: none; line-height: 1.25;
+    color: #000; font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+  .tileLabel .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tileLabel .sig { font-size: 12px; font-weight: 500; letter-spacing: 2px; }
   #lab0 { top: 12px; } #lab1 { top: calc(33.333% + 12px); } #lab2 { top: calc(66.666% + 12px); }
 </style>
 </head>
