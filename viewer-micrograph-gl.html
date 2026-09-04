@@ -30,9 +30,9 @@
   .tileLabel .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tileLabel .sig { font-size: 12px; font-weight: 500; letter-spacing: 2px; }
   /* license plate as a colour barcode: one cell per character, hue = that character's value (0-9A-Z -> around the wheel) */
-  .tileLabel .plate { display: inline-flex; gap: 2px; margin-top: 3px; }
-  .tileLabel .cell { display: inline-block; width: 17px; height: 20px; line-height: 20px; text-align: center;
-    font-size: 13px; font-weight: 600; color: #000; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
+  .tileLabel .plate { display: inline-flex; gap: 0; margin-top: 3px; }
+  .tileLabel .cell { display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+    width: 18px; height: 20px; padding-bottom: 3px; font-size: 13px; font-weight: 600; color: #000; }
   #lab0 { top: 12px; } #lab1 { top: calc(33.333% + 12px); } #lab2 { top: calc(66.666% + 12px); }
   #labMain { top: 12px; right: calc(25% + 12px); }   /* total population, top-RIGHT of the main view (25% = tile column) */
 </style>
@@ -958,11 +958,12 @@ function computeSpecies(){
 // count + signature labels (HTML overlay; "counts first"). Follows the sticky slots.
 const tileLabels = ['lab0','lab1','lab2'].map(id => document.getElementById(id));
 const labMain = document.getElementById('labMain');
-// render the 5-char signature as a colour barcode: each char on a hue-coded block (hue = char value, 0-9A-Z -> wheel)
+// render the 5-char signature as a colour barcode: each char on a hue-coded cell. Hue is placed in OKLCh (a
+// perceptually-uniform space) at fixed L/C, so equal character-value steps look equally different (unlike HSL hue).
 function plateHTML(sig){
   let cells = '';
-  for (const ch of sig){ const hue = Math.round(SIG_ALPHA.indexOf(ch) / SIG_ALPHA.length * 360);
-    cells += `<span class="cell" style="background:hsl(${hue},68%,62%)">${ch}</span>`; }
+  for (const ch of sig){ const hue = (SIG_ALPHA.indexOf(ch) / SIG_ALPHA.length * 360).toFixed(1);
+    cells += `<span class="cell" style="background:oklch(0.74 0.15 ${hue})">${ch}</span>`; }
   return `<span class="plate">${cells}</span>`;
 }
 function updateTileLabels(){
