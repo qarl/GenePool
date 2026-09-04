@@ -36,7 +36,14 @@ for (const scene of scenes){
   writeFileSync(join(GOLD, `${scene.name}.png`), encode(r.rgba, r.w, r.h, { flip: true }));
   meta.scenes[scene.name] = { w: r.w, h: r.h, sha256: sha, thickFmt: r.meta.thickFmt, fading: r.meta.fading,
     browserBuild: r.meta.browserBuild, chrome: r.meta.chrome };
-  console.log(`recorded ${scene.name.padEnd(9)} ${r.w}x${r.h}  sha=${sha.slice(0,16)}  fading=${r.meta.fading}  thickFmt=${r.meta.thickFmt}`);
+  let miniNote = '';
+  if (r.mini){                                                       // small-view (mini-viewer) golden
+    const msha = createHash('sha256').update(r.mini.rgba).digest('hex');
+    writeFileSync(join(GOLD, `${scene.name}.mini.png`), encode(r.mini.rgba, r.mini.w, r.mini.h, { flip: true }));
+    meta.scenes[scene.name].mini = { w: r.mini.w, h: r.mini.h, sha256: msha };
+    miniNote = `  +mini ${r.mini.w}x${r.mini.h} sha=${msha.slice(0,16)}`;
+  }
+  console.log(`recorded ${scene.name.padEnd(9)} ${r.w}x${r.h}  sha=${sha.slice(0,16)}  fading=${r.meta.fading}  thickFmt=${r.meta.thickFmt}${miniNote}`);
 }
 writeFileSync(METAF, JSON.stringify(meta, null, 2) + '\n');
 console.log(`wrote ${scenes.length} golden(s) + METADATA.json (${process.platform}/${process.arch}, chrome ${meta.scenes[scenes[0].name].chrome}, node ${process.version})`);

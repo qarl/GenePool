@@ -20,21 +20,36 @@
   .params { color: #8fa0b5; }
   #err { color: #ff8f8f; }
   #wrap { display: flex; justify-content: center; padding: 14px; }
-  #stage { position: relative; line-height: 0; }
-  canvas { border-radius: 12px; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: grab; touch-action: none; }
-  canvas.drag { cursor: grabbing; }
+  #stage { position: relative; display: flex; gap: 5px; line-height: 0; }   /* main canvas | species panel */
+  #canvasBox { position: relative; line-height: 0; }                        /* holds #cv + the absolute #labMain */
+  #cv { border-radius: 12px; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: grab; touch-action: none; }
+  #cv.drag { cursor: grabbing; }
+  #species { width: 256px; height: 768px; overflow-y: auto; scrollbar-gutter: stable; line-height: normal;
+    background: #0b0e13; border-radius: 12px; padding: 4px 0; box-sizing: border-box; }   /* scrollable list of ALL species */
+  #species .srow { position: relative; padding: 3px 10px; cursor: pointer; }
+  #species .srow:hover { background: rgba(255,255,255,.06); }
+  #species .srow .info { color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }
+  #species .srow .info .plate { margin-top: 0; }
+  /* expanded: mini fills the row; info becomes an upper-LEFT overlay so its plate lines up with the collapsed plates */
+  #species .srow.exp .info { position: absolute; top: 3px; left: 10px; z-index: 1; }
+  #species .srow .miniwrap { width: 100%; aspect-ratio: 1 / 1; }
+  #species .srow canvas.mini { display: block; width: 100%; height: 100%; border-radius: 12px; }
   /* species-tile count labels: HTML overlay over the right column (NOT drawn into the canvas, so goldens stay text-free) */
   /* science-lab label: black, no shadow, technical monospace (IBM Plex Mono) -> reads like specimen data */
-  .tileLabel { position: absolute; right: 12px; text-align: right; pointer-events: none; line-height: 1.25;
+  .tileLabel { position: absolute; left: 12px; text-align: left; pointer-events: none; line-height: 1.25;
     color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; }
-  .tileLabel .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* .n / .d NOT scoped to .tileLabel -- reused in the #species .info blocks too */
+  .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .d { display: block; font-size: 13px; font-weight: 500; opacity: 0.7; font-variant-numeric: tabular-nums; }   /* diversity index 0-100 */
   .tileLabel .sig { font-size: 12px; font-weight: 500; letter-spacing: 2px; }
-  /* license plate as a colour barcode: one cell per character, hue = that character's value (0-9A-Z -> around the wheel) */
-  .tileLabel .plate { display: inline-flex; gap: 0; margin-top: 3px; }
-  .tileLabel .cell { display: flex; align-items: center; justify-content: center; box-sizing: border-box;
-    width: 18px; height: 20px; padding-bottom: 3px; font-size: 13px; font-weight: 600; color: #000; }
-  #lab0 { top: 12px; } #lab1 { top: calc(33.333% + 12px); } #lab2 { top: calc(66.666% + 12px); }
-  #labMain { top: 12px; right: calc(25% + 12px); }   /* total population, top-RIGHT of the main view (25% = tile column) */
+  /* license plate as a colour barcode: one cell per character, hue = that character's value (0-9A-Z -> around the wheel).
+     NOT scoped to .tileLabel -- the plate is reused bare in the flowed .srow list rows too. */
+  .plate { display: inline-flex; gap: 0; margin-top: 3px; }
+  .cell { display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+    width: 18px; height: 20px; font-size: 13px; font-weight: 600; color: #000; overflow: hidden; }
+  .cell .g { display: block; width: 18px; height: 20px;   /* glyph is a pre-centred bitmap (see measurePlateGlyphs) */
+    background-repeat: no-repeat; background-position: center; background-size: 18px 20px; }
+  #labMain { top: 12px; left: 12px; }   /* total population, top-LEFT of the main view (anchored to #canvasBox) */
 </style>
 </head>
 <body>
@@ -48,9 +63,11 @@
   </div>
   <div class="row"><span id="err"></span> <span style="color:#5c6b80">scroll = zoom · drag = pan</span></div>
 </header>
-<div id="wrap"><div id="stage"><canvas id="cv" width="1024" height="768"></canvas>
-  <div class="tileLabel" id="labMain"></div>
-  <div class="tileLabel" id="lab0"></div><div class="tileLabel" id="lab1"></div><div class="tileLabel" id="lab2"></div>
+<div id="wrap"><div id="stage">
+  <div id="canvasBox"><canvas id="cv" width="768" height="768"></canvas>
+    <div class="tileLabel" id="labMain"></div>
+  </div>
+  <div id="species"></div>
 </div></div>
 
 <script type="module">
@@ -90,7 +107,7 @@ const P = {
   grain: 0.25,      // grain: fine density speckle strength (driven by the blue component)
   grainScale: 2.0,  // grain fineness (bigger = finer)
   junk: 1.0,        // floating detritus amount (0..1 of the seeded pool)
-  junkOpacity: 0.3, // detritus density/darkness
+  junkOpacity: 0.225, // detritus density/darkness (-25% visibility)
   junkSoft: 3.0,    // detritus edge softness (0.5 = sharp, higher = soft/out-of-focus)
   hair: 0.15,       // hairs: glow brightness (0 = off)
   hairLen: 4,       // hair length (world units)
@@ -412,9 +429,10 @@ function seedJunk(rng){
   junk = [];
   for (let i=0;i<MAX_JUNK;i++){
     const blob = rng() < 0.3;
+    const sz = Math.pow(2, rng()*2 - 1);             // per-particle size: log-uniform in [0.5x, 2x] (symmetric, mean 1)
     junk.push({
       x: rng()*P.pool, y: rng()*P.pool, vx: (rng()-0.5)*0.083, vy: (rng()-0.5)*0.083,   // per-TICK velocity (x elapsed ticks)
-      r: blob ? 9 + rng()*18 : 2.5 + rng()*5,          // world visual radius (bigger)
+      r: (blob ? 9 + rng()*18 : 2.5 + rng()*5) * sz,   // world visual radius (bigger); x per-particle size spread
       th: blob ? 0.3 + rng()*0.4 : 0.6 + rng()*1.0,    // world thickness (less opaque)
       tint: blob ? [0.62,0.55,0.48] : [0.35+rng()*0.15, 0.30+rng()*0.12, 0.25+rng()*0.10],
       slab: Math.min(K_SLABS-1, (rng()*K_SLABS)|0),    // depth -> interleaves with the swimmers
@@ -547,7 +565,9 @@ function build(){
   }
   for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
   known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;   // no stale death-fade ghosts / junk drift across a rebuild
-  frameCount = 0; nextSpeciesId = 1; tracked = new Map(); slotIds = [null,null,null]; speciesById = new Map(); speciesList = [];   // reset species tiles -> deterministic from a fresh build
+  frameCount = 0; nextSpeciesId = 1; tracked = new Map(); speciesById = new Map(); speciesList = [];   // reset species state -> deterministic from a fresh build
+  rowMap = new Map(); expanded = new Set(); if (speciesPanel) speciesPanel.replaceChildren();   // ids reuse from 1 across builds -> drop stale rows/expansion + the DOM (else orphans accumulate)
+  popUsedEMA = null; popSig = '00000'; popDivEMA = null;
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
@@ -870,15 +890,20 @@ function captureCreatureGeom(id, sb){
 // (hysteresis) hold species so tiles don't reshuffle. Recomputed every SPECIES_RECOMPUTE frames (deterministic).
 const NJ = NUM_GENES - USED;         // 144 junk genes
 const SPECIES_ISO = 0.9;             // = NON_REPRODUCING_JUNK_DNA_LIMIT (engine default); matches the birth gate exactly
-const SPECIES_K = 24;                // hard cap on tracked reps (perf bound on N*K*NJ)
+const SPECIES_K = 50;                // hard cap on tracked reps / list length (perf bound on N*K*NJ, per-frame clustering)
 const SPECIES_RECOMPUTE = 1;         // recluster EVERY frame (~0.6ms at this pool size) -> smooth counts + fine drift
-const TILE_ZOOM = 14;               // fixed shared zoom for all tiles -> tile fill is comparable across species
+const TILE_ZOOM = 14;               // fixed shared zoom for a species mini-viewer -> fill is comparable across species
 let frameCount = 0, nextSpeciesId = 1;
-let tracked = new Map();           // id -> { ema:Float64Array(NJ), sig, count, rep, idset:Set, seed, misses } — persistent lineages
-let slotIds = [null, null, null];  // the 3 tile slots -> a persistent species id (sticky, with hysteresis)
-let speciesById = new Map(), speciesList = [];   // this recompute's clusters (by id; sorted by count for labels/tests)
+let tracked = new Map();           // id -> { ema:Float64Array(NJ), sig, count, rep, idset:Set, seed, misses, divEMA } — persistent lineages
+let rowMap = new Map();            // id -> the collapsed <div.srow> in #species (persists across misses; dropped on retirement)
+let expanded = new Set();          // ids currently expanded into a live mini-viewer
+let miniCursor = 0; const MINI_BUDGET = 6;   // <=6 live minis rendered per frame; extras refresh round-robin (thumbnails)
+let speciesById = new Map(), speciesList = [];   // this recompute's clusters (by id; sorted by count; present-this-frame)
+let popUsedEMA = null, popSig = '00000';         // EMA'd USED-gene centroid of the WHOLE living population -> the main plate
+let popDivEMA = null;                            // EMA'd USED-gene diversity (mean per-gene std) of the whole population
+const DIV_MAX = 60;                              // reference mean-per-gene std that reads 100 (founding ~73 pins at 100; punchy)
+const divPct = std => Math.round(Math.min(100, Math.max(0, 100 * std / DIV_MAX)));   // mean per-gene std -> 0..100
 const SIG_EMA = 0.08;              // centroid smoothing per recompute (now every frame) -> the plate CRAWLS, stays close
-const SLOT_MARGIN = 1.3;           // a challenger must exceed the smallest slotted species by this factor to take its slot
 const SPECIES_MATCH = 0.94;        // EMA-centroid similarity to treat a cluster as the SAME lineage across reclusters
 function junkOf(sb){ const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k=0;k<NJ;k++) a[k] = g.getGeneValue(USED+k); return a; }
 function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k]); return 1 - (d/256)/NJ; }   // engine metric (/BYTE_SIZE)
@@ -886,13 +911,17 @@ function junkSim(a, b){ let d = 0; for (let k=0;k<NJ;k++) d += Math.abs(a[k]-b[k
 // it random-walks to a uniform ~127 equilibrium, so junk plates converged to "QQQQQ" and jittered (no structure). The
 // used genes are under selection, so they carry real STRUCTURE. And we SAMPLE 5 individual genes (per-gene) rather than
 // block-MEANS: a mean over ~a block averages back to the population mean (washes structure out), whereas 5 sampled genes
-// keep it. base36 via a gamma curve over [0,255]; locality-preserving (close genome -> close plate by symbol distance).
-// (Trade-off Karl accepted: founders start with RANDOM used genes, so there is no "00000" origin anymore.)
-const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_GAMMA = 0.4;
+// keep it. SIGNED scale centered on the midpoint: value 127.5 -> '0'; INCREASING climbs 1,2,3,...; DECREASING descends
+// Z,Y,X,... (wrapping the base36 ring, so '0' is neutral and the two directions read as up/down). Founders (centroid at
+// the midpoint) therefore read "00000" again; SIG_SPREAD = base36 steps across the full [0,255] range (bigger = touchier).
+const SIG_ALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', SIG_SPREAD = 36;
 const SIG_SAMPLE = [0,1,2,3,4].map(i => Math.floor(USED * (i + 0.5) / 5));   // 5 used genes spread across [0,USED)
-function signatureOf(vec){   // vec = a used-gene vector (or centroid); 5 sampled genes -> base36
+function signatureOf(vec){   // vec = a used-gene vector (or centroid); 5 sampled genes -> signed base36 around '0'
   let s = '';
-  for (const k of SIG_SAMPLE) s += SIG_ALPHA[Math.min(35, Math.round(Math.pow((vec[k] || 0) / 255, SIG_GAMMA) * 35))];
+  for (const k of SIG_SAMPLE){
+    const idx = Math.round(((vec[k] || 0) / 255 - 0.5) * SIG_SPREAD);   // signed steps from the midpoint
+    s += SIG_ALPHA[((idx % 36) + 36) % 36];                             // wrap into the base36 ring ('0' = neutral)
+  }
   return s;
 }
 function computeSpecies(){
@@ -909,16 +938,30 @@ function computeSpecies(){
     else if (reps.length < SPECIES_K) reps.push({ seed: jg, members: [{ sb, jg }] });
     else { let nb = reps[0], ns = -1; for (const r of reps){ const s = junkSim(jg, r.seed); if (s > ns){ ns = s; nb = r; } } nb.members.push({ sb, jg }); }
   }
-  // 2. per cluster: junk centroid (lineage identity) + USED-gene centroid (the plate) + closest-to-mean rep + member set
+  // 2. per cluster: junk centroid (lineage identity) + USED-gene centroid (the plate) + USED-gene DIVERSITY (mean per-gene
+  //    std, via the Σg²/n - mean² identity, same reads as the plate) + closest-to-mean rep + member set
   for (const r of reps){
-    const mean = new Float64Array(NJ), meanUsed = new Float64Array(USED);
+    const mean = new Float64Array(NJ), meanUsed = new Float64Array(USED), sumSqUsed = new Float64Array(USED);
     for (const m of r.members){ for (let k=0;k<NJ;k++) mean[k] += m.jg[k];
-      const gt = m.sb.getGenotype(); for (let k=0;k<USED;k++) meanUsed[k] += gt.getGeneValue(k); }   // per-gene (no per-member alloc)
+      const gt = m.sb.getGenotype(); for (let k=0;k<USED;k++){ const v = gt.getGeneValue(k); meanUsed[k] += v; sumSqUsed[k] += v*v; } }
     for (let k=0;k<NJ;k++) mean[k] /= r.members.length;
     for (let k=0;k<USED;k++) meanUsed[k] /= r.members.length;
-    r.mean = mean; r.meanUsed = meanUsed; r.count = r.members.length; r.idset = new Set(r.members.map(m => m.sb));
+    let ss = 0; for (let k=0;k<USED;k++){ const vr = sumSqUsed[k]/r.members.length - meanUsed[k]*meanUsed[k]; ss += Math.sqrt(vr>0?vr:0); }
+    r.mean = mean; r.meanUsed = meanUsed; r.sumSqUsed = sumSqUsed; r.divRaw = ss/USED;   // mean per-gene std, [0, ~127.5]
+    r.count = r.members.length; r.idset = new Set(r.members.map(m => m.sb));
     let best = null, bs = -1; for (const m of r.members){ const s = junkSim(m.jg, mean); if (s > bs){ bs = s; best = m.sb; } }
     r.newRep = best;
+  }
+  // 2b. whole-population USED-gene centroid (-> the MAIN plate) + whole-population diversity (-> the MAIN index), EMA'd for calm
+  let popTot = 0; const popSum = new Float64Array(USED), popSumSq = new Float64Array(USED);
+  for (const r of reps){ popTot += r.count; for (let k=0;k<USED;k++){ popSum[k] += r.meanUsed[k] * r.count; popSumSq[k] += r.sumSqUsed[k]; } }
+  if (popTot > 0){
+    if (!popUsedEMA){ popUsedEMA = new Float64Array(USED); for (let k=0;k<USED;k++) popUsedEMA[k] = popSum[k]/popTot; }
+    else for (let k=0;k<USED;k++) popUsedEMA[k] += SIG_EMA * (popSum[k]/popTot - popUsedEMA[k]);
+    popSig = signatureOf(popUsedEMA);
+    let ss = 0; for (let k=0;k<USED;k++){ const m = popSum[k]/popTot, vr = popSumSq[k]/popTot - m*m; ss += Math.sqrt(vr>0?vr:0); }
+    const popDivRaw = ss/USED;
+    popDivEMA = popDivEMA==null ? popDivRaw : popDivEMA + SIG_EMA * (popDivRaw - popDivEMA);
   }
   reps.sort((a, b) => b.count - a.count);
   // 3. match each cluster to a persistent lineage by EMA-CENTROID SIMILARITY, greedy largest-first. The centroid is
@@ -936,43 +979,117 @@ function computeSpecies(){
   for (const r of reps){
     seen.add(r.id);
     let t = tracked.get(r.id);
-    if (!t){ t = { ema: Float64Array.from(r.mean), emaUsed: Float64Array.from(r.meanUsed) }; tracked.set(r.id, t); }
+    if (!t){ t = { ema: Float64Array.from(r.mean), emaUsed: Float64Array.from(r.meanUsed), divEMA: r.divRaw }; tracked.set(r.id, t); }
     else { for (let k=0;k<NJ;k++) t.ema[k] += SIG_EMA * (r.mean[k] - t.ema[k]);            // junk centroid (lineage identity)
-           for (let k=0;k<USED;k++) t.emaUsed[k] += SIG_EMA * (r.meanUsed[k] - t.emaUsed[k]); }   // used centroid (the plate)
+           for (let k=0;k<USED;k++) t.emaUsed[k] += SIG_EMA * (r.meanUsed[k] - t.emaUsed[k]);   // used centroid (the plate)
+           t.divEMA += SIG_EMA * (r.divRaw - t.divEMA); }                                  // used-gene diversity (the index)
     t.misses = 0; t.seed = r.seed; t.idset = r.idset; t.count = r.count;
     if (!(t.rep && t.rep.getAlive() && r.idset.has(t.rep))) t.rep = r.newRep;
     t.sig = signatureOf(t.emaUsed); r.t = t;
   }
   for (const [tid, t] of tracked) if (!seen.has(tid) && ++t.misses > 4) tracked.delete(tid);   // retire long-absent lineages
-  // 5. STICKY tile slots: a species holds its slot; free slots fill by size; one hysteresis swap/recompute (challenger
-  //    must beat the smallest slotted species by SLOT_MARGIN) -> tiles stop reshuffling on every count wobble.
-  for (let s=0;s<3;s++) if (slotIds[s] != null && !seen.has(slotIds[s])) slotIds[s] = null;
-  const slotted = new Set(slotIds.filter(x => x != null));
-  for (let s=0;s<3;s++) if (slotIds[s] == null){ const cand = reps.find(r => !slotted.has(r.id)); if (cand){ slotIds[s] = cand.id; slotted.add(cand.id); } }
-  const cntOf = id => { const r = reps.find(x => x.id === id); return r ? r.count : 0; };
-  let smin = -1, sminC = Infinity; for (let s=0;s<3;s++){ if (slotIds[s] == null) continue; const c = cntOf(slotIds[s]); if (c < sminC){ sminC = c; smin = s; } }
-  const chall = reps.find(r => !slotted.has(r.id));
-  if (smin >= 0 && chall && chall.count > sminC * SLOT_MARGIN){ slotIds[smin] = chall.id; }
-  speciesById = new Map(reps.map(r => [r.id, r])); speciesList = reps;
+  speciesById = new Map(reps.map(r => [r.id, r])); speciesList = reps;   // present-this-frame clusters (the DOM list reads `tracked`)
 }
-// count + signature labels (HTML overlay; "counts first"). Follows the sticky slots.
-const tileLabels = ['lab0','lab1','lab2'].map(id => document.getElementById(id));
+// whole-population label (HTML overlay, top-right of the main view). Per-species right column = DOM #species list (P1).
 const labMain = document.getElementById('labMain');
+const speciesPanel = document.getElementById('species');
+// Ink-centering: a glyph's INK is not centred in its metric box (OCR-A sits low and off-centre), and CSS centres the
+// box, not the ink -- and the measureText metrics that would let us correct it are unreliable across engines. So at
+// launch we RASTERISE each glyph with the ACTUAL loaded font, pixel-scan its true ink bbox, and re-draw it dead-centre
+// on a cell-sized bitmap. The bitmap becomes the cell's glyph (a CSS background-image), so it's centred by construction
+// -- font-agnostic, no baseline math, no magic constants. Bitmaps are cached in a <style> so per-frame plateHTML stays
+// a tiny string (no base64 churn).
+const CELL_W = 18, CELL_H = 20, GLYPH_SS = 4;         // CELL_* must match .cell width/height; SS = supersample for crispness
+const CELL_FONT_PX = 13, CELL_FONT_STACK = '"OCR A", ui-monospace, "SF Mono", Menlo, monospace';
+let SIG_GLYPHS_READY = false;                         // false until the bitmap stylesheet is installed
+function measurePlateGlyphs(){
+  const W = CELL_W * GLYPH_SS, H = CELL_H * GLYPH_SS;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const cx = cv.getContext('2d');
+  cx.font = `600 ${CELL_FONT_PX * GLYPH_SS}px ${CELL_FONT_STACK}`;
+  cx.textAlign = 'left'; cx.textBaseline = 'alphabetic'; cx.fillStyle = '#000';
+  let css = '';
+  for (const ch of SIG_ALPHA){
+    cx.clearRect(0, 0, W, H);
+    cx.fillText(ch, W * 0.25, H * 0.7);                            // draw somewhere on-canvas; exact spot doesn't matter
+    const d = cx.getImageData(0, 0, W, H).data;                    // pixel-scan the true ink bbox (alpha > 0)
+    let minx = W, maxx = -1, miny = H, maxy = -1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++){
+      if (d[(y*W + x)*4 + 3] > 12){ if (x<minx)minx=x; if (x>maxx)maxx=x; if (y<miny)miny=y; if (y>maxy)maxy=y; } }
+    if (maxx >= 0){
+      const sx = W/2 - (minx+maxx)/2, sy = H/2 - (miny+maxy)/2;   // shift ink centre to canvas centre (sub-pixel)
+      cx.clearRect(0, 0, W, H); cx.fillText(ch, W*0.25 + sx, H*0.7 + sy);
+    }
+    css += `.cell .g[data-c="${ch}"]{background-image:url(${cv.toDataURL()})}\n`;   // NOT .tileLabel-scoped (reused in .srow)
+  }
+  const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s);
+  SIG_GLYPHS_READY = true;
+}
+// rasterise once the real font is loaded (else it bakes the fallback font); plates recompute every frame, so the next
+// frame picks up the bitmaps. Fall back to plain text if font loading is unavailable.
+if (document.fonts && document.fonts.load) document.fonts.load(`600 ${CELL_FONT_PX}px "OCR A"`).then(measurePlateGlyphs, measurePlateGlyphs);
+else measurePlateGlyphs();
 // render the 5-char signature as a colour barcode: each char on a hue-coded cell. Hue is placed in OKLCh (a
 // perceptually-uniform space) at fixed L/C, so equal character-value steps look equally different (unlike HSL hue).
 function plateHTML(sig){
   let cells = '';
-  for (const ch of sig){ const hue = (SIG_ALPHA.indexOf(ch) / SIG_ALPHA.length * 360).toFixed(1);
-    cells += `<span class="cell" style="background:oklch(0.74 0.15 ${hue})">${ch}</span>`; }
+  for (const ch of sig){
+    const hue = (SIG_ALPHA.indexOf(ch) / SIG_ALPHA.length * 360).toFixed(1);
+    const g = SIG_GLYPHS_READY ? `<span class="g" data-c="${ch}"></span>` : ch;   // centred bitmap once ready, else text
+    cells += `<span class="cell" style="background:oklch(0.74 0.15 ${hue})">${g}</span>`;
+  }
   return `<span class="plate">${cells}</span>`;
 }
-function updateTileLabels(){
-  if (labMain && world) labMain.innerHTML = `<span class="n">${world.getLivingSwimbotCount()}</span>`;
-  for (let s = 0; s < 3; s++){
-    const el = tileLabels[s]; if (!el) continue;
-    const id = slotIds[s], r = id != null ? speciesById.get(id) : null;
-    if (r && r.t){ el.innerHTML = `<span class="n">${r.count}</span>${plateHTML(r.t.sig)}`; el.hidden = false; }
-    else el.hidden = true;
+const divHTML = std => std==null ? '' : `<span class="d">${divPct(std)}</span>`;   // 0..100 diversity index (used-gene spread)
+// offscreen-gating: a scrolled-out mini must NOT render+blit for pixels nobody sees. IO flips el._miniVisible.
+const miniObserver = speciesPanel ? new IntersectionObserver(
+  es => { for (const e of es) e.target._srow._miniVisible = e.isIntersecting; }, { root: speciesPanel }) : null;
+function makeRow(id){
+  const el = document.createElement('div'); el.className = 'srow'; el.dataset.id = id; el.dataset.key = '';
+  const info = document.createElement('div'); info.className = 'info';   // plate (+count+div when expanded); upper-LEFT
+  const wrap = document.createElement('div'); wrap.className = 'miniwrap'; wrap.hidden = true; wrap._srow = el;
+  const mini = document.createElement('canvas'); mini.className = 'mini'; mini.width = VIEW_SMALL; mini.height = VIEW_SMALL;
+  wrap.appendChild(mini); el.appendChild(info); el.appendChild(wrap);
+  el._info = info; el._wrap = wrap; el._mini = mini; el._miniCtx = mini.getContext('2d'); el._miniVisible = true;
+  if (miniObserver) miniObserver.observe(wrap);
+  return el;
+}
+// click a row to toggle its live mini-viewer. Capture the id on POINTERDOWN so the per-frame wobble can't move the row
+// out from under the cursor between press and release (would toggle the wrong species). Multi-expand: independent toggles.
+let pendingClickId = null;
+if (speciesPanel){
+  speciesPanel.addEventListener('pointerdown', e => { const row = e.target.closest('.srow'); pendingClickId = row ? +row.dataset.id : null; });
+  speciesPanel.addEventListener('click', () => { const id = pendingClickId; pendingClickId = null;
+    if (id == null) return; const el = rowMap.get(id);   // reflect BOTH directions immediately (responsive; also lets a stopped-loop test observe it)
+    if (expanded.has(id)){ expanded.delete(id); if (el){ el.classList.remove('exp'); el._wrap.hidden = true; } }
+    else { expanded.add(id); if (el){ el.classList.add('exp'); el._wrap.hidden = false; el._miniVisible = true; } } });
+}
+function updateSpeciesUI(){
+  // whole-population plate + count + diversity, top-right of the main view.
+  if (labMain && world) labMain.innerHTML = `${plateHTML(popSig)}<span class="n">${world.getLivingSwimbotCount()}</span>${divHTML(popDivEMA)}`;
+  if (!speciesPanel) return;
+  // The list is driven by the PERSISTENT lineages (`tracked`), NOT the per-frame `speciesList`: a lineage survives up to
+  // 4 missed reclusters (tracked.delete at misses>4), so a 1-frame absence must NOT drop its row / collapse its viewer.
+  const live = [...tracked.entries()];                 // [id, t]; t.count/t.sig hold last-known values during a miss
+  live.sort((a, b) => b[1].count - a[1].count);        // wobbly: strict re-sort by population every frame
+  const want = new Set();
+  for (const [id] of live) want.add(id);
+  for (const [id, el] of rowMap) if (!want.has(id)){ if (el._wrap) miniObserver.unobserve(el._wrap); el.remove(); rowMap.delete(id); expanded.delete(id); }   // retired lineages
+  for (const [id, t] of live){                          // create rows / refresh plate only when the signature changed
+    let el = rowMap.get(id);
+    if (!el){ el = makeRow(id); rowMap.set(id, el); }
+    const exp = expanded.has(id);
+    el.classList.toggle('exp', exp);                     // collapsed = plate only; expanded = mini + full info overlay
+    el._wrap.hidden = !exp;
+    const key = t.sig + (exp ? '|' + t.count + '|' + divPct(t.divEMA) : '');   // rebuild info only when something shown changes
+    if (el.dataset.key !== key){
+      el._info.innerHTML = plateHTML(t.sig) + (exp ? `<span class="n">${t.count}</span>${divHTML(t.divEMA)}` : '');
+      el.dataset.key = key;
+    }
+  }
+  for (let i = 0; i < live.length; i++){                // minimal-move reorder to the sorted order (no-op when unchanged)
+    const el = rowMap.get(live[i][0]);
+    if (speciesPanel.children[i] !== el) speciesPanel.insertBefore(el, speciesPanel.children[i] || null);
   }
 }
 
@@ -1203,41 +1320,31 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
 function render(){
   if (!gl) return;
   advanceFrame();
-  if (world && (frameCount % SPECIES_RECOMPUTE) === 0){ computeSpecies(); updateTileLabels(); }   // recluster + refresh tiles
+  if (world && (frameCount % SPECIES_RECOMPUTE) === 0){ computeSpecies(); updateSpeciesUI(); }   // recluster + refresh the list
   frameCount++;
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, CANVAS_W, CANVAS_H);
   gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);          // clear regions not covered by a view
-  renderView(cam, VIEW_MAIN, VIEW_MAIN, mainSet, 0, 0, true, VIEW_ROUND);   // main micrograph: left 768^2 (GL origin bottom-left)
-  // three species tiles, stacked in the right column (top = largest species). Fixed shared zoom -> comparable sizes.
-  for (let s = 0; s < 3; s++){
-    const id = slotIds[s]; if (id == null) continue;                 // empty slot -> black tile
-    const r = speciesById.get(id); if (!r || !r.t) continue;
-    let rep = r.t.rep;
-    if (!rep || !rep.getAlive()){                                    // rep died between reclusters -> re-pick a living member
-      const alt = r.members.find(m => m.sb.getAlive()); if (!alt) continue;
-      rep = r.t.rep = alt.sb;
+  // EXPANDED species minis: render each into the (0,0,256,256) scratch corner and blit (drawImage, GPU-side, no readback
+  // stall) into its DOM canvas -- BEFORE main, so main's full-768 render overpaints the corner. Offscreen-gated + a
+  // per-frame budget (round-robin) so many open viewers can't blow the frame; a species in a miss (absent from
+  // speciesById but still tracked) freezes its last mini frame.
+  if (expanded.size){
+    const vis = [];
+    for (const id of expanded){ const el = rowMap.get(id); if (el && el._miniVisible) vis.push(id); }
+    const n = Math.min(vis.length, MINI_BUDGET);
+    for (let k = 0; k < n; k++){
+      const id = vis[(miniCursor + k) % vis.length];
+      const r = speciesById.get(id); if (!r || !r.t) continue;        // miss -> freeze last frame
+      const rep = r.t.rep; if (!rep || !rep.getAlive()) continue;     // stable specimen (re-established in computeSpecies)
+      const c = rep.getPosition();
+      renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, 0, 0, false, 0, rep);
+      const el = rowMap.get(id);
+      if (el && el._miniCtx) el._miniCtx.drawImage(cv, 0, CANVAS_H - VIEW_SMALL, VIEW_SMALL, VIEW_SMALL, 0, 0, VIEW_SMALL, VIEW_SMALL);
     }
-    const c = rep.getPosition();
-    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, VIEW_MAIN, VIEW_SMALL * (2 - s), false, VIEW_ROUND, rep);
+    if (vis.length) miniCursor = (miniCursor + n) % vis.length;
   }
-  // ---- 5px black gutters between the views (main | tile-column, and between the three tiles) ----
-  {
-    const G = 5, h = G / 2;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, CANVAS_W, CANVAS_H);
-    gl.useProgram(boxProg); gl.uniform2f(uBoxRes, CANVAS_W, CANVAS_H); gl.uniform4f(uBoxColor, 0, 0, 0, 1);
-    const R = (x0,y0,x1,y1) => [x0,y0, x1,y0, x1,y1, x0,y0, x1,y1, x0,y1];   // screen space (top-left origin)
-    const g = new Float32Array([
-      ...R(VIEW_MAIN - h, 0, VIEW_MAIN + h, CANVAS_H),                    // vertical: main | column
-      ...R(VIEW_MAIN, VIEW_SMALL - h, CANVAS_W, VIEW_SMALL + h),          // horizontal: tile 0 | 1
-      ...R(VIEW_MAIN, VIEW_SMALL*2 - h, CANVAS_W, VIEW_SMALL*2 + h),      // horizontal: tile 1 | 2
-    ]);
-    gl.bindVertexArray(boxVAO); gl.bindBuffer(gl.ARRAY_BUFFER, boxVBO);
-    gl.bufferData(gl.ARRAY_BUFFER, g, gl.DYNAMIC_DRAW);
-    gl.drawArrays(gl.TRIANGLES, 0, g.length / 2);
-    gl.bindVertexArray(null);
-  }
+  renderView(cam, VIEW_MAIN, VIEW_MAIN, mainSet, 0, 0, true, VIEW_ROUND);   // main micrograph LAST: 768^2, overpaints the scratch corner
 }
 
 let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (running only gates ticks, not render)
@@ -1306,7 +1413,19 @@ window.__golden = function(s, ticks, frames, camOv, opts){
   const floatRT = !!(thickFmt && thickFmt.internal === gl.RGBA16F);
   const species = speciesList.slice(0,4).map(r => ({ n: r.count, sig: r.t ? r.t.sig : null,
     alive: !!(r.t && r.t.rep && r.t.rep.getAlive()) }));
-  return { w, h, b64: btoa(str), thickFmt: floatRT ? 'RGBA16F' : 'RGBA8', floatRT, fading, species };
+  // opts.mini: also capture the largest species' 256^2 mini-viewer (the small-view render path the list expands into),
+  // via the SAME (0,0,256,256) scratch corner the live blit uses. Done AFTER the main readPixels (it overwrites the corner).
+  let mini = null; const bigR = speciesList.find(r => r.t && r.t.rep && r.t.rep.getAlive());
+  if (opts.mini && bigR){
+    const c = bigR.t.rep.getPosition();
+    renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, 0, 0, false, 0, bigR.t.rep);
+    const mp = new Uint8Array(VIEW_SMALL*VIEW_SMALL*4);
+    gl.readPixels(0, 0, VIEW_SMALL, VIEW_SMALL, gl.RGBA, gl.UNSIGNED_BYTE, mp);
+    let ms=''; for (let i=0;i<mp.length;i+=8192) ms += String.fromCharCode.apply(null, mp.subarray(i, i+8192));
+    mini = btoa(ms);
+  }
+  return { w, h, b64: btoa(str), thickFmt: floatRT ? 'RGBA16F' : 'RGBA8', floatRT, fading, species,
+           mini, miniW: VIEW_SMALL, miniH: VIEW_SMALL };
 };
 
 // ---- perf benchmark hook (INERT unless called; performance.now is MEASUREMENT only -> never touches render output) ----

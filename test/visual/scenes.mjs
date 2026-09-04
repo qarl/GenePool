@@ -1,6 +1,7 @@
 // Golden scenes: few + meaningful. Each is a pure function of (seed, ticks, frames, cam, opts) — deterministic.
-// The canvas is fixed at 900×760 in the viewer; the goldens are recorded at that size.
-export const CANVAS = { w: 900, h: 760 };
+// The canvas is fixed at 768×768 in the viewer (main micrograph only; the species list is a DOM panel beside it);
+// goldens are recorded at that size. (Informational metadata only — the harness reads real dims from __golden.)
+export const CANVAS = { w: 768, h: 768 };
 
 export const SCENES = [
   // Fresh founder layout — seeding, junk-zeroing, initial poses; whole-field.
@@ -18,9 +19,10 @@ export const SCENES = [
   // Tuned (seed 3 / 900 ticks / every 30) to leave ~4 mid-fade ghosts in the final frame; asserted > 0 in the test.
   { name: 'dying', seed: 3, ticks: 900, opts: { interleave: 30 } },
 
-  // Speciation has emerged (~10 reproductive clusters by 60k): exercises all THREE tiles at once (top-3 by head-count).
-  // Slow (~20s: 60k ticks) but it's the only scene that covers the multi-tile path; the test asserts >=3 species.
-  { name: 'speciated', seed: 1, ticks: 60000 },
+  // Speciation has emerged (~10 reproductive clusters by 60k). Slow (~20s: 60k ticks); the test asserts >=3 species
+  // (a speciation-behaviour guard). opts.mini ALSO captures the largest species' 256^2 mini-viewer -> the ONLY golden
+  // coverage of the small-view render path (renderView@256/TILE_ZOOM/onlyBot) that the list expands into.
+  { name: 'speciated', seed: 1, ticks: 60000, opts: { mini: true } },
 
   // ('empty' — wall+detritus only — deferred: the hook always seeds founders; needs a skip-founders override first.)
 ];

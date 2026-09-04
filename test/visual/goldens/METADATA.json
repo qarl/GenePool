@@ -1,56 +1,61 @@
 {
   "canvas": {
-    "w": 900,
-    "h": 760
+    "w": 768,
+    "h": 768
   },
   "scenes": {
     "founders": {
-      "w": 1024,
+      "w": 768,
       "h": 768,
-      "sha256": "358ee3fd2955ca93f78fff8fd04637f5cfcad0bd2bcd40f2852defb300066f8f",
+      "sha256": "48d1061e0ca1c45fc34463f143b3c24db7de2816be2b7d4ac997150ed348af70",
       "thickFmt": "RGBA16F",
       "fading": 5,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
     "adults": {
-      "w": 1024,
+      "w": 768,
       "h": 768,
-      "sha256": "90f18a01482a06d0313c2a8d4a451eaeeb8cf1779d7df55b161bc35091135a25",
+      "sha256": "df62c5031aed9c868a61011b2f5ecd682ee687ab52e9111fa07f3e5f8c17622a",
       "thickFmt": "RGBA16F",
       "fading": 1,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
     "branchy": {
-      "w": 1024,
+      "w": 768,
       "h": 768,
-      "sha256": "f9ecbd6fa62a9e8030d666c736ad8af87e670519ed44d07e8b56662490412b3a",
+      "sha256": "fd7413c78fad37c580bac2d5a0ab2ca2e8e3827387d99f9ebe049bde896d19e7",
       "thickFmt": "RGBA16F",
       "fading": 7,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
     "dying": {
-      "w": 1024,
+      "w": 768,
       "h": 768,
-      "sha256": "728e4ca4d9e289e1643743bf86983f4c0c6e2505c1046a529685a83c534dbcb6",
+      "sha256": "acc7a64a47358ed3b223a7372cd50891c662b97f2760e89fcd728237f09aded2",
       "thickFmt": "RGBA16F",
       "fading": 8,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15"
     },
     "speciated": {
-      "w": 1024,
+      "w": 768,
       "h": 768,
-      "sha256": "8c3d66677c29929d22a2f581ded6c35f3fd3e4e509cb51387625a593f126fd1e",
+      "sha256": "f5b43b195204d63dc8bc2e64fbf0fa636ad5ff27daa74593c40b2d65a89eff23",
       "thickFmt": "RGBA16F",
       "fading": 2,
       "browserBuild": "1217",
-      "chrome": "147.0.7727.15"
+      "chrome": "147.0.7727.15",
+      "mini": {
+        "w": 256,
+        "h": 256,
+        "sha256": "154306892d7c6d13ce9b577bef8a5c0c451c5d723469f05fc75aa5f74be304a0"
+      }
     }
   },
-  "recordedAt": "2026-09-04T16:25:11.840Z",
+  "recordedAt": "2026-09-04T22:52:54.493Z",
   "platform": "darwin",
   "arch": "arm64",
   "node": "v25.9.0"

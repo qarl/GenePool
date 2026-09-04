@@ -31,7 +31,7 @@ for (const scene of SCENES){
     if (scene.name === 'dying')
       assert.ok(cap.meta.fading > 0, `dying scene must exercise the death-fade path, but fading=${cap.meta.fading}`);
     if (scene.name === 'speciated')
-      assert.ok(cap.meta.species?.length >= 3, `speciated scene must populate all 3 tiles, but species=${cap.meta.species?.length}`);
+      assert.ok(cap.meta.species?.length >= 3, `speciated scene must reach >=3 species, but species=${cap.meta.species?.length}`);
     const gold = toBottomUp(decode(readFileSync(goldPath)));
     const res = compare(cap.rgba, gold, { exact: isRecordingArch() });
     if (!res.pass){
@@ -39,6 +39,19 @@ for (const scene of SCENES){
       writeFileSync(diffPath, diffPng(cap.rgba, gold, cap.w, cap.h));
       assert.fail(`${scene.name} diverged: maxΔ=${res.maxDelta}, ${res.diffPixels} px ` +
         `(${(res.diffFraction*100).toFixed(4)}%), exact=${res.exact}. diff → ${diffPath}`);
+    }
+    if (scene.opts?.mini){   // small-view (mini-viewer) render path
+      const miniPath = join(GOLD, `${scene.name}.mini.png`);
+      assert.ok(existsSync(miniPath), `missing ${scene.name}.mini.png — run: npm --prefix test/visual run record`);
+      assert.ok(cap.mini, `scene '${scene.name}' returned no mini capture`);
+      const mgold = toBottomUp(decode(readFileSync(miniPath)));
+      const mres = compare(cap.mini.rgba, mgold, { exact: isRecordingArch() });
+      if (!mres.pass){
+        const diffPath = join(GOLD, `${scene.name}.mini.diff.png`);
+        writeFileSync(diffPath, diffPng(cap.mini.rgba, mgold, cap.mini.w, cap.mini.h));
+        assert.fail(`${scene.name} mini diverged: maxΔ=${mres.maxDelta}, ${mres.diffPixels} px ` +
+          `(${(mres.diffFraction*100).toFixed(4)}%), exact=${mres.exact}. diff → ${diffPath}`);
+      }
     }
   });
 }
