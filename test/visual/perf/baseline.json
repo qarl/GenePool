@@ -1,0 +1,23 @@
+{
+  "medianMs": 180.13,
+  "meanMs": 178.37,
+  "minMs": 52.14,
+  "p90Ms": 192.13,
+  "fps": 5.6,
+  "living": 248,
+  "nJunk": 1500,
+  "zoom": 1,
+  "scene": {
+    "seed": 1,
+    "ticks": 60000,
+    "cam": {
+      "zoom": 1
+    },
+    "frames": 90
+  },
+  "arch": "arm64",
+  "node": "v25.9.0",
+  "chrome": "147.0.7727.15",
+  "git": "0f44feb",
+  "at": "2026-09-04T16:37:16.649Z"
+}

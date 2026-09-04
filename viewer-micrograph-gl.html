@@ -1293,6 +1293,29 @@ window.__golden = function(s, ticks, frames, camOv, opts){
   return { w, h, b64: btoa(str), thickFmt: floatRT ? 'RGBA16F' : 'RGBA8', floatRT, fading, species };
 };
 
+// ---- perf benchmark hook (INERT unless called; performance.now is MEASUREMENT only -> never touches render output) ----
+// Builds a fixed scene, then renders it `frames` times (no ticks between -> constant frame) and returns per-frame ms.
+// junkFrac optionally overrides P.junk for an A/B of the detritus load. gl.finish() after each render so SwiftShader's
+// (CPU) work is actually complete before we stop the clock.
+window.__bench = function(s, ticks, camOv, frames, junkFrac){
+  loopStopped = true; running = false;
+  seed = (s>>>0); cam.zoom = 6; build();
+  gl.disable(gl.DITHER);
+  for (let i=0; i<(ticks|0); i++) world.tick();
+  if (camOv) cam = { x: camOv.x ?? P.pool/2, y: camOv.y ?? P.pool/2, zoom: camOv.zoom ?? 6 };
+  const _junk = P.junk; if (junkFrac !== undefined && junkFrac !== null) P.junk = junkFrac;
+  const N = Math.max(1, frames|0);
+  render(); gl.finish();                                        // warm-up: shader compile / buffer upload / first recluster
+  const t = new Array(N);
+  for (let f=0; f<N; f++){ const t0 = performance.now(); render(); gl.finish(); t[f] = performance.now() - t0; }
+  const nJunk = Math.floor(P.junk * MAX_JUNK);   // effective detritus load during the timed renders
+  P.junk = _junk;
+  t.sort((a,b)=>a-b);
+  const sum = t.reduce((a,b)=>a+b,0);
+  return { frames:N, median:t[N>>1], mean:sum/N, min:t[0], p90:t[Math.min(N-1, Math.floor(N*0.9))],
+           living: world.getLivingSwimbotCount(), nJunk, zoom: cam.zoom };
+};
+
 function boot(){
   if (gl){ initGL(); build(); requestAnimationFrame(loop); }   // params are baked into P; no live panel / runtime file
 }

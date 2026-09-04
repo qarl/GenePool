@@ -46,6 +46,20 @@ npm --prefix test/visual run record  # (re)record goldens/*.png + METADATA.json 
 | `branchy` | zoomed body detail: ribbons, tip-dome/branch-merge, hairs, cytoplasm+grain |
 | `dying` | interleaved tick→render so specimens die mid-capture → the **death-fade** path (what 2a hoists) |
 
+## Frame-rate regression (`perf.mjs`)
+Times the render headless on a fixed **zoomed-out, whole-pool** scene (seed 1, 60k ticks, zoom 1 -> every living
+creature on-screen + all detritus = the worst case) and compares to `perf/baseline.json`.
+```
+npm --prefix test/visual run perf              # measure + compare to the baseline (flags >8% median change)
+npm --prefix test/visual run perf -- --update  # record the current result as the new baseline
+node perf.mjs --junk 0.4                        # A/B the detritus load (fraction of MAX_JUNK)
+```
+Headless SwiftShader is far slower than a real GPU (baseline ~180 ms/frame), so the absolute number is meaningless --
+it's a **consistent relative yardstick on the same machine/arch** for catching per-commit regressions. Workflow to
+compare a change: `run perf -- --update` on the parent commit, make the change, `run perf` to see the delta. Uses an
+inert `window.__bench` hook (performance.now for timing only; never affects render output, so goldens are untouched).
+The baseline is arch-stamped and refuses to compare across arches.
+
 ## Rebaselining
 `record.mjs` **refuses to run off the recording arch**. After an intentional visual change, re-record on arm64,
 eyeball the goldens, and commit the new `*.png` + `METADATA.json` in the same change. `*.diff.png` artifacts (written

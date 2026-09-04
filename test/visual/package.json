@@ -7,7 +7,8 @@
   "scripts": {
     "test": "node --test \"goldens.visual.mjs\"",
     "record": "node record.mjs",
-    "gate-a": "node gate-a.mjs"
+    "gate-a": "node gate-a.mjs",
+    "perf": "node perf.mjs"
   },
   "dependencies": {
     "playwright-core": "1.62.1"
