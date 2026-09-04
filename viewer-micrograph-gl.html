@@ -3,10 +3,8 @@
 <head>
 <meta charset="utf-8">
 <title>GenePool — micrograph (GL)</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
+  @font-face { font-family: 'OCR A'; src: url('fonts/OCRA.ttf') format('truetype'); font-display: swap; }   /* self-hosted, GPL/free */
   :root { color-scheme: dark; }
   body { margin: 0; background: #0b0e13; color: #cfd6e0; font: 13px/1.5 system-ui, sans-serif; }
   header { padding: 8px 14px; background: #11161f; border-bottom: 1px solid #1e2733; }
@@ -28,7 +26,7 @@
   /* species-tile count labels: HTML overlay over the right column (NOT drawn into the canvas, so goldens stay text-free) */
   /* science-lab label: black, no shadow, technical monospace (IBM Plex Mono) -> reads like specimen data */
   .tileLabel { position: absolute; right: 12px; text-align: right; pointer-events: none; line-height: 1.25;
-    color: #000; font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+    color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; }
   .tileLabel .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tileLabel .sig { font-size: 12px; font-weight: 500; letter-spacing: 2px; }
   #lab0 { top: 12px; } #lab1 { top: calc(33.333% + 12px); } #lab2 { top: calc(66.666% + 12px); }

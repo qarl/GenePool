@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = normalize(join(fileURLToPath(import.meta.url), '..', '..', '..', '..'));   // test/visual/lib -> repo root
 const MIME = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.mjs':'text/javascript; charset=utf-8',
-  '.css':'text/css; charset=utf-8', '.json':'application/json; charset=utf-8', '.png':'image/png' };
+  '.css':'text/css; charset=utf-8', '.json':'application/json; charset=utf-8', '.png':'image/png', '.ttf':'font/ttf' };
 
 export function startServer(){
   return new Promise((resolve, reject) => {
