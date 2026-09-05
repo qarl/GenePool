@@ -16,6 +16,7 @@
 // (Phase 3/4). Both live here so the schema has exactly one definition.
 
 import { gzipSync, gunzipSync } from 'node:zlib';
+import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { createSqliteSink } from './sqlite-sink.mjs';
 
@@ -35,7 +36,9 @@ const decode = (gz) => JSON.parse(gunzipSync(gz).toString('utf8'));
 
 // ---- WRITER (the generator) --------------------------------------------------------------------------------------
 // meta: { seed, config, keyframeInterval, statsInterval, engineVersion?, appVersion?, perceptionMode? }
-export function openRunWriter(path, meta = {}, { batchSize = 5000 } = {}) {
+export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = false } = {}) {
+    // Resume iff the file already has committed keyframes (a partial run to continue), else it's a fresh run.
+    const resuming = resume && existsSync(path);
     const sink = createSqliteSink(path, { batchSize });   // creates births/deaths/eats/ticks + sets WAL
     const db = sink.db;
     ensureSchema(db);
@@ -44,17 +47,40 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000 } = {}) {
     const insStat = db.prepare('INSERT OR REPLACE INTO stats     (tick, json) VALUES (?, ?)');
     const setMetaStmt = db.prepare('INSERT OR REPLACE INTO run_meta (k, v) VALUES (?, ?)');
     const setMeta = (k, v) => setMetaStmt.run(k, typeof v === 'string' ? v : JSON.stringify(v));
+    const getMeta = (k) => { const r = db.prepare('SELECT v FROM run_meta WHERE k = ?').get(k); return r ? r.v : null; };
 
-    // Initial metadata (frontier starts at -1 = nothing consistent yet; done=0).
-    setMeta('scrubSchemaVersion', SCRUB_SCHEMA_VERSION);
-    for (const k of ['seed', 'keyframeInterval', 'statsInterval', 'engineVersion', 'appVersion', 'perceptionMode']) {
-        if (meta[k] !== undefined && meta[k] !== null) setMeta(k, meta[k]);
+    let resumedFrom = null;   // { tick, snapshot } the caller restores + resimes from, or null for a fresh run
+    if (resuming) {
+        // S4: the last COMMITTED keyframe is always whole (writeKeyframe is one atomic txn -> a torn one rolled back).
+        // Truncate everything after it -- a stats-only/event batch may have advanced the frontier past the last
+        // keyframe, and those rows can't be resumed from -- then rewind frontier + clear the done flag.
+        const kf = db.prepare('SELECT tick, gz FROM snapshots ORDER BY tick DESC LIMIT 1').get();
+        if (kf) {
+            const lastKf = kf.tick;
+            db.exec('BEGIN');
+            try {
+                for (const tbl of ['snapshots', 'stats', 'births', 'deaths', 'eats', 'ticks']) {
+                    db.prepare(`DELETE FROM ${tbl} WHERE tick > ?`).run(lastKf);
+                }
+                setMetaStmt.run('frontier', String(lastKf));
+                setMetaStmt.run('done', '0');
+                db.exec('COMMIT');
+            } catch (err) { db.exec('ROLLBACK'); throw err; }
+            resumedFrom = { tick: lastKf, snapshot: decode(kf.gz) };
+        }
+        // do NOT rewrite seed/config/intervals on resume -- keep the original run's metadata (S2).
+    } else {
+        // Initial metadata (frontier starts at -1 = nothing consistent yet; done=0).
+        setMeta('scrubSchemaVersion', SCRUB_SCHEMA_VERSION);
+        for (const k of ['seed', 'keyframeInterval', 'statsInterval', 'engineVersion', 'appVersion', 'perceptionMode']) {
+            if (meta[k] !== undefined && meta[k] !== null) setMeta(k, meta[k]);
+        }
+        if (meta.config !== undefined) setMeta('config', meta.config);
+        // The reconstruct-anything config the reader must restore() with (D2/S2): seed + config together.
+        if (meta.seed !== undefined && meta.config !== undefined) setMeta('runConfig', { seed: meta.seed, config: meta.config });
+        setMeta('frontier', '-1');
+        setMeta('done', '0');
     }
-    if (meta.config !== undefined) setMeta('config', meta.config);
-    // The reconstruct-anything config the reader must restore() with (D2/S2): seed + config together.
-    if (meta.seed !== undefined && meta.config !== undefined) setMeta('runConfig', { seed: meta.seed, config: meta.config });
-    setMeta('frontier', '-1');
-    setMeta('done', '0');
 
     // ONE-TRANSACTION keyframe write (D4): pending events -> snapshot -> stats -> frontier LAST.
     function writeKeyframe(tick, snapshot, stats = null) {
@@ -85,10 +111,14 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000 } = {}) {
         catch (err) { db.exec('ROLLBACK'); throw err; }
     }
 
+    // The run's stored {seed, config} (S2) -- callers restore() with THIS on resume, not recomputed defaults.
+    const runConfig = () => { const v = getMeta('runConfig'); return v ? JSON.parse(v) : null; };
+
     return {
         db, sink,
+        resumedFrom,                    // { tick, snapshot } | null -- restore + resim from here to continue a partial run
         onEvent: sink.onEvent,          // the generator wires world's onEvent here
-        writeKeyframe, writeStats, setMeta, finish,
+        writeKeyframe, writeStats, setMeta, getMeta, runConfig, finish,
         close() { sink.close(); },      // flushes remaining buffer (own txn) + closes
     };
 }

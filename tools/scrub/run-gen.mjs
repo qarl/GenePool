@@ -43,25 +43,34 @@ function computeStats(world, tick) {
 // posts progress to main from here in Phase 6).
 export function generateRun(path, seed, opts = {}) {
     const o = { ...GEN_DEFAULTS, ...opts };
-    const { world, config } = buildWorld(seed, o);
     const writer = openRunWriter(path, {
-        seed: seed >>> 0, config,
+        seed: seed >>> 0, config: makeEcologyConfig(o.pool),
         keyframeInterval: o.keyframeInterval, statsInterval: o.statsInterval,
         engineVersion: o.engineVersion ?? null, perceptionMode: 'mixed-live',
-    });
+    }, { resume: !!o.resume });
+
+    let world, startTick = 0, keyframes = 0, resumed = false;
+    if (writer.resumedFrom) {
+        // S4/S5 crash-resume: restore from the last durable keyframe using the RUN'S stored config (S2), continue.
+        const cfg = writer.runConfig().config;
+        world = World.restore(cfg, writer.resumedFrom.snapshot);
+        startTick = writer.resumedFrom.tick;
+        resumed = true;
+    } else {
+        ({ world } = buildWorld(seed, o));
+        writer.writeKeyframe(0, world.serialize(), computeStats(world, 0)); keyframes++;   // keyframe-0 = seeded state (D8)
+    }
     // throttle the per-tick 'tick' event (N5); births/deaths/eats always pass through.
     world._onEvent = (e) => { if (e.type === 'tick' && (e.tick % o.tickThrottle) !== 0) return; writer.onEvent(e); };
 
-    let keyframes = 0;
-    writer.writeKeyframe(0, world.serialize(), computeStats(world, 0)); keyframes++;   // keyframe-0 = seeded state (D8)
-    for (let t = 1; t <= o.ticks; t++) {
+    for (let t = startTick + 1; t <= o.ticks; t++) {
         world.tick();
         if (t % o.keyframeInterval === 0) { writer.writeKeyframe(t, world.serialize(), computeStats(world, t)); keyframes++; if (o.onProgress) o.onProgress(t, t); }
         else if (t % o.statsInterval === 0) { writer.writeStats(t, computeStats(world, t)); if (o.onProgress) o.onProgress(t, t); }
     }
     writer.finish();
     writer.close();
-    return { path, seed: seed >>> 0, ticks: o.ticks, keyframes, finalPop: world.getLivingSwimbotCount() };
+    return { path, seed: seed >>> 0, ticks: o.ticks, keyframes, resumed, resumedTick: resumed ? startTick : null, finalPop: world.getLivingSwimbotCount() };
 }
 
 // ---- CLI ----
@@ -83,6 +92,7 @@ if (isMain) {
     if (a.throttle) opts.tickThrottle = Number(a.throttle);
     if (a.pool) opts.pool = Number(a.pool);
     if (a.n) opts.n = Number(a.n);
+    if (a.resume) opts.resume = true;
     mkdirSync(dirname(out), { recursive: true });
     const t0 = Date.now();
     const r = generateRun(out, seed, opts);
