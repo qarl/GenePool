@@ -41,17 +41,19 @@ arbitrary genes), and the projection onto max-variance axes is also the optimal 
 5, and the best 5 are the best.
 
 ## Encoding (in the viewer)
-`signatureOf(vec)` (vec = an expressed-gene centroid): for each of the 5 PCs, `coeff = (vec − PCA_MEAN) · PC`, then map
-the **standardised** coeff through the Gaussian CDF to a **signed percentile** in `[-17,17]`:
-`signed = round((Φ(coeff/PCA_SCALES[c]) − 0.5) · 34)`, placed on the base36 ring (`0` = mean, `+` climbs `1,2,3…`, `−`
-descends `Z,Y,X…`). Two requirements Karl set that seem to conflict but don't in practice:
-- **mean genome → "00000"** (0 = the average evolved genome; an interpretable origin — distance from 00000 = how unusual);
-- **no species plate reads near 0** — the *percentile* spread pushes every real species far from the origin (a genome at
-  −1σ maps to −12 of ±17, not −6), because no real species sits *exactly* at the population mean on all 5 axes.
+`sigCoord(vec,i)`: `coeff = (vec − PCA_MEAN) · PC_i`, standardise, take the **signed percentile** `p = 2(Φ(coeff/scale) −
+0.5) ∈ [-1,1]`, **amplify** `× SIG_AMP` (=1.5) and **CLAMP** to `[-1,1]` — a linear, non-wrapping coordinate (0 = mean).
+`signatureOf` maps it to base36 steps `[-17,17]`: **mean → "00000"**, above-average climbs `1,2,3…H`, below descends
+`Z,Y,X…J` (clamped — NOT a ring; the antipode gap `I` is never produced, and extremes pile at `H`/`J` rather than
+wrapping). Amplification (Karl: "make them stronger") clamps ~⅓ of digits at the extremes — intentional.
 
-They're only mutually exclusive for a genome AT the mean (which reads 00000 by design). Measured on the 1561-genome set:
-mean → 00000, **0 plates near-0** (all within ±2), avg plate sits 41 of a possible 85 steps out, 98.5% distinct.
-Rendered as the OKLCh colour barcode (unchanged).
+**Colour = a LINEAR ramp, not the hue wheel** (the wheel is a ring: red would wrap back through magenta). Each cell's hue
+sweeps monotonically **red (29°, −1) → green (146°, 0/mean) → blue (264°, +1)** in OKLCh at fixed L/C and stops — the
+magenta arc (~330°) is dropped. So colour reads directly as below/at/above average. `hue = 29 + (v+1)·117.5`.
+
+Two requirements that seem to conflict but don't in practice: "mean = 00000" and "no species near 0" — the percentile +
+amplification push every real species far from the origin; only a genome *exactly* at the mean on all 5 axes reads 00000,
+which no real species is. Mean → 00000; on the 1561-genome set, 0 plates near-0, ~98% distinct.
 
 ## Regenerating the basis (`tools/pca/`)
 ```
