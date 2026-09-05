@@ -1,0 +1,14 @@
+{
+  "name": "genepool-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GenePool standalone desktop app (Electron): the micrograph viewer + real-file save/load + SQLite snapshot recording, all in one process.",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^44.2.0"
+  }
+}

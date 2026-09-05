@@ -68,6 +68,9 @@
     <button id="reset">Reset</button>
     <label>Seed <input id="seedIn" type="number" min="0" step="1" value="1"></label>
     <label>Speed <input id="speed" type="range" min="1" max="60" value="3"> <span id="speedv">3×</span></label>
+    <!-- desktop-only: real file save/load + SQLite snapshot recording (shown only in the Electron app) -->
+    <span id="desktopCtl" hidden><button id="save">Save</button> <button id="load">Load</button>
+      <button id="record">● Record</button> <span id="recinfo" class="hud"></span></span>
   </div>
   <div class="row"><span id="err"></span> <span style="color:#5c6b80">scroll = zoom · drag = pan</span></div>
 </header>
@@ -551,16 +554,18 @@ function initGL(){
 }
 
 // ================================================================== engine wiring (identical to the canvas viewer)
+let curConfig = null, recording = false, recBuf = [];   // desktop (Electron) SQLite recording: current config + event buffer
 function build(){
   errEl.textContent = '';
-  const config = {
+  if (recording) stopRecording();   // a fresh pool ends the current recording (don't mix runs in one DB)
+  const config = curConfig = {
     maximumLifeSpan: MAX_LIFESPAN, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
     crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: P.pool/2,
     foodBitEnergy: 50, attractionCriterion: 10, maxPopulation: 2000, maxFood: 2000,
     viewRadius: 300, reproductiveIsolation: SPECIES_ISO,   // junk-DNA gate ON -> reproductive species emerge over time
     pool: { left:0, top:0, right:P.pool, bottom:P.pool },
   };
-  try { world = new World(config, seed, {}); }
+  try { world = new World(config, seed, {}); }   // no onEvent by default -> zero per-tick overhead; attached only while recording
   catch(e){ world = null; errEl.textContent = 'Cannot build: ' + e.message; return; }
   const rng = mulberry32((seed>>>0) ^ 0x5eed1234);
   for (let i=0;i<P.n;i++){
@@ -580,6 +585,44 @@ function build(){
   seedJunk(rng);
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
   document.getElementById('seedIn').value = seed;
+}
+
+// ---- desktop (Electron) only: real-file save/load + SQLite snapshot recording via window.pool (absent in a browser) ----
+function onSimEvent(e){ recBuf.push(e); }   // attached to world._onEvent only while recording -> engine emits only then
+function stopRecording(){
+  if (!recording) return; recording = false;
+  if (world) world._onEvent = null;                                    // detach -> engine stops emitting (zero overhead)
+  if (recBuf.length && window.pool){ window.pool.record(recBuf); recBuf = []; }
+  if (window.pool) window.pool.recordStop().then(r => { const el = document.getElementById('recinfo'); if (el && r && r.ok) el.textContent = `saved ${r.events} events → ${r.path.split('/').pop()}`; });
+  const b = document.getElementById('record'); if (b){ b.textContent = '● Record'; b.style.color = ''; }
+}
+async function startRecording(){
+  if (!window.pool || !world) return;
+  const r = await window.pool.recordStart({ seed, config: curConfig, snapshot: world.serialize() });   // snapshot@now + stream forward
+  if (!r || !r.ok) return;
+  recBuf = []; world._onEvent = onSimEvent; recording = true;
+  const b = document.getElementById('record'); if (b){ b.textContent = '■ Stop'; b.style.color = '#ff6b6b'; }
+  const el = document.getElementById('recinfo'); if (el) el.textContent = 'recording → ' + r.path.split('/').pop();
+}
+function loadWorld(saved){
+  if (recording) stopRecording();
+  let w; try { w = World.restore(saved.config, saved.data); } catch(e){ errEl.textContent = 'Load failed: ' + e.message; return; }
+  world = w; curConfig = saved.config; if (saved.seed != null) seed = saved.seed;
+  known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;
+  frameCount = 0; nextSpeciesId = 1; tracked = new Map(); speciesById = new Map(); speciesList = [];
+  rowMap = new Map(); expanded = new Set(); if (speciesPanel) speciesPanel.replaceChildren();
+  popUsedEMA = null; popSig = '00000'; popDivEMA = null; popLifeEMA = null;
+  const rng = mulberry32((seed>>>0) ^ 0x5eed1234); seedJunk(rng);    // detritus re-seeded from seed (deterministic, cosmetic)
+  cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
+  document.getElementById('seedIn').value = seed;
+}
+if (window.pool && window.pool.isDesktop){
+  document.getElementById('desktopCtl').hidden = false;
+  document.getElementById('save').onclick = async () => { if (!world) return;
+    const r = await window.pool.save({ v:1, seed, config: curConfig, data: world.serialize() });
+    const el = document.getElementById('recinfo'); if (el && r && r.ok) el.textContent = 'saved ' + r.path.split('/').pop(); };
+  document.getElementById('load').onclick = async () => { const r = await window.pool.load(); if (r && r.ok) loadWorld(r.data); };
+  document.getElementById('record').onclick = () => { recording ? stopRecording() : startRecording(); };
 }
 
 function parentPos(ph, p){ const par = ph.parts[p].parent; return (par === undefined || par === null || par < 0) ? ph.parts[0].position : ph.parts[par].position; }
@@ -1050,7 +1093,7 @@ let SIG_GLYPHS_READY = false;                         // false until the bitmap 
 function measurePlateGlyphs(){
   const W = CELL_W * GLYPH_SS, H = CELL_H * GLYPH_SS;
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-  const cx = cv.getContext('2d');
+  const cx = cv.getContext('2d', { willReadFrequently: true });   // we getImageData every glyph -> hint avoids a warning + is faster
   cx.font = `600 ${CELL_FONT_PX * GLYPH_SS}px ${CELL_FONT_STACK}`;
   cx.textAlign = 'left'; cx.textBaseline = 'alphabetic'; cx.fillStyle = '#000';
   let css = '';
@@ -1427,6 +1470,7 @@ let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (runnin
 function loop(){
   if (loopStopped) return;
   if (running && world){ for (let i=0;i<ticksPerFrame;i++) world.tick(); }
+  if (recording && recBuf.length && window.pool){ window.pool.record(recBuf); recBuf = []; }   // flush this frame's events to the recorder
   render();
   requestAnimationFrame(loop);
 }
