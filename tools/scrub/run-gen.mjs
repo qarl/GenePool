@@ -15,24 +15,17 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { World } from '../../engine/world.js';
-import { makeEcologyConfig, makeFounders, makeFood, OBSTACLE } from '../../engine/parallel/common.mjs';
 import { openRunWriter } from '../events/run-db.mjs';
 import { createSpeciesAnalyzer } from '../../engine/analysis/species.mjs';
+import { makeStandardWorld, poolConfig, POOL_DEFAULTS } from '../../engine/pool-seed.mjs';
 
-export const GEN_DEFAULTS = { ticks: 20000, keyframeInterval: 2000, statsInterval: 250, tickThrottle: 100, pool: 8000, n: 1500 };
+export const GEN_DEFAULTS = { ticks: 20000, keyframeInterval: 2000, statsInterval: 250, tickThrottle: 100, ...POOL_DEFAULTS };
 
-// Build the fully-seeded world for a seed, with NO onEvent attached yet (so seeding's founder/food_init events
-// aren't recorded -- keyframe-0 captures the seeded state instead, D8). Deterministic from the seed.
-export function buildWorld(seed, { pool = GEN_DEFAULTS.pool, n = GEN_DEFAULTS.n } = {}) {
-    const s = seed >>> 0;
-    const config = makeEcologyConfig(pool);
-    const founders = makeFounders(n, pool, s);
-    const food = makeFood(n * 4, pool, (s + 1) >>> 0);
-    const world = new World(config, s);                          // mixed-live (default)
-    for (let i = 0; i < n; i++) { const f = founders[i]; world.loadSwimbot(i, { age: f.age, x: f.x, y: f.y, angle: f.angle, energy: f.energy, genes: f.genes }); }
-    for (let i = 0; i < food.length; i++) world.loadFood(i, { x: food[i].x, y: food[i].y, type: food[i].type, energy: food[i].energy });
-    world.setObstacle(OBSTACLE[0], OBSTACLE[1]);
-    return { world, config };
+// Build the seed's world via the SHARED seeder (engine/pool-seed.mjs) so a generated run is IDENTICAL to what the live
+// viewer shows for that seed -- region 3000, 220 junk-zeroed founders, 700 food, the viewer's config. onEvent is
+// attached later so seeding events aren't recorded (keyframe-0 captures the seeded state instead, D8).
+export function buildWorld(seed, { pool, n, food } = {}) {
+    return makeStandardWorld(seed, { pool: pool ?? POOL_DEFAULTS.pool, n: n ?? POOL_DEFAULTS.n, food: food ?? POOL_DEFAULTS.food });
 }
 
 // Full stats row (D2): recompute species at the fixed cadence and fold in the shared analyzer's panel state, so a
@@ -48,7 +41,7 @@ function computeStats(world, tick, analyzer) {
 export function generateRun(path, seed, opts = {}) {
     const o = { ...GEN_DEFAULTS, ...opts };
     const writer = openRunWriter(path, {
-        seed: seed >>> 0, config: makeEcologyConfig(o.pool),
+        seed: seed >>> 0, config: poolConfig(o.pool),
         keyframeInterval: o.keyframeInterval, statsInterval: o.statsInterval,
         engineVersion: o.engineVersion ?? null, perceptionMode: 'mixed-live',
     }, { resume: !!o.resume });

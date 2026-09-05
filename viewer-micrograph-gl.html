@@ -100,6 +100,7 @@
 import { World } from './engine/world.js';
 import { Genotype } from './engine/genotype.js';
 import { createSpeciesAnalyzer, SIG_ALPHA, SPECIES_ISO } from './engine/analysis/species.mjs';
+import { makeStandardWorld } from './engine/pool-seed.mjs';
 
 const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000, EGG_SIZE = 5, SPLINE = 0.4;
 const cv = document.getElementById('cv');
@@ -574,25 +575,11 @@ let curConfig = null, recording = false, recBuf = [];   // desktop (Electron) SQ
 function build(){
   errEl.textContent = '';
   if (recording) stopRecording();   // a fresh pool ends the current recording (don't mix runs in one DB)
-  const config = curConfig = {
-    maximumLifeSpan: MAX_LIFESPAN, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
-    crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: P.pool/2,
-    foodBitEnergy: 50, attractionCriterion: 10, maxPopulation: 2000, maxFood: 2000,
-    viewRadius: 300, reproductiveIsolation: SPECIES_ISO,   // junk-DNA gate ON -> reproductive species emerge over time
-    pool: { left:0, top:0, right:P.pool, bottom:P.pool },
-  };
-  try { world = new World(config, seed, {}); }   // no onEvent by default -> zero per-tick overhead; attached only while recording
+  // the world (config + junk-zeroed founders + food) is built by the SHARED seeder so live and scrub match exactly;
+  // it returns the seed's rng AFTER founders/food so the detritus below continues the same stream (byte-identical).
+  let rng;
+  try { const r = makeStandardWorld(seed, { pool: P.pool, n: P.n, food: P.food }); world = r.world; curConfig = r.config; rng = r.rng; }
   catch(e){ world = null; errEl.textContent = 'Cannot build: ' + e.message; return; }
-  const rng = mulberry32((seed>>>0) ^ 0x5eed1234);
-  for (let i=0;i<P.n;i++){
-    const g = new Genotype(); g.randomize(rng);
-    const genes = g.getGenes().slice();
-    for (let k=USED;k<NUM_GENES;k++) genes[k]=0;                 // junk-zeroed -> one species (JJ's rule)
-    const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.4);
-    const age = YOUNG_AGE + Math.floor((MAX_LIFESPAN-YOUNG_AGE)*rng());
-    world.loadSwimbot(i, { age, x:p.x, y:p.y, angle: rng()*360-180, energy: 50, genes });
-  }
-  for (let i=0;i<P.food;i++){ const p = diskPoint(rng, P.pool/2, P.pool/2, P.pool/2.2); world.loadFood(i, { x:p.x, y:p.y, type:0, energy:50 }); }
   known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;   // no stale death-fade ghosts / junk drift across a rebuild
   frameCount = 0; speciesModel = createSpeciesAnalyzer();   // reset species state -> deterministic from a fresh build
   rowMap = new Map(); expanded = new Set(); if (speciesPanel) speciesPanel.replaceChildren();   // ids reuse from 1 across builds -> drop stale rows/expansion + the DOM (else orphans accumulate)
@@ -1465,10 +1452,7 @@ const mmss = t => { const s = Math.max(0, Math.floor((t || 0) / TICKS_PER_SECOND
 function resetOverlays(clock = 0){ known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }
 
 function startPlayback(){
-  // the live-loop controls move to the bottom bar; hide them (Save/Load stay in the header)
-  for (const el of [document.getElementById('play'), document.getElementById('reset')]) if (el) el.hidden = true;
-  const seedLabel = document.getElementById('seedIn')?.closest('label'); if (seedLabel) seedLabel.hidden = true;
-  const speedLabel = document.getElementById('speed')?.closest('label'); if (speedLabel) speedLabel.hidden = true;
+  document.querySelector('header').hidden = true;    // drop the top-of-screen UI entirely (Karl); everything lives in the bottom bar
   document.getElementById('scrubbar').hidden = false;
 
   const $seed = document.getElementById('sbSeed'), $speed = document.getElementById('sbSpeed'), $speedv = document.getElementById('sbSpeedv');
@@ -1505,7 +1489,8 @@ function startPlayback(){
   $play.onclick = () => { playing = !playing; updateBar(); };
   $speed.oninput = () => { ticksPerFrame = +$speed.value; $speedv.textContent = ticksPerFrame + '×'; };
   $seed.onchange = () => { const v = parseInt($seed.value, 10); if (Number.isFinite(v) && v >= 0) selectSeed(v); };
-  $slider.oninput = () => { dragging = true; playing = false; head = +$slider.value; $time.textContent = `${mmss(head)} / ${mmss(frontier)}`; snapTo(head); };
+  // scrubbing does NOT pause: keep `playing` as-is while dragging (loop holds via !dragging), so releasing resumes -> "takes off" (Karl)
+  $slider.oninput = () => { dragging = true; head = +$slider.value; $time.textContent = `${mmss(head)} / ${mmss(frontier)}`; snapTo(head); };
   $slider.onchange = () => { dragging = false; snapTo(+$slider.value); };
 
   function playbackLoop(){

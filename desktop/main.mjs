@@ -93,7 +93,9 @@ function selectSeed(seed){
       } else if (m.type === 'error' && !s.ready){ resolve({ ok: false, error: m.message }); }
     });
     child.on('exit', () => { if (s === scrub && !s.ready) resolve({ ok: false, error: 'generator exited before ready' }); });
-    child.postMessage({ seed, out: dbPath, opts: { resume, ticks: 40000 } });
+    // large horizon so generation doesn't visibly "stop" mid-session (40000 ticks = only 11:06 at 60 t/s). ~4.6h of
+    // sim time; a bounded generate-AHEAD-of-the-playback-head is the cleaner future refinement.
+    child.postMessage({ seed, out: dbPath, opts: { resume, ticks: 1_000_000 } });
   });
 }
 ipcMain.handle('scrub:select',    (_e, seed)  => selectSeed((seed >>> 0)));
