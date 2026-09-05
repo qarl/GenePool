@@ -15,3 +15,6 @@ viewer-swimmer.json
 # visual-goldens harness: isolated deps + transient diff artifacts (goldens/*.png ARE committed)
 test/visual/node_modules/
 test/visual/goldens/*.diff.png
+
+# scrub/playback per-seed run databases (regenerable cache)
+runs/
