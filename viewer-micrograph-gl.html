@@ -26,12 +26,15 @@
   #cv.drag { cursor: grabbing; }
   #species { width: 256px; height: 768px; overflow-y: auto; scrollbar-gutter: stable; line-height: normal;
     background: #0b0e13; border-radius: 12px; padding: 4px 0; box-sizing: border-box; }   /* scrollable list of ALL species */
-  #species .srow { position: relative; padding: 3px 10px; cursor: pointer; }
-  #species .srow:hover { background: rgba(255,255,255,.06); }
-  #species .srow .info { color: #cfd6e0; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }   /* light: collapsed rows sit on the dark panel */
+  #species .srow { position: relative; padding: 4px 10px; cursor: pointer; }
+  #species .srow .info { color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }
+  /* COLLAPSED = a little viewer card: light micrograph-ish background + vignette + rounded corners, sized to the info */
+  #species .srow:not(.exp) .info { display: inline-block; padding: 8px 10px; border-radius: 12px;
+    background: radial-gradient(120% 125% at 50% 40%, #cfcbc1 0%, #bcb8ad 60%, #8c887e 100%); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+  #species .srow:not(.exp):hover .info { box-shadow: 0 1px 8px rgba(0,0,0,.6); }
   #species .srow .info .plate { margin-top: 0; }
-  /* expanded: mini fills the row; info becomes an upper-LEFT overlay so its plate lines up with the collapsed plates */
-  #species .srow.exp .info { position: absolute; top: 3px; left: 10px; z-index: 1; color: #000; }   /* dark: expanded overlay sits on the light micrograph */
+  /* EXPANDED: mini fills the row; info becomes an upper-LEFT overlay on the live render */
+  #species .srow.exp .info { position: absolute; top: 8px; left: 8px; z-index: 1; }
   #species .srow .miniwrap { width: 100%; aspect-ratio: 1 / 1; }
   #species .srow canvas.mini { display: block; width: 100%; height: 100%; border-radius: 12px; }
   /* species-tile count labels: HTML overlay over the right column (NOT drawn into the canvas, so goldens stay text-free) */
@@ -1085,39 +1088,50 @@ function plateHTML(sig){
   return `<span class="plate">${cells}</span>`;
 }
 const PLATE_W = 5 * CELL_W;   // diversity bar max width = the 5-cell plate width, so bar and plate align
-// avg lifespan -> 0..3 green circles (quartiles of the 0..40k range; none until the species' first death)
-const lifeCircles = life => { const n = life==null ? 0 : Math.min(3, Math.floor(life / (MAX_LIFESPAN/4))); return '<span class="circ"></span>'.repeat(n); };
-// population count + lifespan circles on one row
+const lifeTier = life => life==null ? 0 : Math.min(3, Math.floor(life / (MAX_LIFESPAN/4)));   // avg lifespan -> 0..3 (quartiles of 0..40k)
+const lifeCircles = life => '<span class="circ"></span>'.repeat(lifeTier(life));   // 0..3 green circles; none until first death
 const crowHTML = (count, life) => `<span class="crow"><span class="n">${count}</span><span class="circs">${lifeCircles(life)}</span></span>`;
-// diversity as a black bar, INVERTED: 100 diversity -> empty, 0 diversity -> full (max = plate width). Low-diversity
-// (converged) species get a long bar. std==null (no data yet) -> empty.
-const dbarHTML = std => { const pct = std==null ? 100 : divPct(std); return `<div class="dbar"><div class="dfill" style="width:${((100-pct)/100*PLATE_W).toFixed(1)}px"></div></div>`; };
+// diversity bar, INVERTED: 100 diversity -> 0 width, 0 diversity -> full plate width (converged species read as a long bar)
+const dbarWidth = std => (100 - (std==null ? 100 : divPct(std))) / 100 * PLATE_W;
+const dbarHTML = std => `<div class="dbar"><div class="dfill" style="width:${dbarWidth(std).toFixed(1)}px"></div></div>`;
 // offscreen-gating: a scrolled-out mini must NOT render+blit for pixels nobody sees. IO flips el._miniVisible.
 const miniObserver = speciesPanel ? new IntersectionObserver(
   es => { for (const e of es) e.target._srow._miniVisible = e.isIntersecting; }, { root: speciesPanel }) : null;
 function makeRow(id){
-  const el = document.createElement('div'); el.className = 'srow'; el.dataset.id = id; el.dataset.key = '';
-  const info = document.createElement('div'); info.className = 'info';   // plate (+count+div when expanded); upper-LEFT
+  // Build the row's structure ONCE and update only changed bits (plate on sig-change, bar width, count, circles) in place.
+  // Rebuilding innerHTML every frame would destroy the element mid-click (deaths/counts churn while running) -> can't expand.
+  const el = document.createElement('div'); el.className = 'srow'; el.dataset.id = id;
+  const info = document.createElement('div'); info.className = 'info';
+  const plateHost = document.createElement('span'); plateHost.className = 'platehost';        // plate barcode (rebuilt on sig change)
+  const dbar = document.createElement('div'); dbar.className = 'dbar';                          // diversity bar: BETWEEN plate and count
+  const dfill = document.createElement('div'); dfill.className = 'dfill'; dbar.appendChild(dfill);
+  const crow = document.createElement('span'); crow.className = 'crow';                         // count + lifespan circles
+  const n = document.createElement('span'); n.className = 'n';
+  const circs = document.createElement('span'); circs.className = 'circs';
+  crow.appendChild(n); crow.appendChild(circs);
+  info.appendChild(plateHost); info.appendChild(dbar); info.appendChild(crow);                 // ORDER: plate, bar, count+circles
   const wrap = document.createElement('div'); wrap.className = 'miniwrap'; wrap.hidden = true; wrap._srow = el;
   const mini = document.createElement('canvas'); mini.className = 'mini'; mini.width = VIEW_SMALL; mini.height = VIEW_SMALL;
   wrap.appendChild(mini); el.appendChild(info); el.appendChild(wrap);
-  el._info = info; el._wrap = wrap; el._mini = mini; el._miniCtx = mini.getContext('2d'); el._miniVisible = true;
+  el._info = info; el._plateHost = plateHost; el._dfill = dfill; el._n = n; el._circs = circs;
+  el._wrap = wrap; el._mini = mini; el._miniCtx = mini.getContext('2d'); el._miniVisible = true; el._sig = ''; el._tier = -1;
   if (miniObserver) miniObserver.observe(wrap);
   return el;
 }
-// click a row to toggle its live mini-viewer. Capture the id on POINTERDOWN so the per-frame wobble can't move the row
-// out from under the cursor between press and release (would toggle the wrong species). Multi-expand: independent toggles.
-let pendingClickId = null;
+// Toggle a row's live mini-viewer on POINTERDOWN (not click): the list re-sorts every frame while running, so a `click`
+// (which needs press+release on compatible targets) can miss when the row moves -- pointerdown fires instantly at press,
+// immune to the wobble. Reflect both directions immediately (responsive). Multi-expand: independent toggles.
 if (speciesPanel){
-  speciesPanel.addEventListener('pointerdown', e => { const row = e.target.closest('.srow'); pendingClickId = row ? +row.dataset.id : null; });
-  speciesPanel.addEventListener('click', () => { const id = pendingClickId; pendingClickId = null;
-    if (id == null) return; const el = rowMap.get(id);   // reflect BOTH directions immediately (responsive; also lets a stopped-loop test observe it)
+  speciesPanel.addEventListener('pointerdown', e => {
+    const row = e.target.closest('.srow'); if (!row) return;
+    const id = +row.dataset.id; const el = rowMap.get(id);
     if (expanded.has(id)){ expanded.delete(id); if (el){ el.classList.remove('exp'); el._wrap.hidden = true; } }
-    else { expanded.add(id); if (el){ el.classList.add('exp'); el._wrap.hidden = false; el._miniVisible = true; } } });
+    else { expanded.add(id); if (el){ el.classList.add('exp'); el._wrap.hidden = false; el._miniVisible = true; } }
+  });
 }
 function updateSpeciesUI(){
-  // whole-population: plate, then count + lifespan circles, then the diversity bar. Top-left of the main view.
-  if (labMain && world) labMain.innerHTML = `${plateHTML(popSig)}${crowHTML(world.getLivingSwimbotCount(), popLifeEMA)}${dbarHTML(popDivEMA)}`;
+  // whole-population: plate, then the diversity bar, then count + lifespan circles. Top-left of the main view.
+  if (labMain && world) labMain.innerHTML = `${plateHTML(popSig)}${dbarHTML(popDivEMA)}${crowHTML(world.getLivingSwimbotCount(), popLifeEMA)}`;
   if (!speciesPanel) return;
   // The list is driven by the PERSISTENT lineages (`tracked`), NOT the per-frame `speciesList`: a lineage survives up to
   // 4 missed reclusters (tracked.delete at misses>4), so a 1-frame absence must NOT drop its row / collapse its viewer.
@@ -1131,15 +1145,13 @@ function updateSpeciesUI(){
     let el = rowMap.get(id);
     if (!el){ el = makeRow(id); rowMap.set(id, el); }
     const exp = expanded.has(id);
-    el.classList.toggle('exp', exp);                     // collapsed = plate only; expanded = mini + full info overlay
+    el.classList.toggle('exp', exp);                     // collapsed = info card; expanded = mini + info overlay
     el._wrap.hidden = !exp;
-    const nCirc = t.lifeEMA==null ? 0 : Math.min(3, Math.floor(t.lifeEMA/(MAX_LIFESPAN/4)));
-    const dpct = t.divEMA==null ? 100 : divPct(t.divEMA);
-    const key = `${t.sig}|${t.count}|${nCirc}|${dpct}`;   // rebuild only when something shown changes
-    if (el.dataset.key !== key){
-      el._info.innerHTML = plateHTML(t.sig) + crowHTML(t.count, t.lifeEMA) + dbarHTML(t.divEMA);
-      el.dataset.key = key;
-    }
+    if (el._sig !== t.sig){ el._plateHost.innerHTML = plateHTML(t.sig); el._sig = t.sig; }   // plate: only on signature change
+    el._dfill.style.width = dbarWidth(t.divEMA).toFixed(1) + 'px';   // diversity bar (cheap style update, no DOM churn)
+    el._n.textContent = t.count;
+    const tier = lifeTier(t.lifeEMA);
+    if (el._tier !== tier){ el._circs.innerHTML = lifeCircles(t.lifeEMA); el._tier = tier; }
   }
   for (let i = 0; i < live.length; i++){                // minimal-move reorder to the sorted order (no-op when unchanged)
     const el = rowMap.get(live[i][0]);
