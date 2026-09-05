@@ -182,9 +182,11 @@ export class World {
             life: makeStream(this._masterSeed, DOMAIN.SWIMBOT_LIFE, id),
             matePref: this._matePref,
             config: this._config, embryology: this._embryology, topology: this._topology,
-            onDeath: (deadId) => {
+            onDeath: (deadId, age) => {
                 this._numDeadSwimbots++; this._deadSwimbotIds.push(deadId); this._livingSwimbotCount--;
-                if (this._onEvent) this._onEvent({ type: 'death', tick: this._clock, id: deadId });
+                // age carried on the event (D9): the deaths table has no genes/age, so lifespan reconstruction
+                // (scrub/playback) folds age-at-death from here rather than re-deriving it. Pure observer.
+                if (this._onEvent) this._onEvent({ type: 'death', tick: this._clock, id: deadId, age });
             },
         });
     }

@@ -976,7 +976,7 @@ export class Swimbot {
         if (!this._alive) { return; }
         this._alive = false;
         if (this._index !== NULL_INDEX && this._onDeath) {
-            this._onDeath(this._index);
+            this._onDeath(this._index, this._age); // age is still valid here (die() only flips _alive)
         }
     }
 

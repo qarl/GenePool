@@ -39,6 +39,12 @@ test('sqlite sink: the DB captures the run and answers analytical queries', () =
     // counts in the DB must equal the engine's own accounting
     assert.equal(one('SELECT count(*) c FROM births').c, world.getNextSwimbotId() - startId, 'births table != actual births');
     assert.equal(one('SELECT count(*) c FROM deaths').c, world.getNumDeadSwimbots(), 'deaths table != actual deaths');
+    // D9 (scrub/playback): deaths carry age-at-death, and it's a sane lifespan (>=0, <= maximumLifeSpan+1 for
+    // old-age deaths). Lifespan reconstruction folds these instead of re-deriving from the ageless death row.
+    const ageStats = one('SELECT count(*) c, min(age) lo, max(age) hi FROM deaths WHERE age IS NOT NULL');
+    assert.equal(ageStats.c, world.getNumDeadSwimbots(), 'every death row must carry an age (D9)');
+    assert.ok(ageStats.lo >= 0, `death age must be >= 0 (got ${ageStats.lo})`);
+    assert.ok(ageStats.hi <= CONFIG.maximumLifeSpan + 1, `death age ${ageStats.hi} exceeds maximumLifeSpan`);
     assert.equal(one('SELECT count(*) c FROM ticks').c, TICKS, 'ticks table != number of ticks');
     assert.ok(one('SELECT count(*) c FROM eats').c > 0, 'no eat rows recorded');
 
