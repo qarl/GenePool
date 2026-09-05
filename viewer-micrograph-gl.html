@@ -30,7 +30,6 @@
   #species .srow:hover { background: rgba(255,255,255,.06); }
   #species .srow .info { color: #cfd6e0; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }   /* light: collapsed rows sit on the dark panel */
   #species .srow .info .plate { margin-top: 0; }
-  #species .srow .prow .plate { margin-top: 0; }
   /* expanded: mini fills the row; info becomes an upper-LEFT overlay so its plate lines up with the collapsed plates */
   #species .srow.exp .info { position: absolute; top: 3px; left: 10px; z-index: 1; color: #000; }   /* dark: expanded overlay sits on the light micrograph */
   #species .srow .miniwrap { width: 100%; aspect-ratio: 1 / 1; }
@@ -40,13 +39,14 @@
   .tileLabel { position: absolute; left: 12px; text-align: left; pointer-events: none; line-height: 1.25;
     color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; }
   /* .n / .d NOT scoped to .tileLabel -- reused in the #species .info blocks too */
-  .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .d { display: block; font-size: 13px; font-weight: 500; opacity: 0.7; font-variant-numeric: tabular-nums; }   /* diversity index 0-100 */
-  .tileLabel .sig { font-size: 12px; font-weight: 500; letter-spacing: 2px; }
+  .crow { display: flex; align-items: center; gap: 7px; }   /* population count + lifespan circles on one row */
+  .n { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .circs { display: inline-flex; gap: 3px; }
+  .circ { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #35c46a; }   /* lifespan: 0-3 green circles */
+  .dbar { width: 90px; height: 7px; margin-top: 3px; background: rgba(128,128,128,.22); border-radius: 2px; overflow: hidden; }  /* diversity gauge: max = plate width */
+  .dfill { height: 100%; background: #000; }   /* INVERTED: 0 diversity -> full black bar, 100 diversity -> empty */
   /* license plate as a colour barcode: one cell per character, hue = that character's value (0-9A-Z -> around the wheel).
      NOT scoped to .tileLabel -- the plate is reused bare in the flowed .srow list rows too. */
-  .prow { display: flex; align-items: center; gap: 7px; }   /* plate + avg-lifespan number on one row */
-  .life { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .plate { display: inline-flex; gap: 0; margin-top: 3px; }
   .cell { display: flex; align-items: center; justify-content: center; box-sizing: border-box;
     width: 18px; height: 20px; font-size: 13px; font-weight: 600; color: #000; overflow: hidden; }
@@ -946,7 +946,7 @@ const PCA_SCALES = [138.951,136.159,133.33,129.247,121.914];   // per-component 
 // signed percentile in [-1,1] is amplified x SIG_AMP and CLAMPED (values past the ends pile at the extremes -- no
 // wrap-around), then mapped to base36 steps [-17,17]: above-average climbs 1,2,3..H, below-average descends Z,Y,X..J.
 // The gap symbol 'I' (18, the ring antipode) is never produced. erf via Abramowitz-Stegun 7.1.26.
-const SIG_AMP = 1.5;   // amplify the coordinates (stronger plates; extremes clamp)
+const SIG_AMP = 2.0;   // amplify the coordinates (stronger plates; extremes clamp)
 function erf(x){ const s = x<0?-1:1; x = Math.abs(x); const t = 1/(1+0.3275911*x);
   const y = 1 - (((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x); return s*y; }
 const normCDF = z => 0.5*(1+erf(z/Math.SQRT2));
@@ -1084,10 +1084,14 @@ function plateHTML(sig){
   }
   return `<span class="plate">${cells}</span>`;
 }
-const divHTML = std => std==null ? '' : `<span class="d">${divPct(std)}</span>`;   // 0..100 diversity index (used-gene spread)
-const fmtLife = life => life==null ? '—' : String(Math.round(life/100)*100);   // avg age-at-death (ticks, rounded to 100); em-dash until first death
-// plate + avg-lifespan number to its RIGHT (one row); count/diversity stack below
-const plateRow = (sig, life) => `<span class="prow">${plateHTML(sig)}<span class="life">${fmtLife(life)}</span></span>`;
+const PLATE_W = 5 * CELL_W;   // diversity bar max width = the 5-cell plate width, so bar and plate align
+// avg lifespan -> 0..3 green circles (quartiles of the 0..40k range; none until the species' first death)
+const lifeCircles = life => { const n = life==null ? 0 : Math.min(3, Math.floor(life / (MAX_LIFESPAN/4))); return '<span class="circ"></span>'.repeat(n); };
+// population count + lifespan circles on one row
+const crowHTML = (count, life) => `<span class="crow"><span class="n">${count}</span><span class="circs">${lifeCircles(life)}</span></span>`;
+// diversity as a black bar, INVERTED: 100 diversity -> empty, 0 diversity -> full (max = plate width). Low-diversity
+// (converged) species get a long bar. std==null (no data yet) -> empty.
+const dbarHTML = std => { const pct = std==null ? 100 : divPct(std); return `<div class="dbar"><div class="dfill" style="width:${((100-pct)/100*PLATE_W).toFixed(1)}px"></div></div>`; };
 // offscreen-gating: a scrolled-out mini must NOT render+blit for pixels nobody sees. IO flips el._miniVisible.
 const miniObserver = speciesPanel ? new IntersectionObserver(
   es => { for (const e of es) e.target._srow._miniVisible = e.isIntersecting; }, { root: speciesPanel }) : null;
@@ -1112,13 +1116,14 @@ if (speciesPanel){
     else { expanded.add(id); if (el){ el.classList.add('exp'); el._wrap.hidden = false; el._miniVisible = true; } } });
 }
 function updateSpeciesUI(){
-  // whole-population plate (+ avg lifespan to its right) + count + diversity, top-left of the main view.
-  if (labMain && world) labMain.innerHTML = `${plateRow(popSig, popLifeEMA)}<span class="n">${world.getLivingSwimbotCount()}</span>${divHTML(popDivEMA)}`;
+  // whole-population: plate, then count + lifespan circles, then the diversity bar. Top-left of the main view.
+  if (labMain && world) labMain.innerHTML = `${plateHTML(popSig)}${crowHTML(world.getLivingSwimbotCount(), popLifeEMA)}${dbarHTML(popDivEMA)}`;
   if (!speciesPanel) return;
   // The list is driven by the PERSISTENT lineages (`tracked`), NOT the per-frame `speciesList`: a lineage survives up to
   // 4 missed reclusters (tracked.delete at misses>4), so a 1-frame absence must NOT drop its row / collapse its viewer.
   const live = [...tracked.entries()];                 // [id, t]; t.count/t.sig hold last-known values during a miss
-  live.sort((a, b) => b[1].count - a[1].count);        // wobbly: strict re-sort by population every frame
+  const lifeKey = t => t.lifeEMA ?? popLifeEMA ?? (MAX_LIFESPAN/2);   // no-death-yet -> pop avg (else half the cap)
+  live.sort((a, b) => b[1].count*lifeKey(b[1]) - a[1].count*lifeKey(a[1]));   // sort by population x avg-lifespan (wobbly)
   const want = new Set();
   for (const [id] of live) want.add(id);
   for (const [id, el] of rowMap) if (!want.has(id)){ if (el._wrap) miniObserver.unobserve(el._wrap); el.remove(); rowMap.delete(id); expanded.delete(id); }   // retired lineages
@@ -1128,9 +1133,11 @@ function updateSpeciesUI(){
     const exp = expanded.has(id);
     el.classList.toggle('exp', exp);                     // collapsed = plate only; expanded = mini + full info overlay
     el._wrap.hidden = !exp;
-    const key = t.sig + '|' + fmtLife(t.lifeEMA) + (exp ? '|' + t.count + '|' + divPct(t.divEMA) : '');   // rebuild only when something shown changes
+    const nCirc = t.lifeEMA==null ? 0 : Math.min(3, Math.floor(t.lifeEMA/(MAX_LIFESPAN/4)));
+    const dpct = t.divEMA==null ? 100 : divPct(t.divEMA);
+    const key = `${t.sig}|${t.count}|${nCirc}|${dpct}`;   // rebuild only when something shown changes
     if (el.dataset.key !== key){
-      el._info.innerHTML = plateRow(t.sig, t.lifeEMA) + (exp ? `<span class="n">${t.count}</span>${divHTML(t.divEMA)}` : '');
+      el._info.innerHTML = plateHTML(t.sig) + crowHTML(t.count, t.lifeEMA) + dbarHTML(t.divEMA);
       el.dataset.key = key;
     }
   }

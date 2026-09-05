@@ -42,7 +42,7 @@ arbitrary genes), and the projection onto max-variance axes is also the optimal 
 
 ## Encoding (in the viewer)
 `sigCoord(vec,i)`: `coeff = (vec − PCA_MEAN) · PC_i`, standardise, take the **signed percentile** `p = 2(Φ(coeff/scale) −
-0.5) ∈ [-1,1]`, **amplify** `× SIG_AMP` (=1.5) and **CLAMP** to `[-1,1]` — a linear, non-wrapping coordinate (0 = mean).
+0.5) ∈ [-1,1]`, **amplify** `× SIG_AMP` (=2.0) and **CLAMP** to `[-1,1]` — a linear, non-wrapping coordinate (0 = mean).
 `signatureOf` maps it to base36 steps `[-17,17]`: **mean → "00000"**, above-average climbs `1,2,3…H`, below descends
 `Z,Y,X…J` (clamped — NOT a ring; the antipode gap `I` is never produced, and extremes pile at `H`/`J` rather than
 wrapping). Amplification (Karl: "make them stronger") clamps ~⅓ of digits at the extremes — intentional.
