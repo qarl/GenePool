@@ -26,14 +26,16 @@
   #cv.drag { cursor: grabbing; }
   #species { width: 256px; height: 768px; overflow-y: auto; scrollbar-gutter: stable; line-height: normal;
     background: #0b0e13; border-radius: 12px; padding: 4px 0; box-sizing: border-box; }   /* scrollable list of ALL species */
-  #species .srow { position: relative; padding: 4px 10px; cursor: pointer; }
+  /* NO padding: card + mini fill the row (same width); margin gives the gap+inset. So collapsed & expanded are the
+     same width, and the info sits at the SAME (8,8) inset in both -> it lines up when you expand/collapse. */
+  #species .srow { position: relative; margin: 6px 8px; cursor: pointer; }
   #species .srow .info { color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }
-  /* COLLAPSED = a little viewer card: light micrograph-ish background + vignette + rounded corners, sized to the info */
-  #species .srow:not(.exp) .info { display: inline-block; padding: 8px 10px; border-radius: 12px;
-    background: radial-gradient(120% 125% at 50% 40%, #cfcbc1 0%, #bcb8ad 60%, #8c887e 100%); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+  /* COLLAPSED = a little viewer card, FULL row width (= the expanded mini): micrograph-ish vignette + rounded corners */
+  #species .srow:not(.exp) .info { display: block; padding: 8px; border-radius: 12px;
+    background: radial-gradient(120% 200% at 50% 30%, #cfcbc1 0%, #bcb8ad 60%, #8c887e 100%); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
   #species .srow:not(.exp):hover .info { box-shadow: 0 1px 8px rgba(0,0,0,.6); }
   #species .srow .info .plate { margin-top: 0; }
-  /* EXPANDED: mini fills the row; info becomes an upper-LEFT overlay on the live render */
+  /* EXPANDED: mini fills the row; info overlays its top-left at the SAME (8,8) inset as the collapsed card */
   #species .srow.exp .info { position: absolute; top: 8px; left: 8px; z-index: 1; }
   #species .srow .miniwrap { width: 100%; aspect-ratio: 1 / 1; }
   #species .srow canvas.mini { display: block; width: 100%; height: 100%; border-radius: 12px; }
