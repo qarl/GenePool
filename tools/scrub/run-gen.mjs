@@ -17,6 +17,7 @@ import { dirname } from 'node:path';
 import { World } from '../../engine/world.js';
 import { makeEcologyConfig, makeFounders, makeFood, OBSTACLE } from '../../engine/parallel/common.mjs';
 import { openRunWriter } from '../events/run-db.mjs';
+import { createSpeciesAnalyzer } from '../../engine/analysis/species.mjs';
 
 export const GEN_DEFAULTS = { ticks: 20000, keyframeInterval: 2000, statsInterval: 250, tickThrottle: 100, pool: 8000, n: 1500 };
 
@@ -34,9 +35,12 @@ export function buildWorld(seed, { pool = GEN_DEFAULTS.pool, n = GEN_DEFAULTS.n 
     return { world, config };
 }
 
-// Minimal stats until the shared species/analysis module lands (D2); run-db is agnostic to the stats shape.
-function computeStats(world, tick) {
-    return { tick, pop: world.getLivingSwimbotCount(), food: world.getLivingFoodCount() };
+// Full stats row (D2): recompute species at the fixed cadence and fold in the shared analyzer's panel state, so a
+// scrub shows the main plate + diversity + lifespan + per-lineage list instantly with no recompute. `analyzer` is
+// recomputed HERE (once per stats/keyframe tick = the fixed-cadence contract); deaths are folded via onEvent.
+function computeStats(world, tick, analyzer) {
+    analyzer.recompute(world._swimbots.values());
+    return { tick, pop: world.getLivingSwimbotCount(), food: world.getLivingFoodCount(), species: analyzer.statsRow() };
 }
 
 // Generate a full run to `path`. Returns a small summary. `onProgress(tick, frontier)` optional (utilityProcess
@@ -49,24 +53,31 @@ export function generateRun(path, seed, opts = {}) {
         engineVersion: o.engineVersion ?? null, perceptionMode: 'mixed-live',
     }, { resume: !!o.resume });
 
+    const analyzer = createSpeciesAnalyzer();   // fixed-cadence species/plate/lifespan compute -> each stats row (D2)
     let world, startTick = 0, keyframes = 0, resumed = false;
     if (writer.resumedFrom) {
         // S4/S5 crash-resume: restore from the last durable keyframe using the RUN'S stored config (S2), continue.
+        // (The analyzer re-warms from cold here -- per-lineage EMAs/ids restart at the resume seam; accepted drift.)
         const cfg = writer.runConfig().config;
         world = World.restore(cfg, writer.resumedFrom.snapshot);
         startTick = writer.resumedFrom.tick;
         resumed = true;
     } else {
         ({ world } = buildWorld(seed, o));
-        writer.writeKeyframe(0, world.serialize(), computeStats(world, 0)); keyframes++;   // keyframe-0 = seeded state (D8)
     }
-    // throttle the per-tick 'tick' event (N5); births/deaths/eats always pass through.
-    world._onEvent = (e) => { if (e.type === 'tick' && (e.tick % o.tickThrottle) !== 0) return; writer.onEvent(e); };
+    // throttle the per-tick 'tick' event (N5); births/deaths/eats always pass through. Fold each death's age (D9)
+    // into the analyzer for the population + per-lineage lifespan EMAs (event-driven -> exact, not lossy polling).
+    world._onEvent = (e) => {
+        if (e.type === 'death') { const sb = world._swimbots.get(e.id); if (sb) analyzer.foldDeath(sb, e.age); }
+        if (e.type === 'tick' && (e.tick % o.tickThrottle) !== 0) return;
+        writer.onEvent(e);
+    };
+    if (!resumed) { writer.writeKeyframe(0, world.serialize(), computeStats(world, 0, analyzer)); keyframes++; }   // keyframe-0 = seeded state (D8)
 
     for (let t = startTick + 1; t <= o.ticks; t++) {
         world.tick();
-        if (t % o.keyframeInterval === 0) { writer.writeKeyframe(t, world.serialize(), computeStats(world, t)); keyframes++; if (o.onProgress) o.onProgress(t, t); }
-        else if (t % o.statsInterval === 0) { writer.writeStats(t, computeStats(world, t)); if (o.onProgress) o.onProgress(t, t); }
+        if (t % o.keyframeInterval === 0) { writer.writeKeyframe(t, world.serialize(), computeStats(world, t, analyzer)); keyframes++; if (o.onProgress) o.onProgress(t, t); }
+        else if (t % o.statsInterval === 0) { writer.writeStats(t, computeStats(world, t, analyzer)); if (o.onProgress) o.onProgress(t, t); }
     }
     writer.finish();
     writer.close();
