@@ -73,6 +73,8 @@ export function generateRun(path, seed, opts = {}) {
         writer.onEvent(e);
     };
     if (!resumed) { writer.writeKeyframe(0, world.serialize(), computeStats(world, 0, analyzer)); keyframes++; }   // keyframe-0 = seeded state (D8)
+    // the .db now has a committed keyframe + WAL set -> safe for a read-only reader to open (S3 "db ready" handshake)
+    if (o.onReady) o.onReady({ path, frontier: startTick });
 
     for (let t = startTick + 1; t <= o.ticks; t++) {
         world.tick();
