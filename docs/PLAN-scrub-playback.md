@@ -94,6 +94,45 @@ Define **TICKS_PER_SECOND = 60** (1× speed = real-time = 60 ticks/s, the natura
 - Headless: drive the scrub (set head to T) and assert the reconstructed population/hash matches a direct run to T.
 - The existing browser visual suite stays green (plain-browser path untouched).
 
+## Hardening review — folded in (2026-09-05, before the 5-panel)
+A single review hardened this plan; the changes below are now the plan (verdict: core approach sound —
+serialize/restore is state-complete incl. RNG; WAL cross-process reader works):
+
+- **B1 (determinism seam) → CHANGE THE GENERATOR HOST.** Generation in a Node `utilityProcess` runs a *different V8
+  version* than the Chromium renderer that re-sims; the sim uses `Math.sin/cos/hypot` (swimbot.js:308-309/338/350-351),
+  which are fdlibm and NOT bit-guaranteed across V8 versions → an exact-tick re-sim could diverge from the generator.
+  (RNG is safe — pure integer lanes, rng.js:30-59; `sqrt` is correctly-rounded.) **Decision: run the generator in a
+  HIDDEN/offscreen Chromium `BrowserWindow` (or a renderer Worker), NOT a utilityProcess — same V8 as playback →
+  determinism is free**, and writes still funnel through main's existing IPC → `sqlite-sink`. Drag-snap is immune either
+  way (it renders a stored keyframe, no re-sim); this only matters for exact-tick/"play". Still add the cross-engine
+  determinism gate (generator keyframe-hash == renderer restore+resim hash) as a build go/no-go.
+- **B2 (lifespan/overlay reconstruction) → REWRITE.** The `deaths` event/table is `{tick,id}` only — **no age/genes**
+  (world.js:187, sqlite-sink.mjs:27) — and today's lifespan is computed by *polling* live refs at the alive→dead
+  transition (viewer:1234-1242), which is **lossy at >1 tick/frame** (i.e. during scrub/fast playback) and feeds
+  order-dependent EMAs needing the `tracked` map since tick 0. Decision: **reconstruct by re-simming keyframe→T with
+  `onEvent` attached** (event-driven death detection; add `age` to the death event OR read the bot's age before
+  `_sweepDead`), seeding `popLifeEMA` from the keyframe's `stats` row; per-lineage `lifeEMA` rebuilds from the keyframe
+  (accept drift) or serialize `tracked`. Special-case founders (they emit `'founder'` with a RANDOM start age, world.js:224,
+  not `'birth'`). Species/diversity/plate still recompute from the restored world (but keyframe-snap gives the RAW
+  centroid, not the `SIG_EMA`-smoothed plate — N1, acceptable, note it).
+- **S1 flush cadence:** the sink batches (batchSize 5000) so events/ticks lag the reader — generator must `flush()` +
+  commit `run_meta` frontier(maxTick) **each keyframe**; keep keyframes autocommitted (that's what makes live drag-scrub
+  work while generating).
+- **S2 config source:** playback must `restore(config,…)` with the **run's config from `run_meta`**, NOT the viewer's
+  hardcoded `build()` defaults (viewer:561-567) — mismatch diverges silently.
+- **S3 WAL hygiene:** main opens the .db **after** the generator creates it + sets WAL; main **never writes** (set
+  `busy_timeout`, effectively read-only); use materializing reads (`.all()/.get()`), not a lingering iterator (or it
+  starves the writer's auto-checkpoint). Local FS (`runs/`) — fine. Readers never hit SQLITE_BUSY in WAL.
+- **S4 resume-partial:** on generator restart from the last autocommitted keyframe, first `DELETE` any events/ticks with
+  `tick > lastKeyframeTick` (batched rows past it may be torn/duplicated), then re-sim forward.
+- **S5 seed-change/edges:** kill+respawn generator AND reset playback world + overlay EMAs (reuse build()/loadWorld reset,
+  viewer:581-583/612-614) or `tracked`/`popLifeEMA` bleed across runs; exact-refine = release-only, debounced.
+- **N4 IPC surface to build:** `getKeyframe≤T`, `getStats@T`, `getFrontier`, `getPopSeries` (renderer is sandboxed →
+  main reads the .db and ships JSON, ~100KB/scrub, ms latency). **N5:** `ticks` throttle = generator-side `tick%100==0`
+  filter. **N2:** do NOT touch serialize/restore — it's state-complete (verified).
+
+NEXT: 5-panel review of this hardened plan, then build.
+
 ## Provenance
 Decisions from Karl (2026-09-05): build scrub + playback now; single-thread (multicore rejected after measurement);
 generation + SQLite on a separate thread; save the stats; time in mm:ss not ticks; controls + scrub consolidated at the
