@@ -166,9 +166,13 @@ Measured: `serialize()` ≈ **4.2 KB per living bot**, so ~1400 bots ≈ **5.9 M
 **0.6–3 GB, not 50 MB.** And N4's "~100 KB/scrub" is really **1–6 MB per `getKeyframe`** structured-cloned to the
 renderer. Fixes: **base64 the genes** (256 B vs ~1 KB), **gzip the `json` column** (floats ~2–3×), and **decouple** a
 dense-cheap `STATS_INTERVAL` (pop curve + panel, e.g. ~200–500 ticks — tiny rows) from a sparse `KEYFRAME_INTERVAL`
-(full-world restore anchors). **MEASURE real compressed sizes + `getKeyframe` clone latency in Phase 1 and tune the two
-intervals then** — do not hard-commit numbers now. (Disk is cheap for a personal tool, but IPC clone latency per snap is
-the real UX cost → compression is load-bearing.)
+(full-world restore anchors). (Disk is cheap for a personal tool, but IPC clone latency per snap is the real UX cost →
+compression is load-bearing.)
+  ✅ **MEASURED (Phase 1, `run-db.mjs` + measure probe):** at seed-42 the pop stabilizes ~500–600 bots → keyframe ≈
+  **2 MB raw / ~1 MB gzipped** (~4 KB/bot raw confirmed; **gzip = steady 2.5×**). A **1M-tick run @ KEYFRAME_INTERVAL=2000
+  ≈ 0.5 GB gz** (~1.2 GB raw); @4000 ≈ 250 MB. **Decision: gzip the snapshot JSON as a BLOB is SUFFICIENT — base64-genes
+  is NOT needed** (gzip already squashes the gene/float arrays). Defaults: KEYFRAME_INTERVAL=2000, STATS dense (~250),
+  both tunable. Ship the gz blob over IPC (renderer gunzips) to ~halve clone cost (Phase 6).
 
 **D4 — Crash-safe keyframe write + schema hardening (folds S1/S3/S4 tighter).**
 Per keyframe, in **ONE transaction**: `flush()` events → insert snapshot → insert stats → **update `run_meta` frontier

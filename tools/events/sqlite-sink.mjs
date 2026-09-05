@@ -37,19 +37,24 @@ export function createSqliteSink(path = ':memory:', { batchSize = 5000, runId = 
     const uuid = runId ? (id) => bodyUuid(runId, id) : () => null; // deterministic per-body id, or NULL if no runId
 
     let buf = [];
+    // Insert the buffered events using the caller's CURRENT transaction (no BEGIN/COMMIT of its own). This lets a
+    // caller fold the event drain into a larger atomic write -- e.g. the scrub keyframe (run-db.mjs): one
+    // transaction = events + snapshot + stats + frontier, so a reader never sees a keyframe ahead of its events.
+    function drainWithin() {
+        if (buf.length === 0) return;
+        for (const e of buf) {
+            if (e.type === 'birth') stmt.birth.run(e.tick, e.id, uuid(e.id), e.parentId, uuid(e.parentId), e.mateId, uuid(e.mateId), e.x, e.y, e.parentMask ?? null, e.mutationMask ?? null);
+            else if (e.type === 'death') stmt.death.run(e.tick, e.id, uuid(e.id), e.age ?? null);
+            else if (e.type === 'eat') stmt.eat.run(e.tick, e.id, uuid(e.id), e.foodId);
+            else if (e.type === 'tick') stmt.tick.run(e.tick, e.pop, e.food);
+        }
+        buf = [];
+    }
     function flush() {
         if (buf.length === 0) return;
         db.exec('BEGIN');
-        try {
-            for (const e of buf) {
-                if (e.type === 'birth') stmt.birth.run(e.tick, e.id, uuid(e.id), e.parentId, uuid(e.parentId), e.mateId, uuid(e.mateId), e.x, e.y, e.parentMask ?? null, e.mutationMask ?? null);
-                else if (e.type === 'death') stmt.death.run(e.tick, e.id, uuid(e.id), e.age ?? null);
-                else if (e.type === 'eat') stmt.eat.run(e.tick, e.id, uuid(e.id), e.foodId);
-                else if (e.type === 'tick') stmt.tick.run(e.tick, e.pop, e.food);
-            }
-            db.exec('COMMIT');
-        } catch (err) { db.exec('ROLLBACK'); throw err; }
-        buf = [];
+        try { drainWithin(); db.exec('COMMIT'); }
+        catch (err) { db.exec('ROLLBACK'); throw err; }
     }
 
     return {
@@ -57,6 +62,8 @@ export function createSqliteSink(path = ':memory:', { batchSize = 5000, runId = 
         runId,
         onEvent(e) { buf.push(e); if (buf.length >= batchSize) flush(); },
         flush,
+        drainWithin,          // drain the buffer inside a caller-managed transaction (see run-db.mjs)
+        pending: () => buf.length,
         close() { flush(); db.close(); },
     };
 }
