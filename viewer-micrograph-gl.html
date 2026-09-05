@@ -58,6 +58,14 @@
   .cell .g { display: block; width: 18px; height: 20px;   /* glyph is a pre-centred bitmap (see measurePlateGlyphs) */
     background-repeat: no-repeat; background-position: center; background-size: 18px 20px; }
   #labMain { top: 12px; left: 12px; }   /* total population, top-LEFT of the main view (anchored to #canvasBox) */
+  /* scrub/playback bottom bar (desktop only) */
+  #scrubbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: flex; align-items: center; gap: 14px;
+    padding: 8px 16px; background: #0d1117f2; border-top: 1px solid #1e2733; backdrop-filter: blur(4px);
+    font: 12px system-ui, -apple-system, sans-serif; color: #9fb0c3; }
+  #scrubbar label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #scrubbar #sbSlider { flex: 1; min-width: 120px; }
+  #scrubbar button { min-width: 36px; cursor: pointer; }
+  #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 104px; text-align: right; color: #c7d3e0; }
 </style>
 </head>
 <body>
@@ -80,6 +88,13 @@
   </div>
   <div id="species"></div>
 </div></div>
+<footer id="scrubbar" hidden>
+  <label>Seed <input id="sbSeed" type="number" min="0" step="1" value="1" style="width:72px"></label>
+  <label>Speed <input id="sbSpeed" type="range" min="1" max="60" value="3"><span id="sbSpeedv">3×</span></label>
+  <button id="sbPlay" title="play / pause">▶</button>
+  <input id="sbSlider" type="range" min="0" max="0" value="0" step="1">
+  <span id="sbTime">00:00 / 00:00</span>
+</footer>
 
 <script type="module">
 import { World } from './engine/world.js';
@@ -1440,8 +1455,79 @@ window.__bench = function(s, ticks, camOv, frames, junkFrac){
            living: world.getLivingSwimbotCount(), nJunk, zoom: cam.zoom };
 };
 
+// ================================================================== scrub / playback (desktop only)
+// The browser keeps the live loop above. In the Electron app a utilityProcess GENERATES the seed's run (real Node,
+// same V8 -> D1) and main serves it read-only over IPC (window.pool.scrub). A tick is DECODED by restoring the nearest
+// keyframe (drag = snap, no re-sim) and, while playing, ticking that restored world forward -- deterministic, so it
+// stays in lockstep with the generator. Time is shown mm:ss (never ticks).
+const TICKS_PER_SECOND = 60;   // 1x speed = real-time
+const mmss = t => { const s = Math.max(0, Math.floor((t || 0) / TICKS_PER_SECOND)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+function resetOverlays(clock = 0){ known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }
+
+function startPlayback(){
+  // the live-loop controls move to the bottom bar; hide them (Save/Load stay in the header)
+  for (const el of [document.getElementById('play'), document.getElementById('reset')]) if (el) el.hidden = true;
+  const seedLabel = document.getElementById('seedIn')?.closest('label'); if (seedLabel) seedLabel.hidden = true;
+  const speedLabel = document.getElementById('speed')?.closest('label'); if (speedLabel) speedLabel.hidden = true;
+  document.getElementById('scrubbar').hidden = false;
+
+  const $seed = document.getElementById('sbSeed'), $speed = document.getElementById('sbSpeed'), $speedv = document.getElementById('sbSpeedv');
+  const $play = document.getElementById('sbPlay'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
+  let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null;
+
+  function updateBar(){
+    if (!dragging){ $slider.max = Math.max(0, frontier); $slider.value = head; }
+    $time.textContent = `${mmss(head)} / ${mmss(frontier)}`;
+    $play.textContent = playing ? '⏸' : '▶';
+  }
+  // drag-snap: restore the nearest keyframe <= t (no re-sim). Coalesce to the latest target while one is in flight.
+  async function snapTo(t){
+    if (!cfg) return;
+    t = Math.max(0, Math.min(t, frontier));
+    if (snapInFlight){ snapPending = t; return; }
+    snapInFlight = true;
+    const kf = await window.pool.scrub.keyframe(t);
+    snapInFlight = false;
+    if (kf){ world = World.restore(cfg, kf.snapshot); head = kf.tick; resetOverlays(head); render(); updateBar(); }
+    if (snapPending != null){ const p = snapPending; snapPending = null; snapTo(p); }
+  }
+  async function selectSeed(sd){
+    playing = false;
+    const r = await window.pool.scrub.select(sd >>> 0);
+    if (!r || !r.ok){ document.getElementById('err').textContent = 'run failed: ' + ((r && r.error) || '?'); return; }
+    document.getElementById('err').textContent = '';
+    cfg = r.runConfig.config; frontier = r.frontier; head = 0;
+    seedJunk(mulberry32((sd >>> 0) ^ 0x5eed1234));   // detritus pool (cosmetic; build() normally does this)
+    await snapTo(0);
+  }
+
+  window.pool.scrub.onFrontier(t => { frontier = Math.max(frontier, t); if (!dragging) updateBar(); });
+  $play.onclick = () => { playing = !playing; updateBar(); };
+  $speed.oninput = () => { ticksPerFrame = +$speed.value; $speedv.textContent = ticksPerFrame + '×'; };
+  $seed.onchange = () => { const v = parseInt($seed.value, 10); if (Number.isFinite(v) && v >= 0) selectSeed(v); };
+  $slider.oninput = () => { dragging = true; playing = false; head = +$slider.value; $time.textContent = `${mmss(head)} / ${mmss(frontier)}`; snapTo(head); };
+  $slider.onchange = () => { dragging = false; snapTo(+$slider.value); };
+
+  function playbackLoop(){
+    if (loopStopped) return;
+    if (playing && world && !dragging && head < frontier){
+      const step = Math.min(ticksPerFrame, frontier - head);
+      for (let i = 0; i < step; i++) world.tick();
+      head += step;
+    }
+    render(); updateBar();
+    requestAnimationFrame(playbackLoop);
+  }
+  ticksPerFrame = +$speed.value;
+  selectSeed(+$seed.value);
+  requestAnimationFrame(playbackLoop);
+}
+
 function boot(){
-  if (gl){ initGL(); build(); requestAnimationFrame(loop); }   // params are baked into P; no live panel / runtime file
+  if (!gl) return;
+  initGL();
+  if (window.pool && window.pool.scrub){ startPlayback(); }          // desktop: generate-then-scrub player
+  else { build(); requestAnimationFrame(loop); }                     // browser: live loop (unchanged)
 }
 boot();
 </script>

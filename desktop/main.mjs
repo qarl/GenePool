@@ -109,6 +109,11 @@ async function createWindow(){
     width: 1120, height: 830, backgroundColor: '#0b0e13', title: 'GenePool',
     webPreferences: { preload: join(HERE, 'preload.cjs'), contextIsolation: true, sandbox: true },
   });
+  // surface renderer warnings/errors + a crash to the main stdout (dev diagnostics for the scrub/playback UI)
+  win.webContents.on('console-message', (_e, level, message, line, source) => {
+    if (level >= 2) console.error(`[renderer] ${message}  (${source}:${line})`);
+  });
+  win.webContents.on('render-process-gone', (_e, d) => console.error('[renderer gone]', d.reason));
   win.loadURL(`http://127.0.0.1:${port}/viewer-micrograph-gl.html`);
 }
 
