@@ -41,10 +41,13 @@ arbitrary genes), and the projection onto max-variance axes is also the optimal 
 5, and the best 5 are the best.
 
 ## Encoding (in the viewer)
-`signatureOf(vec)` (vec = an expressed-gene centroid): for each of the 5 PCs, `coeff = (vec − PCA_MEAN) · PC`, then
-`symbol = round(coeff / PCA_SCALES[c] · SIG_STEP)` wrapped into the signed base36 ring (`0` = the mean evolved genome; `+`
-climbs `1,2,3…`, `−` descends `Z,Y,X…`). `SIG_STEP` tunes how much of the ring the plates use. Rendered as the OKLCh
-colour barcode (unchanged).
+`signatureOf(vec)` (vec = an expressed-gene centroid): for each of the 5 PCs, `coeff = (vec − PCA_MEAN) · PC`, then map
+the **standardised** coeff through the Gaussian **CDF** into the full base36 range: `symbol = floor(36 · Φ(coeff /
+PCA_SCALES[c]))`. This **percentile spread** puts the *average* genome mid-range (`Φ(0)=0.5` → 'I') and fills the whole
+code space, so **no species plate reads near '0'** (Karl's requirement — a mean-centred/signed-around-0 scale made the
+typical species read "00000"; and no mean-centred axis, top-5 or summed, avoids that — the fix is the quantisation, not
+the axes). Measured on the 1561-genome set: all 36 symbols used on every digit, 98.3% distinct, 0 plates near-0.
+Rendered as the OKLCh colour barcode (unchanged).
 
 ## Regenerating the basis (`tools/pca/`)
 ```
