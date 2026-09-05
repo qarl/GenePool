@@ -40,8 +40,9 @@ re-sim worker** (to keep the UI live during an exact-tick refine) — deferred u
 ## Data — per-seed run cached as one `.db` (efficient files)
 Each seed = a run = one `runs/run-<seed>.db`. Select a seed → if its `.db` exists, just play it; else spawn the
 generator to build it. So generation is a **cache** — new seeds only. Schema (extends the recorder we built):
-- `snapshots(tick, json)` — **keyframes**, every **KEYFRAME_INTERVAL** ticks (default **2000** — efficient files: a
-  ~few-hundred-bot snapshot ≈ 100 KB → ~50 MB per 1M ticks; drag-snap hides the interval).
+- `snapshots(tick, json)` — **keyframes**, every **KEYFRAME_INTERVAL** ticks. ⚠️ **Size corrected by 5-panel D3:**
+  `serialize()` ≈ 4.2 KB/living bot → ~1400 bots ≈ 5.9 MB/keyframe (raw). Compress (base64 genes + gzip column) and
+  MEASURE/tune the interval in Phase 1. Drag-snap hides the interval; keyframe is a full-world restore anchor.
 - `stats(tick, json)` — the analysis panel **saved at each keyframe** (population + species table: sig/count/diversity/
   lifespan + pop aggregates), so a keyframe-snap shows the full panel *instantly* with no recompute and no lifespan
   history replay. (Karl's "save the stats.")
@@ -98,6 +99,11 @@ Define **TICKS_PER_SECOND = 60** (1× speed = real-time = 60 ticks/s, the natura
 A single review hardened this plan; the changes below are now the plan (verdict: core approach sound —
 serialize/restore is state-complete incl. RNG; WAL cross-process reader works):
 
+- **B1 (determinism seam) → ⚠️ SUPERSEDED by the 5-panel (see D1 below): REVERTED. Keep the `utilityProcess`.**
+  Two reviewers (Electron + determinism) independently established the premise below is FALSE — in Electron,
+  `utilityProcess` and the renderer share ONE V8, so `Math.*` is already bit-identical between them. The hidden window
+  bought zero determinism and broke S3 (a sandboxed renderer can't write SQLite). Original (now-rejected) B1 text kept
+  for provenance:
 - **B1 (determinism seam) → CHANGE THE GENERATOR HOST.** Generation in a Node `utilityProcess` runs a *different V8
   version* than the Chromium renderer that re-sims; the sim uses `Math.sin/cos/hypot` (swimbot.js:308-309/338/350-351),
   which are fdlibm and NOT bit-guaranteed across V8 versions → an exact-tick re-sim could diverge from the generator.
@@ -131,7 +137,121 @@ serialize/restore is state-complete incl. RNG; WAL cross-process reader works):
   main reads the .db and ships JSON, ~100KB/scrub, ms latency). **N5:** `ticks` throttle = generator-side `tick%100==0`
   filter. **N2:** do NOT touch serialize/restore — it's state-complete (verified).
 
-NEXT: 5-panel review of this hardened plan, then build.
+## 5-panel review — folded in (2026-09-05, THIS is the build spec; supersedes conflicting text above)
+Five distinct-lens reviewers (Electron/IPC · cross-V8 determinism · SQLite/WAL/schema · DOM/UI+scrub UX · testing/goldens)
+hunted new issues AND adversarially challenged the folded-in fixes. Three findings were BLOCKERs against folded-in
+assumptions. Decisions D1–D11 below GOVERN.
+
+**D1 — REVERT B1. Generator = `utilityProcess` (real Node, in-process `node:sqlite` write), NOT a hidden Chromium window.**
+*Two independent reviewers:* Electron ships ONE V8; a `utilityProcess` runs Electron's bundled Node on that SAME V8 as
+the renderer/`BrowserWindow`. `Math.sin/cos/hypot` are therefore bit-identical gen↔playback within one Electron build
+(fdlibm is tier-invariant; MXCSR/FTZ defaults match; sqrt is HW-correctly-rounded). The hidden window bought zero
+determinism and cost real things: Chromium background/occlusion throttling (a never-shown window's rAF never fires →
+sim crawls), a sandbox that can't reach `node:sqlite` (→ forced per-event IPC firehose to main, the very structured-clone
+cost the "2 threads not 3" decision rejected), and it directly contradicted S3 (main can't be read-only if it's the
+writer). Reverting restores the §Threads model as written: generator owns the writer in-process (no per-event IPC), main
+opens the same `.db` read-only (S3, proven correct). This SIMPLIFIES the build.
+
+**D2 (BLOCKER) — Extract the analysis/EMA pipeline into a SHARED module; `stats` must fully reconstruct the panel.**
+The species machinery (`tracked`, `popSig`, `computeSpecies`, `SIG_EMA`=0.08, `LIFE_EMA`=0.05 — viewer:945/956/959) is
+viewer-only and NOT in `serialize()` (N2 confirmed). So the generator must run that same code to emit `stats` at all.
+Extract it to a shared `.mjs` both generator and viewer import. Generator runs it at a **fixed tick cadence** (per
+keyframe / per `STATS_INTERVAL`) — the live viewer's per-*frame* EMA cadence is frame-rate-dependent and NOT reproducible,
+so the fixed cadence becomes the canonical contract. `stats` row schema = pop EMAs + per-lineage `{stableId, sig, count,
+divEMA, lifeEMA}`. Add an **analysis-parity gate** (generator stats == reference stats at the fixed cadence), separate
+from the engine-hash gate.
+
+**D3 (BLOCKER) — Redo the size/cost model; compress; decouple STATS_INTERVAL from KEYFRAME_INTERVAL.**
+Measured: `serialize()` ≈ **4.2 KB per living bot**, so ~1400 bots ≈ **5.9 MB/keyframe**; a 1M-tick run @ 2000 is
+**0.6–3 GB, not 50 MB.** And N4's "~100 KB/scrub" is really **1–6 MB per `getKeyframe`** structured-cloned to the
+renderer. Fixes: **base64 the genes** (256 B vs ~1 KB), **gzip the `json` column** (floats ~2–3×), and **decouple** a
+dense-cheap `STATS_INTERVAL` (pop curve + panel, e.g. ~200–500 ticks — tiny rows) from a sparse `KEYFRAME_INTERVAL`
+(full-world restore anchors). **MEASURE real compressed sizes + `getKeyframe` clone latency in Phase 1 and tune the two
+intervals then** — do not hard-commit numbers now. (Disk is cheap for a personal tool, but IPC clone latency per snap is
+the real UX cost → compression is load-bearing.)
+
+**D4 — Crash-safe keyframe write + schema hardening (folds S1/S3/S4 tighter).**
+Per keyframe, in **ONE transaction**: `flush()` events → insert snapshot → insert stats → **update `run_meta` frontier
+LAST** → commit. Define **frontier = max fully-consistent tick**; the reader **clamps every query to ≤ frontier**
+(`getKeyframe ≤ min(T,frontier)`). `snapshots(tick INTEGER PRIMARY KEY, json)` + `stats(tick INTEGER PRIMARY KEY, json)`,
+written `INSERT OR REPLACE`. **S4's DELETE must cover `snapshots`+`stats`** too (not just events/ticks — and `ticks` has a
+PK so re-sim throws UNIQUE without the delete). Move `snapshots`/`stats`/`run_meta` DDL **into the sink / a migration**
+so generator and reader share one schema. **Fix the `run_meta` collision** — `main.mjs` uses `(k,v)`, the sink's
+`writeRunMeta` uses `(key,value)` → "no such column" (proven); standardize on `(k,v)`, do NOT reuse `writeRunMeta`
+unreconciled. keys: `seed, config, KEYFRAME_INTERVAL, STATS_INTERVAL, engineVersion, electronVersion, frontier, done,
+perceptionMode`. Add a **"db ready" handshake** (readonly open on a not-yet-created file throws → generator posts
+"created+WAL+first-commit" before main opens). Set `wal_autocheckpoint` explicitly + periodic PASSIVE checkpoint (multi-MB
+snapshots blow the 4 MB default). Per-seed **write exclusivity**: write `run-<seed>.tmp.db` → rename on `done` (or lock);
+a force-quit leaves a stale `-wal` → the resume path must open read-write first to recover.
+
+**D5 — Cross-APP-VERSION replay guard (NEW; the determinism seam that actually matters).**
+The only case where `Math.*` genuinely differs is across Electron releases (upgrade → new V8/fdlibm). Neither host fixes
+it. Stamp `engineVersion` + Electron/V8 version in `run_meta` at generate time; on playback, if stored ≠ current:
+keyframe-snap stays exact (renders stored `serialize()`), but **disable exact-refine / play-past-keyframe re-sim** (or
+offer regenerate). Drag-snap is always immune.
+
+**D6 — Determinism gate spec: full-`serialize()` hash + lockstep, THROUGH a JSON round-trip.**
+Not a single swimbots-only hash (food energy / regen-stream / `nextId`s can diverge and corrupt the next tick). Hash the
+full `serialize()` (swimbots+food-energy+RNG positions+ids+clock) AND lockstep-step restored-vs-continuous for ≥ a few
+hundred ticks, asserting every tick. **Must round-trip `restore(JSON.parse(JSON.stringify(serialize())))`** — that's what
+the `.db` stores, and it catches `NaN/±Infinity → null` silent corruption (D7). The existing
+`test/engine/world-checkpoint.test.js` IS this gate in Node — extend it; it's the PRIMARY, V8-independent regression gate.
+The in-Electron check reduces to a **one-time** "the two processes share V8" go/no-go (near-zero by construction).
+
+**D7 — JSON codec finiteness (MINOR, latent).** JSON has no NaN/Inf. Add a cheap finiteness assert when the generator
+serializes a keyframe; D6's JSON-round-trip gate is the automated catch.
+
+**D8 — keyframe-0 = `serialize()` AFTER seeding, never a `build()` replay (MAJOR).** `build()` (viewer:558-585) reads
+module-level params outside `config` (`P.n/food/pool`, `MAX_LIFESPAN`, `seedJunk()`…). S2 (config from `run_meta`) does
+NOT capture those. Generator's first act: seed → `serialize()` = keyframe 0; playback restores it, never re-derives
+founders. (This makes S2 necessary-but-not-sufficient; keyframe-0-as-snapshot closes the gap.)
+
+**D9 — `death` event gains `age`; do it FIRST (Phase 1) for blast radius.** Deaths are `{tick,id,uuid}` — no age (world.js:187,
+sqlite-sink.mjs:27), and today's lifespan polls live refs (viewer:1234-1242), lossy at >1 tick/frame. `age` is readable in
+`die()`/before `_sweepDead`, deterministic, doesn't perturb the sim (all emits are `if(this._onEvent)` pure-reads). Blast
+radius: `sqlite-sink.mjs` deaths table+insert, `world.js:187` emit, the JSONL source-of-truth, `genome-hash`/`ingest` —
+do it ONCE before any `.db` is generated or every run gets re-cut.
+
+**D10 — UI/UX (scrub-lens):** (a) `resetOverlays()` on EVERY `restore()`, not just seed-change — clock-delta fades
+(`nowClock-deathTick`, viewer:1244) and junk drift (`clock-lastJunkClock`, :1215) corrupt on a jump; reset
+known/fades/deathTick/deathFade0/lastJunkClock + tracked + pop EMAs. (b) **Drag-snap = read the `stats` row, ZERO re-sim**
+(T lands on a keyframe); this also **kills N1** (save the SIG_EMA-*smoothed* sig → no plate jump) and the paused-crawl
+(only recompute species while PLAYING; paused/snapped = render-only + panel from stats). (c) **Exact-refine re-sim =
+opt-in / DEFAULT-OFF for v1** (blocks the render thread ~1–2 s; the deferred re-sim worker is the fix if wanted). (d)
+Carry the generator's **stable lineage id** in the stats row so the species list doesn't rebuild every scrub step. (e)
+Tag async `getKeyframe≤T` requests with a **seq**, apply only the latest (drop stale). (f) State machine:
+FOLLOWING/PLAYING/PAUSED/DRAGGING/REFINING, explicit head-vs-frontier ownership. (g) Keep `world` as the SINGLE rendered
+var; fork ONLY at the `window.pool` boundary in `boot()` (browser→`loop`; desktop→`startPlayback`) so the 6/6 visual
+suite + `__golden`/`__bench` hooks stay intact. (h) Slider growing max: grow `.max` only when not dragging; FOLLOWING
+pins `value=max`; past frontier → clamp + "waiting for generator." (i) Speed: remap `#speed` from ticks/frame to
+×real-time (1×=60 t/s), cap at sim rate (beyond → scrub).
+
+**D11 — BUILD ORDER (each phase verifiable in Node before touching Electron; adopt wholesale):**
+- **Phase 0 — determinism gate FIRST, in Node (no app changes).** Extend `test/engine/world-checkpoint.test.js`: route
+  through `JSON.parse(JSON.stringify(serialize()))`; run at KEYFRAME_INTERVAL with multiple keyframes; assert codec
+  self-consistency `restore(kf[i])+resim==kf[i+1]` bit-for-bit. **GO/NO-GO 0:** green ⇒ "reconstruct any tick" is proven.
+- **Phase 1 — schema + sink + `death.age` + shared analysis module + SIZE MEASUREMENT, gated in Node.** Add
+  `snapshots/stats/run_meta`(frontier,done)/throttled `ticks`, `age` on death (D9, once), extract analysis (D2); extend
+  `test/io/sqlite-events.test.js`; update JSONL/`genome-hash`. Measure compressed keyframe sizes + tune intervals (D3).
+- **Phase 2 — generator = pure headless Node runner** (`tools/…/run-gen.mjs`, like `run-tw.mjs`): engine flat-out → full
+  `.db`, one-txn keyframe write. **GO/NO-GO 2:** `node run-gen.mjs --seed S` produces `runs/run-S.db` here/in CI, no GUI.
+- **Phase 3 — WAL concurrency + resume, gated in Node** (writer + read-only reader handles): frontier advances, zero
+  BUSY, materializing reads; kill→resume→bit-identical `.db`. **GO/NO-GO 3:** riskiest new machinery green pre-Electron.
+- **Phase 4 — pure `db-reader.mjs`** (`getKeyframe≤T, getStats@T, getFrontier, getPopSeries`, downsampled/bounded) +
+  the **S2 non-default-config divergence test**. **GO/NO-GO 4.**
+- **Phase 5 — in-browser determinism hook** (`window.__determinism`) + playwright gate vs the Node hash (headless_shell
+  1217 V8 caveat noted). **GO/NO-GO 5.**
+- **Phase 6 — wire generator into Electron as a `utilityProcess`** (per D1) + main WAL reader + IPC (frontier pushed,
+  scrub reads coalesced) + a one-time in-Electron differential. **GO/NO-GO 6.**
+- **Phase 7 — playback loop + bottom bar + overlays** (D10). Guard: visual **6/6 as a mandatory LOCAL pre-merge gate**
+  (it's arm64-only, opt-in, NOT in CI) + Karl's eyes for scrub UX.
+- *Wrong-order traps:* Electron WAL before the Node WAL gate ⇒ eyeball-only validation; `death.age` after generation ⇒
+  re-cut every `.db`; S2 never shows in the visual suite; the gate is meaningless until it round-trips through JSON TEXT.
+
+**Confirmed CORRECT-as-is (reviewers verified, do not re-litigate):** S3 core (cross-process WAL reader + materializing
+reads — empirically proven); attaching `onEvent` doesn't perturb the sim; founder start-age is seeded (`mulberry32`, not
+`Math.random` — engine has none) and reproducible on restore; grid rebuild-on-restore == incremental (existing lockstep
+tests); N2 (don't touch serialize/restore); N5 throttled-ticks is determinism-safe.
 
 ## Provenance
 Decisions from Karl (2026-09-05): build scrub + playback now; single-thread (multicore rejected after measurement);
