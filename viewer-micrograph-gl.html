@@ -28,10 +28,11 @@
     background: #0b0e13; border-radius: 12px; padding: 4px 0; box-sizing: border-box; }   /* scrollable list of ALL species */
   #species .srow { position: relative; padding: 3px 10px; cursor: pointer; }
   #species .srow:hover { background: rgba(255,255,255,.06); }
-  #species .srow .info { color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }
+  #species .srow .info { color: #cfd6e0; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }   /* light: collapsed rows sit on the dark panel */
   #species .srow .info .plate { margin-top: 0; }
+  #species .srow .prow .plate { margin-top: 0; }
   /* expanded: mini fills the row; info becomes an upper-LEFT overlay so its plate lines up with the collapsed plates */
-  #species .srow.exp .info { position: absolute; top: 3px; left: 10px; z-index: 1; }
+  #species .srow.exp .info { position: absolute; top: 3px; left: 10px; z-index: 1; color: #000; }   /* dark: expanded overlay sits on the light micrograph */
   #species .srow .miniwrap { width: 100%; aspect-ratio: 1 / 1; }
   #species .srow canvas.mini { display: block; width: 100%; height: 100%; border-radius: 12px; }
   /* species-tile count labels: HTML overlay over the right column (NOT drawn into the canvas, so goldens stay text-free) */
@@ -44,6 +45,8 @@
   .tileLabel .sig { font-size: 12px; font-weight: 500; letter-spacing: 2px; }
   /* license plate as a colour barcode: one cell per character, hue = that character's value (0-9A-Z -> around the wheel).
      NOT scoped to .tileLabel -- the plate is reused bare in the flowed .srow list rows too. */
+  .prow { display: flex; align-items: center; gap: 7px; }   /* plate + avg-lifespan number on one row */
+  .life { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .plate { display: inline-flex; gap: 0; margin-top: 3px; }
   .cell { display: flex; align-items: center; justify-content: center; box-sizing: border-box;
     width: 18px; height: 20px; font-size: 13px; font-weight: 600; color: #000; overflow: hidden; }
@@ -567,7 +570,7 @@ function build(){
   known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;   // no stale death-fade ghosts / junk drift across a rebuild
   frameCount = 0; nextSpeciesId = 1; tracked = new Map(); speciesById = new Map(); speciesList = [];   // reset species state -> deterministic from a fresh build
   rowMap = new Map(); expanded = new Set(); if (speciesPanel) speciesPanel.replaceChildren();   // ids reuse from 1 across builds -> drop stale rows/expansion + the DOM (else orphans accumulate)
-  popUsedEMA = null; popSig = '00000'; popDivEMA = null;
+  popUsedEMA = null; popSig = '00000'; popDivEMA = null; popLifeEMA = null;
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
@@ -901,6 +904,8 @@ let miniCursor = 0; const MINI_BUDGET = 6;   // <=6 live minis rendered per fram
 let speciesById = new Map(), speciesList = [];   // this recompute's clusters (by id; sorted by count; present-this-frame)
 let popUsedEMA = null, popSig = '00000';         // EMA'd EXPRESSED-gene centroid of the WHOLE living population -> the main plate
 let popDivEMA = null;                            // EMA'd EXPRESSED-gene diversity (mean per-gene std) of the whole population
+let popLifeEMA = null;                           // EMA'd age-at-death of the WHOLE population (fitness proxy); per-lineage in tracked.lifeEMA
+const LIFE_EMA = 0.05;                           // slow EMA over per-death lifespans (deaths are sparse per species)
 const DIV_MAX = 60;                              // reference mean-per-gene std that reads 100 (founding ~73 pins at 100; punchy)
 const divPct = std => Math.round(Math.min(100, Math.max(0, 100 * std / DIV_MAX)));   // mean per-gene std -> 0..100
 const SIG_EMA = 0.08;              // centroid smoothing per recompute (now every frame) -> the plate CRAWLS, stays close
@@ -1080,6 +1085,9 @@ function plateHTML(sig){
   return `<span class="plate">${cells}</span>`;
 }
 const divHTML = std => std==null ? '' : `<span class="d">${divPct(std)}</span>`;   // 0..100 diversity index (used-gene spread)
+const fmtLife = life => life==null ? '—' : String(Math.round(life/100)*100);   // avg age-at-death (ticks, rounded to 100); em-dash until first death
+// plate + avg-lifespan number to its RIGHT (one row); count/diversity stack below
+const plateRow = (sig, life) => `<span class="prow">${plateHTML(sig)}<span class="life">${fmtLife(life)}</span></span>`;
 // offscreen-gating: a scrolled-out mini must NOT render+blit for pixels nobody sees. IO flips el._miniVisible.
 const miniObserver = speciesPanel ? new IntersectionObserver(
   es => { for (const e of es) e.target._srow._miniVisible = e.isIntersecting; }, { root: speciesPanel }) : null;
@@ -1104,8 +1112,8 @@ if (speciesPanel){
     else { expanded.add(id); if (el){ el.classList.add('exp'); el._wrap.hidden = false; el._miniVisible = true; } } });
 }
 function updateSpeciesUI(){
-  // whole-population plate + count + diversity, top-right of the main view.
-  if (labMain && world) labMain.innerHTML = `${plateHTML(popSig)}<span class="n">${world.getLivingSwimbotCount()}</span>${divHTML(popDivEMA)}`;
+  // whole-population plate (+ avg lifespan to its right) + count + diversity, top-left of the main view.
+  if (labMain && world) labMain.innerHTML = `${plateRow(popSig, popLifeEMA)}<span class="n">${world.getLivingSwimbotCount()}</span>${divHTML(popDivEMA)}`;
   if (!speciesPanel) return;
   // The list is driven by the PERSISTENT lineages (`tracked`), NOT the per-frame `speciesList`: a lineage survives up to
   // 4 missed reclusters (tracked.delete at misses>4), so a 1-frame absence must NOT drop its row / collapse its viewer.
@@ -1120,9 +1128,9 @@ function updateSpeciesUI(){
     const exp = expanded.has(id);
     el.classList.toggle('exp', exp);                     // collapsed = plate only; expanded = mini + full info overlay
     el._wrap.hidden = !exp;
-    const key = t.sig + (exp ? '|' + t.count + '|' + divPct(t.divEMA) : '');   // rebuild info only when something shown changes
+    const key = t.sig + '|' + fmtLife(t.lifeEMA) + (exp ? '|' + t.count + '|' + divPct(t.divEMA) : '');   // rebuild only when something shown changes
     if (el.dataset.key !== key){
-      el._info.innerHTML = plateHTML(t.sig) + (exp ? `<span class="n">${t.count}</span>${divHTML(t.divEMA)}` : '');
+      el._info.innerHTML = plateRow(t.sig, t.lifeEMA) + (exp ? `<span class="n">${t.count}</span>${divHTML(t.divEMA)}` : '');
       el.dataset.key = key;
     }
   }
@@ -1160,7 +1168,15 @@ function advanceFrame(){
         fades.set(id, P.deathFadeFloor + (1 - P.deathFadeFloor) * vit);
         deathTick.delete(id); deathFade0.delete(id);
       } else {
-        if (!deathTick.has(id)){ deathTick.set(id, nowClock); deathFade0.set(id, fades.get(id) ?? P.deathFadeFloor); }  // fade level AT death -> continue from there
+        if (!deathTick.has(id)){ deathTick.set(id, nowClock); deathFade0.set(id, fades.get(id) ?? P.deathFadeFloor);   // fade level AT death -> continue from there
+          // AVG LIFESPAN: this is the death moment (final age is frozen on the retained ref). Fold age-at-death into the
+          // whole-population EMA + the nearest lineage's EMA (matched by junk, like the clustering gate). A fitness proxy.
+          const life = sb.getAge();
+          popLifeEMA = popLifeEMA == null ? life : popLifeEMA + LIFE_EMA * (life - popLifeEMA);
+          const jg = junkOf(sb); let bestT = null, bestS = SPECIES_ISO;
+          for (const [, t] of tracked){ const s = junkSim(jg, t.ema); if (s > bestS){ bestS = s; bestT = t; } }
+          if (bestT) bestT.lifeEMA = bestT.lifeEMA == null ? life : bestT.lifeEMA + LIFE_EMA * (life - bestT.lifeEMA);
+        }
         const f = (deathFade0.get(id) ?? 1) * (1 - (nowClock - deathTick.get(id)) / FADE_TICKS);
         if (f <= 0){ known.delete(id); fades.delete(id); deathTick.delete(id); deathFade0.delete(id); } else fades.set(id, f);
       }
