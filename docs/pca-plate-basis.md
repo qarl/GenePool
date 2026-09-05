@@ -42,11 +42,15 @@ arbitrary genes), and the projection onto max-variance axes is also the optimal 
 
 ## Encoding (in the viewer)
 `signatureOf(vec)` (vec = an expressed-gene centroid): for each of the 5 PCs, `coeff = (vec − PCA_MEAN) · PC`, then map
-the **standardised** coeff through the Gaussian **CDF** into the full base36 range: `symbol = floor(36 · Φ(coeff /
-PCA_SCALES[c]))`. This **percentile spread** puts the *average* genome mid-range (`Φ(0)=0.5` → 'I') and fills the whole
-code space, so **no species plate reads near '0'** (Karl's requirement — a mean-centred/signed-around-0 scale made the
-typical species read "00000"; and no mean-centred axis, top-5 or summed, avoids that — the fix is the quantisation, not
-the axes). Measured on the 1561-genome set: all 36 symbols used on every digit, 98.3% distinct, 0 plates near-0.
+the **standardised** coeff through the Gaussian CDF to a **signed percentile** in `[-17,17]`:
+`signed = round((Φ(coeff/PCA_SCALES[c]) − 0.5) · 34)`, placed on the base36 ring (`0` = mean, `+` climbs `1,2,3…`, `−`
+descends `Z,Y,X…`). Two requirements Karl set that seem to conflict but don't in practice:
+- **mean genome → "00000"** (0 = the average evolved genome; an interpretable origin — distance from 00000 = how unusual);
+- **no species plate reads near 0** — the *percentile* spread pushes every real species far from the origin (a genome at
+  −1σ maps to −12 of ±17, not −6), because no real species sits *exactly* at the population mean on all 5 axes.
+
+They're only mutually exclusive for a genome AT the mean (which reads 00000 by design). Measured on the 1561-genome set:
+mean → 00000, **0 plates near-0** (all within ±2), avg plate sits 41 of a possible 85 steps out, 98.5% distinct.
 Rendered as the OKLCh colour barcode (unchanged).
 
 ## Regenerating the basis (`tools/pca/`)
