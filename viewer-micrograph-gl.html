@@ -1519,6 +1519,7 @@ function startPlayback(){
     requestAnimationFrame(playbackLoop);
   }
   ticksPerFrame = +$speed.value;
+  seedJunk(mulberry32((+$seed.value >>> 0) ^ 0x5eed1234));   // seed detritus SYNCHRONOUSLY: the loop renders before selectSeed's async IPC resolves
   selectSeed(+$seed.value);
   requestAnimationFrame(playbackLoop);
 }
