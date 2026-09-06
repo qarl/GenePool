@@ -1,6 +1,14 @@
 # PLAN — GPU body tessellation
 
-Status: REVIEWED (1-reviewer + 5-panel incorporated). Author: Jimmy-GenePool, 2026-09-06. Target: `viewer-micrograph-gl.html`.
+Status: ✅ SHIPPED (`6a2441d` build + this cleanup). Author: Jimmy-GenePool, 2026-09-06. Target: `viewer-micrograph-gl.html`.
+
+## OUTCOME (measured, real GPU)
+Built dome-first then strip, each A/B-verified. Peak zoom W1.5 (pop 458): render **24.7ms → 10.0ms**; felt frame (3×tick + render) **~39fps → ~89fps** (arc: 39 → 67 dome → 89 strip). `world.tick()` measured at 0.4ms (the §0 gate REFUTED the reviewers' "tick dominates" fear — render was the felt frame). Retained-CPU floor ~10ms (as the perf reviewer predicted, not ~6ms). Visually indistinguishable (full CPU vs full GPU A/B at high zoom); arm64 visual suite 6/6.
+**Cross-arch gate PASSED** (§0's load-bearing gate): x64 (Rosetta build-1217 proxy) vs arm64 goldens = worst maxΔ=1, ≤0.0012% px — the SAME strict band as the integer-hash renderer. The transcendental-free VS construction (uniform ring/col/u samples + polynomial `sincos` + Bernstein Bézier) held; no speckle/cell-flip divergence. → CPU fallback path REMOVED (this cleanup, no cruft).
+STILL DEFERRED: pop-2000 zoom-out perf gate + the extra golden scenes (long-tip/mid-zoom/high-zoom-dying) — nice-to-haves, not blockers.
+
+---
+Status (original): REVIEWED (1-reviewer + 5-panel incorporated).
 
 ## §0. MEASUREMENT GATE — run BEFORE building anything (5-panel consensus)
 

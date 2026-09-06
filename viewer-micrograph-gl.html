@@ -578,7 +578,7 @@ void main(){
 }`;
 
 const K_SLABS = 8;   // depth slabs for front-to-back compositing (more = finer occlusion ordering, more passes)
-let bodyProg=null, resolveProg=null, finalProg=null, uBodyRes=null, uBodyCyto=null, uBodyCells=null, uBodyLighten=null, uBodyGrain=null, uBodyGrainScale=null, uBodySat=null, uBodyTime=null, uBodyCytoDrift=null;
+let resolveProg=null, finalProg=null;
 const uR = {}, uF = {};                  // resolve / final uniform locations
 let mainSet=null, smallSet=null;   // per-VIEW FBO sets (makeFBOSet): { slabTex/FBO, accA/B (MRT), hairTex/FBO, sceneTex/FBO, bloomA/B(+FBO) }. Main=768^2, small=256^2.
 let bodyVAO=null, bodyVBO=null, emptyVAO=null;
@@ -669,18 +669,8 @@ function resizeMain(){
 
 function initGL(){
   if (!gl) return;
-  bodyProg = makeProgram(BODY_VS, BODY_FS);
   resolveProg = makeProgram(COMP_VS, RESOLVE_FS);
   finalProg = makeProgram(COMP_VS, FINAL_FS);
-  uBodyRes = gl.getUniformLocation(bodyProg, 'uRes');
-  uBodyCyto = gl.getUniformLocation(bodyProg, 'uCyto');
-  uBodyCells = gl.getUniformLocation(bodyProg, 'uCells');
-  uBodyLighten = gl.getUniformLocation(bodyProg, 'uLighten');
-  uBodyGrain = gl.getUniformLocation(bodyProg, 'uGrain');
-  uBodyGrainScale = gl.getUniformLocation(bodyProg, 'uGrainScale');
-  uBodySat = gl.getUniformLocation(bodyProg, 'uSat');
-  uBodyTime = gl.getUniformLocation(bodyProg, 'uTime');
-  uBodyCytoDrift = gl.getUniformLocation(bodyProg, 'uCytoDrift');
   for (const n of ['uSlab','uPrevOut','uPrevFA','uHairTex','uRes','uField','uDensity','uOpacity','uRim','uSub','uScaleRatio']) uR[n] = gl.getUniformLocation(resolveProg, n);
   for (const n of ['uOut','uFA','uRes','uField']) uF[n] = gl.getUniformLocation(finalProg, n);
 
@@ -857,59 +847,7 @@ function tri(A,acu,ar,av,aT, B,bcu,br,bv,bT, C,ccu,cr,cv,cT, blur){ vtx(A[0],A[1
 // quad spanning two rings: verts A,B carry tint tA, verts C,D carry tint tB (colour gradient); blur is per-segment
 function quad(A,acu,ar,av, B,bcu,br,bv, C,ccu,cr,cv, D,dcu,dr,dv, tA, tB, blur){ tri(A,acu,ar,av,tA, B,bcu,br,bv,tA, C,ccu,cr,cv,tB, blur); tri(A,acu,ar,av,tA, C,ccu,cr,cv,tB, D,dcu,dr,dv,tB, blur); }
 
-const DOME_RINGS = 8, DOME_CROSS = 16, DISCK = 16;   // CPU-path (A/B) dome budget + junk disc resolution; STEPS is declared above
-function emitStrip(pt, tStart, tEnd, v0, v1, rs, blur, merge, steps=STEPS){
-  // merge (branch base): thickness ramps up from 0, and the side edges spread ALONG the trunk axis (fillet) -- BOTH
-  // measured in ARC-LENGTH from the branch base (merge.a0..a1 over merge.rw), so short first segments still fade smoothly.
-  const arcAt = (u)=> merge.a0 + (merge.a1-merge.a0)*u;
-  // THICKNESS ramp uses its OWN (short) distance rampRw, NOT the bend's rw. The bend fillet spans rw=4*baseWidth, but the
-  // thickness only needs to fade in over ~one base width -- with the long rw a SHORT limb never reached full thickness (it
-  // rendered as a faint 17% ghost). Decoupled here so short limbs reach full thickness while the Y-fillet shape is unchanged.
-  const ramp = merge ? (u)=>smoothstep(0, merge.rampRw, arcAt(u)) : ()=>1;
-  // BEND: rotate the base region about the branch base so it emerges TANGENT to the trunk (full angle merge.da at the
-  // base, easing to 0 by arc merge.rw) -> the branch leaves as a smooth Y arm, both edges fairing into the trunk.
-  const bend = merge ? (Pp,u)=>{
-    const th = merge.da * (1 - smoothstep(0, merge.rw, arcAt(u)));
-    const c=Math.cos(th), s=Math.sin(th), dx=Pp[0]-merge.px, dy=Pp[1]-merge.py;
-    return [merge.px + dx*c - dy*s, merge.py + dx*s + dy*c];
-  } : (Pp)=>Pp;
-  let pL=bend(pt.sL,0), pR=bend(pt.sR,0), pM=mid(pL,pR), pr=pt.wStart*rs*ramp(0), pv=v0, ptint=tStart;
-  for (let j=1;j<=steps;j++){
-    const u=j/steps;
-    const L=bend(bez(pt.sL,pt.c1L,pt.c2L,pt.eL,u),u), R=bend(bez(pt.sR,pt.c1R,pt.c2R,pt.eR,u),u);
-    const M=mid(L,R), r=lerp(pt.wStart,pt.wEnd,u)*rs*ramp(u), v=lerp(v0,v1,u), ct=lerp3(tStart,tEnd,u);
-    quad(pL,-1,pr,pv, pM,0,pr,pv, M,0,r,v, L,-1,r,v, ptint, ct, blur);   // left half
-    quad(pM,0,pr,pv, pR,1,pr,pv, R,1,r,v, M,0,r,v, ptint, ct, blur);     // right half
-    pL=L; pR=R; pM=M; pr=r; pv=v; ptint=ct;
-  }
-}
-// a SOLID rounded end cap: an ellipsoidal dome grown off the base edge (baseA..baseB) along (axX,axY) by capLenScreen,
-// shrinking to a point at the tip. Rings step outward along the axis (R = wBase*sqrt(1-a^2)) while carrying cu across
-// the width and a tapering radius, so the fragment gets real 3D thickness (full at the base -> 0 at the tip) instead
-// of a transparent film. Base ring (a=0) == the segment's end edge, so it joins the strip seamlessly.
-function emitDome(baseA, baseB, axX, axY, capLenScreen, radWorld, t, vBase, vTip, blur, lod=1){
-  const cx=(baseA[0]+baseB[0])*0.5, cy=(baseA[1]+baseB[1])*0.5;
-  const hx=(baseB[0]-baseA[0])*0.5, hy=(baseB[1]-baseA[1])*0.5;
-  const wBase=Math.hypot(hx,hy)||1e-6, ux=hx/wBase, uy=hy/wBase;   // unit vector across the base width
-  const pt=(a,c)=>{ const R=wBase*Math.sqrt(Math.max(0,1-a*a)); return [ cx+axX*capLenScreen*a+ux*c*R, cy+axY*capLenScreen*a+uy*c*R ]; };
-  const rad=(a)=>radWorld*Math.sqrt(Math.max(0,1-a*a));
-  // RESOLUTION: rings step ALONG the cap axis, cross steps ACROSS the width. Rather than ADD rings for a long cap (which
-  // multiplied the triangle count -> frame-rate hit), REDISTRIBUTE a FIXED budget (DOME_RINGS*DOME_CROSS) between the two by
-  // the cap's aspect ratio: a long cap -> more rings, fewer cross; a flat one -> the reverse. Never faceted in one direction,
-  // yet the same cost as the old fixed 8x16 (aspect=1 reproduces 8x16 exactly). Clamped so extreme aspects stay bounded.
-  const aspect = Math.max(0.25, Math.min(4.0, capLenScreen / wBase));
-  const ld = Math.sqrt(Math.max(0.12, lod));   // LOD: shrink both counts (budget ~ lod) for small on-screen creatures
-  const rings = Math.max(3, Math.min(24, Math.round(DOME_RINGS * Math.sqrt(aspect) * ld)));
-  const cross = Math.max(3, Math.min(24, Math.round(DOME_CROSS / Math.sqrt(aspect) * ld)));
-  for (let k=0;k<rings;k++){
-    const a0=k/rings, a1=(k+1)/rings, r0=rad(a0), r1=rad(a1);
-    const vA=lerp(vBase,vTip,a0), vB=lerp(vBase,vTip,a1);   // v continues along the cap axis -> spots stay 2D (not streaks)
-    for (let j=0;j<cross;j++){
-      const c0=-1+2*j/cross, c1=-1+2*(j+1)/cross;
-      quad(pt(a0,c0),c0,r0,vA, pt(a0,c1),c1,r0,vA, pt(a1,c1),c1,r1,vB, pt(a1,c0),c0,r1,vB, t, t, blur);
-    }
-  }
-}
+const DISCK = 16;   // junk disc resolution; STEPS/DOME_R/DOME_C are declared up by the shaders
 function emitDisc(cx, cy, screenR, rad, t, vBase, blur){
   const c=[cx,cy]; let prev=[cx+screenR,cy];
   for (let i=1;i<=DISCK;i++){ const a=i/DISCK*6.28318; const Pp=[cx+Math.cos(a)*screenR, cy+Math.sin(a)*screenR]; tri(c,0,rad,vBase,t, prev,1,rad,vBase,t, Pp,1,rad,vBase,t, blur); prev=Pp; }
@@ -991,9 +929,8 @@ function emitCapHairs(A, B, ax, ay, capLenScreen, radWorld, red, grow, fade, vAr
 function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   const part = ph.parts[p];
   const pt = partPointsGL(ph, p, g);
-  // LOD (lod: 1 = full, ->0 for tiny on-screen creatures): hairs (~half the geometry, invisible when small) drop first,
-  // then strip steps and dome resolution scale down. Full detail when lod>=~1 (a reasonably large creature on screen).
-  const steps = (lod >= 0.999) ? STEPS : Math.max(2, Math.round(STEPS * lod));
+  // LOD (lod: 1 = full, ->0 for tiny on-screen creatures): the body (strip+dome) is now GPU-tessellated at FIXED resolution
+  // (idle GPU -> no triangle-count LOD), but lod still drives the VISUAL fades below: hairLOD (anti-halo) + domeLOD (bulge).
   // hairs FADE OUT smoothly as the creature shrinks (no hard on/off pop). At the small end they'd just be a faint white
   // halo anyway -- which the silhouette RIM already draws -- so as they fade they melt into that rim line. Below the fade
   // floor they're skipped entirely (cost saved at full zoom-out); above it they're full strength.
@@ -1016,30 +953,20 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   const tEnd = [ part.red, part.green, part.blue ];
   const pp = (part.parent >= 1) ? ph.parts[part.parent] : part;
   const tStart = [ pp.red, pp.green, pp.blue ];
-  if (!(typeof window!=='undefined' && window.__gpuStrip === false)) pushStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge);   // GPU strip (default)
-  else emitStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge, steps);   // CPU strip (A/B: window.__gpuStrip=false)
-  // The strip's END is rotated by the branch BEND (inside emitStrip), but the tip dome attaches to the RAW eL/eR/axis. On a
-  // SHORT limb the bend has not eased to 0 by the tip, so the dome is left misaligned from the strip end -> a cut at the tip
-  // dome transition. Apply the SAME end-bend (th at u=1, same pivot) to the dome base edge + bulge axis so the dome's base
-  // ring becomes exactly the strip's end edge (welded). The mouth dome (capLenR) is only on the trunk root (merge null).
+  pushStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge);   // GPU strip: bezier + branch bend + taper expanded in BODY_INST_VS
+  // The strip's END is rotated by the branch BEND (in the VS), but the tip dome attaches to the RAW eL/eR/axis. On a SHORT
+  // limb the bend has not eased to 0 by the tip, so apply the SAME end-bend (th at u=1, same pivot) to the dome base edge +
+  // bulge axis here on the CPU -> the dome's base ring welds to the strip's end edge. Mouth dome (capLenR) = trunk root only.
   let deL=pt.eL, deR=pt.eR, dnx=pt.nx, dny=pt.ny;
-  // The branch base RAMP fades the STRIP's thickness up from 0 over arc-length rw, so on a SHORT limb the strip END is still
-  // faded (e.g. 17%) -- but the dome ignored the ramp and popped to FULL thickness, a cliff at the tip = a dark step + rim
-  // line across the limb ("the cut at the tip dome transition"). Match the dome base thickness to the strip end (ramp at u=1).
-  const rampEnd = merge ? smoothstep(0, merge.rampRw, merge.a1) : 1;   // match dome base to the strip-end thickness (same ramp)
+  // rampEnd matches the dome base thickness to the (ramped) strip end so a short limb doesn't cliff to full thickness at the tip.
+  const rampEnd = merge ? smoothstep(0, merge.rampRw, merge.a1) : 1;
   if (merge){
     const th = merge.da * (1 - smoothstep(0, merge.rw, merge.a1)), c=Math.cos(th), s=Math.sin(th);
     const rot=(Pp)=>{ const dx=Pp[0]-merge.px, dy=Pp[1]-merge.py; return [merge.px+dx*c-dy*s, merge.py+dx*s+dy*c]; };
     deL=rot(pt.eL); deR=rot(pt.eR); dnx=pt.nx*c-pt.ny*s; dny=pt.nx*s+pt.ny*c;
   }
-  const gpuDome = !(typeof window!=='undefined' && window.__gpuDome === false);   // GPU dome is the path; set window.__gpuDome=false to A/B the old CPU tessellation
-  if (gpuDome){
-    if (pt.terminal && domeLOD > 0.02)   pushDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur); // tip
-    if (pt.capLenR > 0 && domeLOD > 0.02) pushDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur); // mouth
-  } else {
-    if (pt.terminal && domeLOD > 0.02)   emitDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur, lod); // tip (CPU)
-    if (pt.capLenR > 0 && domeLOD > 0.02) emitDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur, lod); // mouth (CPU)
-  }
+  if (pt.terminal && domeLOD > 0.02)   pushDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur); // tip
+  if (pt.capLenR > 0 && domeLOD > 0.02) pushDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur); // mouth
 
   // hairs along both side edges: roots welded to the body (follow the swim), tips beat in a metachronal wave along v,
   // length scales with the segment's local thickness, and they DRAG from this part's own velocity through the water.
@@ -1331,7 +1258,6 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   try {
   o = 0; hio = 0; dio = 0; sio = 0;
   // ---- tessellate every creature ONCE, bucketed into K depth slabs (sorted front->back); food joins the deepest slab
-  const slabStart = new Array(K_SLABS).fill(0), segCount = new Array(K_SLABS).fill(0);   // segments (cyto/grain)
   const junkStart = new Array(K_SLABS).fill(0), junkCount = new Array(K_SLABS).fill(0);  // detritus + food (plain)
   const hairInstStart = new Array(K_SLABS).fill(0), hairInstCount = new Array(K_SLABS).fill(0);   // GPU strip: per-slab instances
   const domeInstStart = new Array(K_SLABS).fill(0), domeInstCount = new Array(K_SLABS).fill(0);   // GPU dome caps: per-slab instances
@@ -1361,9 +1287,9 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     segs.sort((a,b)=>a.slab-b.slab);
     let si = 0;
     for (let k=0;k<K_SLABS;k++){
-      slabStart[k] = o/9; hairInstStart[k] = hio/8; domeInstStart[k] = dio/16; stripInstStart[k] = sio/36;
-      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // body -> buf, hairs -> hairInst
-      segCount[k] = (o/9) - slabStart[k]; hairInstCount[k] = (hio/8) - hairInstStart[k]; domeInstCount[k] = (dio/16) - domeInstStart[k]; stripInstCount[k] = (sio/36) - stripInstStart[k];
+      hairInstStart[k] = hio/8; domeInstStart[k] = dio/16; stripInstStart[k] = sio/36;
+      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // strips -> stripInst, domes -> domeInst, hairs -> hairInst
+      hairInstCount[k] = (hio/8) - hairInstStart[k]; domeInstCount[k] = (dio/16) - domeInstStart[k]; stripInstCount[k] = (sio/36) - stripInstStart[k];
       // plain (no cyto/grain) stuff for this slab: floating detritus at this depth, + food in the deepest slab
       junkStart[k] = o/9;
       const S = sc();
@@ -1401,13 +1327,6 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE);
     gl.bindVertexArray(bodyVAO);
-    if (segCount[k] > 0){   // creature segments -> cytoplasm + grain
-      gl.useProgram(bodyProg); gl.uniform2f(uBodyRes, W, H);
-      gl.uniform1f(uBodyCyto, P.cyto); gl.uniform1f(uBodyCells, P.cells); gl.uniform1f(uBodyLighten, P.lighten);
-      gl.uniform1f(uBodyGrain, P.grain); gl.uniform1f(uBodyGrainScale, P.grainScale); gl.uniform1f(uBodySat, P.desat);
-      gl.uniform1f(uBodyTime, hairTime); gl.uniform1f(uBodyCytoDrift, P.cytoDrift);
-      gl.drawArrays(gl.TRIANGLES, slabStart[k], segCount[k]);
-    }
     if (junkCount[k] > 0){   // detritus + food -> plain thickness discs (no cyto/grain)
       gl.useProgram(junkProg); gl.uniform2f(uJunkRes, W, H); gl.uniform1f(uJunkSoft, P.junkSoft);
       gl.drawArrays(gl.TRIANGLES, junkStart[k], junkCount[k]);
