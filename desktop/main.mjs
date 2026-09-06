@@ -93,9 +93,9 @@ function selectSeed(seed){
       } else if (m.type === 'error' && !s.ready){ resolve({ ok: false, error: m.message }); }
     });
     child.on('exit', () => { if (s === scrub && !s.ready) resolve({ ok: false, error: 'generator exited before ready' }); });
-    // large horizon so generation doesn't visibly "stop" mid-session (40000 ticks = only 11:06 at 60 t/s). ~4.6h of
-    // sim time; a bounded generate-AHEAD-of-the-playback-head is the cleaner future refinement.
-    child.postMessage({ seed, out: dbPath, opts: { resume, ticks: 1_000_000 } });
+    // UNBOUNDED generation (Karl): the utilityProcess runs one core flat-out until it's killed (seed change / quit).
+    // Safe because the run records ONLY keyframes, thinned to a fixed budget -> the file stays bounded (~230 MB) forever.
+    child.postMessage({ seed, out: dbPath, opts: { resume, ticks: Infinity } });
   });
 }
 ipcMain.handle('scrub:select',    (_e, seed)  => selectSeed((seed >>> 0)));

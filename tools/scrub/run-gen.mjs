@@ -16,7 +16,6 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { World } from '../../engine/world.js';
 import { openRunWriter } from '../events/run-db.mjs';
-import { createSpeciesAnalyzer } from '../../engine/analysis/species.mjs';
 import { makeStandardWorld, poolConfig, POOL_DEFAULTS } from '../../engine/pool-seed.mjs';
 
 export const GEN_DEFAULTS = { ticks: 20000, keyframeInterval: 2000, statsInterval: 250, tickThrottle: 100, keyframeBudget: 500, ...POOL_DEFAULTS };
@@ -28,53 +27,35 @@ export function buildWorld(seed, { pool, n, food } = {}) {
     return makeStandardWorld(seed, { pool: pool ?? POOL_DEFAULTS.pool, n: n ?? POOL_DEFAULTS.n, food: food ?? POOL_DEFAULTS.food });
 }
 
-// Full stats row (D2): recompute species at the fixed cadence and fold in the shared analyzer's panel state, so a
-// scrub shows the main plate + diversity + lifespan + per-lineage list instantly with no recompute. `analyzer` is
-// recomputed HERE (once per stats/keyframe tick = the fixed-cadence contract); deaths are folded via onEvent.
-function computeStats(world, tick, analyzer) {
-    analyzer.recompute(world._swimbots.values());
-    return { tick, pop: world.getLivingSwimbotCount(), food: world.getLivingFoodCount(), species: analyzer.statsRow() };
-}
-
-// Generate a full run to `path`. Returns a small summary. `onProgress(tick, frontier)` optional (utilityProcess
-// posts progress to main from here in Phase 6).
+// Generate a run to `path`. Returns a small summary. `onProgress(tick)` / `onReady()` optional (the utilityProcess
+// posts these to main). Scrub playback needs ONLY keyframes -- any tick is reconstructed by restore-nearest + resim --
+// so we record NOTHING else (no events/stats/ticks). Combined with keyframe thinning, the file stays BOUNDED even
+// under UNBOUNDED generation (o.ticks = Infinity): the generator runs one core flat-out until the process is killed.
 export function generateRun(path, seed, opts = {}) {
     const o = { ...GEN_DEFAULTS, ...opts };
     const writer = openRunWriter(path, {
         seed: seed >>> 0, config: poolConfig(o.pool),
-        keyframeInterval: o.keyframeInterval, statsInterval: o.statsInterval, keyframeBudget: o.keyframeBudget,
+        keyframeInterval: o.keyframeInterval, keyframeBudget: o.keyframeBudget,
         engineVersion: o.engineVersion ?? null, perceptionMode: 'mixed-live',
     }, { resume: !!o.resume });
 
-    const analyzer = createSpeciesAnalyzer();   // fixed-cadence species/plate/lifespan compute -> each stats row (D2)
     let world, startTick = 0, keyframes = 0, resumed = false;
     if (writer.resumedFrom) {
         // S4/S5 crash-resume: restore from the last durable keyframe using the RUN'S stored config (S2), continue.
-        // (The analyzer re-warms from cold here -- per-lineage EMAs/ids restart at the resume seam; accepted drift.)
-        const cfg = writer.runConfig().config;
-        world = World.restore(cfg, writer.resumedFrom.snapshot);
+        world = World.restore(writer.runConfig().config, writer.resumedFrom.snapshot);
         startTick = writer.resumedFrom.tick;
         resumed = true;
     } else {
-        ({ world } = buildWorld(seed, o));
+        ({ world } = buildWorld(seed, o));                 // no onEvent attached -> zero per-tick overhead
+        writer.writeKeyframe(0, world.serialize()); keyframes++;   // keyframe-0 = seeded state (D8)
     }
-    // throttle the per-tick 'tick' event (N5); births/deaths/eats always pass through. Fold each death's age (D9)
-    // into the analyzer for the population + per-lineage lifespan EMAs (event-driven -> exact, not lossy polling).
-    world._onEvent = (e) => {
-        if (e.type === 'death') { const sb = world._swimbots.get(e.id); if (sb) analyzer.foldDeath(sb, e.age); }
-        if (e.type === 'tick' && (e.tick % o.tickThrottle) !== 0) return;
-        writer.onEvent(e);
-    };
-    if (!resumed) { writer.writeKeyframe(0, world.serialize(), computeStats(world, 0, analyzer)); keyframes++; }   // keyframe-0 = seeded state (D8)
-    // the .db now has a committed keyframe + WAL set -> safe for a read-only reader to open (S3 "db ready" handshake)
-    if (o.onReady) o.onReady({ path, frontier: startTick });
+    if (o.onReady) o.onReady({ path, frontier: startTick });   // db has a keyframe + WAL -> reader may open (S3 handshake)
 
-    for (let t = startTick + 1; t <= o.ticks; t++) {
+    for (let t = startTick + 1; t <= o.ticks; t++) {           // o.ticks may be Infinity -> run until killed
         world.tick();
-        if (t % o.keyframeInterval === 0) { writer.writeKeyframe(t, world.serialize(), computeStats(world, t, analyzer)); keyframes++; if (o.onProgress) o.onProgress(t, t); }
-        else if (t % o.statsInterval === 0) { writer.writeStats(t, computeStats(world, t, analyzer)); if (o.onProgress) o.onProgress(t, t); }
+        if (t % o.keyframeInterval === 0) { writer.writeKeyframe(t, world.serialize()); keyframes++; if (o.onProgress) o.onProgress(t, t); }
     }
-    writer.finish();
+    writer.finish();   // (not reached for Infinity; the process is killed, and each keyframe commit is already durable)
     writer.close();
     return { path, seed: seed >>> 0, ticks: o.ticks, keyframes, resumed, resumedTick: resumed ? startTick : null, finalPop: world.getLivingSwimbotCount() };
 }

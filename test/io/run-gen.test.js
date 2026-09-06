@@ -44,9 +44,11 @@ test('run-gen: generated .db reconstructs bit-for-bit against a fresh continuous
             for (let t = kf.tick; t < T; t++) C.tick();
             assert.equal(hash(C), hash(contAt(T)), `restore(kf@${kf.tick})+resim to ${T} != continuous @ ${T}`);
 
-            // the run actually evolved (real dynamics crossed): births happened, pop is alive
+            // the run actually evolved (real dynamics crossed): pop is alive
             assert.ok(summary.finalPop > 0, 'run went extinct');
-            assert.ok(r.getStats(T).stats.pop > 0, 'stats row has a live population');
+            // keyframes-only recording: no stats/event rows are written (the file stays bounded under unbounded gen)
+            assert.equal(r.getStats(T), null, 'generator records only keyframes -> no stats rows');
+            assert.equal(r.db.prepare('SELECT COUNT(*) c FROM ticks').get().c, 0, 'no event/tick rows recorded');
         } finally { r.close(); }
     } finally { rmSync(dir, { recursive: true, force: true }); }
 });
