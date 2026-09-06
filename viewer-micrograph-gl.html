@@ -1465,9 +1465,15 @@ function tickFPS(){
   if (_fpsPrev){ const f = 1000 / Math.max(0.001, now - _fpsPrev); _fpsEMA = _fpsEMA ? _fpsEMA * 0.9 + f * 0.1 : f; }
   _fpsPrev = now;
   const pop = world ? world.getLivingSwimbotCount() : 0;
-  if (fpsHud) fpsHud.textContent = `${_fpsEMA.toFixed(0)} fps · ${hairsEmitted} hairs · ${pop} pop`;
-  if (window.pool && now - _fpsLogT > 2000){ _fpsLogT = now; console.info(`[fps] ${_fpsEMA.toFixed(1)} fps  hairs=${hairsEmitted}  pop=${pop}`); }
+  const mode = (typeof window !== 'undefined' && window.__hairMode === 'gpu') ? 'GPU' : 'cpu';
+  if (fpsHud) fpsHud.textContent = `${_fpsEMA.toFixed(0)} fps · ${mode} hair · ${hairsEmitted} hairs · ${pop} pop`;
+  if (window.pool && now - _fpsLogT > 2000){ _fpsLogT = now; console.info(`[fps] ${_fpsEMA.toFixed(1)} fps  ${mode}  hairs=${hairsEmitted}  pop=${pop}`); }
 }
+
+// press 'h' to flip the hair path (cpu ribbons <-> gpu strip) live -> A/B fps on the HUD at the exact same spot.
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'h' || e.key === 'H'){ window.__hairMode = (window.__hairMode === 'gpu') ? 'cpu' : 'gpu'; console.info(`[fps] hair mode -> ${window.__hairMode}`); }
+});
 
 function loop(){
   if (loopStopped) return;
@@ -1583,11 +1589,10 @@ window.__bench = function(s, ticks, camOv, frames, junkFrac){
 // __bench at several zooms x {cpu ribbons, gpu strip}, logs a [bench] table -> main forwards it -> I read the numbers
 // myself. Trigger: ?zoombench on the URL (desktop main.mjs adds it when GP_BENCH=1). Uses focus:'biggest' so hairs frame.
 function benchZooms(){
-  const TICKS = 30000, FRAMES = 30;   // grown pool -> realistic hair counts (esp. whole-pool zoom-out)
-  // whole-pool (no focus) at low zoom = ALL creatures + hairs, no cull -> the full-zoom-out case; focus:'biggest' zooms in.
+  const TICKS = 12000, FRAMES = 30;   // ~peak population; finely sample the "smidge zoomed in" band where hairs -> 100k+
   const cases = [
-    { z: 1, focus: false }, { z: 2, focus: false }, { z: 4, focus: false },   // full/near zoom-out (max hairs)
-    { z: 8, focus: true }, { z: 20, focus: true }, { z: 50, focus: true },     // zoomed in on the biggest specimen
+    { z: 1, focus: false }, { z: 1.5, focus: false }, { z: 2, focus: false }, { z: 2.5, focus: false },
+    { z: 3, focus: false }, { z: 4, focus: false }, { z: 6, focus: false },   // whole-pool sweep = Karl's slow band
   ];
   console.warn('[bench] zoom(view) |  cpu-ribbons ms (fps) |  gpu-strip ms (fps) | delta | hairs | living');
   for (const c of cases){
