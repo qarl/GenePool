@@ -66,6 +66,18 @@
   #scrubbar #sbSlider { flex: 1; min-width: 120px; }
   #scrubbar button { min-width: 36px; cursor: pointer; }
   #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 104px; text-align: right; color: #c7d3e0; }
+  #scrubbar .spin { min-width: 26px; padding: 4px 9px; font-size: 14px; line-height: 1; }
+  #scrubbar #sbSpeeds { display: inline-flex; gap: 4px; }
+  #scrubbar .sbSpeed { min-width: 30px; padding: 4px 8px 4px 7px; letter-spacing: -2px; }
+  #scrubbar .sbSpeed.active { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
+  /* desktop app: the main micrograph FILLS the window (the browser keeps the fixed 768^2 layout -> goldens unchanged) */
+  body.desktop { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  body.desktop #wrap { flex: 1; min-height: 0; padding: 8px; }
+  body.desktop #stage { flex: 1; min-height: 0; }
+  body.desktop #canvasBox { flex: 1; min-width: 0; }
+  body.desktop #cv { width: 100%; height: 100%; border-radius: 0; box-shadow: none; }
+  body.desktop #species { height: auto; align-self: stretch; }   /* list keeps its 256px width; fills the height */
+  body.desktop #scrubbar { position: static; }                    /* in normal flow at the bottom (not overlaying the fill) */
 </style>
 </head>
 <body>
@@ -89,9 +101,13 @@
   <div id="species"></div>
 </div></div>
 <footer id="scrubbar" hidden>
-  <label>Seed <input id="sbSeed" type="number" min="0" step="1" value="1" style="width:72px"></label>
-  <label>Speed <input id="sbSpeed" type="range" min="1" max="60" value="3"><span id="sbSpeedv">3×</span></label>
-  <button id="sbPlay" title="play / pause">▶</button>
+  <label>Seed <button id="sbSeedDown" class="spin" title="previous seed">−</button><input id="sbSeed" type="number" min="0" step="1" value="1" style="width:56px"><button id="sbSeedUp" class="spin" title="next seed">+</button></label>
+  <span id="sbSpeeds">
+    <button class="sbSpeed" data-n="0" title="play 1×">▶</button>
+    <button class="sbSpeed" data-n="1" title="fast 2×">▶▶</button>
+    <button class="sbSpeed" data-n="2" title="faster 4×">▶▶▶</button>
+    <button class="sbSpeed" data-n="3" title="fastest 8×">▶▶▶▶</button>
+  </span>
   <input id="sbSlider" type="range" min="0" max="0" value="0" step="1">
   <span id="sbTime">00:00 / 00:00</span>
 </footer>
@@ -104,9 +120,10 @@ import { makeStandardWorld } from './engine/pool-seed.mjs';
 
 const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000, EGG_SIZE = 5, SPLINE = 0.4;
 const cv = document.getElementById('cv');
-const CANVAS_W = cv.width, CANVAS_H = cv.height;   // true backing-store size (1024x768), never changes
-const VIEW_MAIN = 768, VIEW_SMALL = 256;           // main micrograph = 768^2 (left); three species tiles = 256^2 (right column)
+let CANVAS_W = cv.width, CANVAS_H = cv.height;      // backing-store size; the desktop app resizes these to FILL the window
+const VIEW_MAIN = 768, VIEW_SMALL = 256;           // browser main micrograph = 768^2; species tiles = 256^2
 const VIEW_ROUND = 12;                              // corner radius (px) — SAME on every view (main + tiles)
+let mainW = VIEW_MAIN, mainH = VIEW_MAIN, mainRound = VIEW_ROUND;   // dynamic MAIN view (desktop fills the window); = VIEW_MAIN/round in the browser
 let W = cv.width, H = cv.height;                    // ACTIVE view size — renderView sets this per view, then restores
 const errEl = document.getElementById('err');
 
@@ -492,15 +509,33 @@ function makeAccum(w, h){   // MRT pair: colour (emission) + frontAbsorb
 // One complete offscreen pipeline sized to a view (square). Main = 768^2; species tiles share a 256^2 set.
 function mkFBO1(tex){ const f=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,f);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0); return f; }
-function makeFBOSet(size){
-  const slabTex = makeTex(size,size), slabFBO = mkFBO1(slabTex);   // per-slab thickness
-  const hairTex = makeTex(size,size), hairFBO = mkFBO1(hairTex);   // per-slab hair glow (depth-attenuated in resolve)
-  const accA = makeAccum(size,size), accB = makeAccum(size,size);  // front-to-back ping-pong composite
-  const sceneTex = makeTex(size,size), sceneFBO = mkFBO1(sceneTex);// backlit scene (pre-bloom)
-  const bloomA = makeTex(size,size), bloomAFBO = mkFBO1(bloomA);   // bloom ping-pong
-  const bloomB = makeTex(size,size), bloomBFBO = mkFBO1(bloomB);
+function makeFBOSet(w, h = w){   // view may be non-square (the desktop main fills the window); tiles stay square
+  const slabTex = makeTex(w,h), slabFBO = mkFBO1(slabTex);   // per-slab thickness
+  const hairTex = makeTex(w,h), hairFBO = mkFBO1(hairTex);   // per-slab hair glow (depth-attenuated in resolve)
+  const accA = makeAccum(w,h), accB = makeAccum(w,h);        // front-to-back ping-pong composite
+  const sceneTex = makeTex(w,h), sceneFBO = mkFBO1(sceneTex);// backlit scene (pre-bloom)
+  const bloomA = makeTex(w,h), bloomAFBO = mkFBO1(bloomA);   // bloom ping-pong
+  const bloomB = makeTex(w,h), bloomBFBO = mkFBO1(bloomB);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return { size, slabTex, slabFBO, hairTex, hairFBO, accA, accB, sceneTex, sceneFBO, bloomA, bloomAFBO, bloomB, bloomBFBO };
+  return { w, h, slabTex, slabFBO, hairTex, hairFBO, accA, accB, sceneTex, sceneFBO, bloomA, bloomAFBO, bloomB, bloomBFBO };
+}
+function deleteFBOSet(s){   // free GL objects when resizing the main set (else a resize leaks textures/FBOs)
+  if (!s || !gl) return;
+  for (const t of [s.slabTex, s.hairTex, s.sceneTex, s.bloomA, s.bloomB, s.accA.out, s.accA.fa, s.accB.out, s.accB.fa]) gl.deleteTexture(t);
+  for (const f of [s.slabFBO, s.hairFBO, s.sceneFBO, s.bloomAFBO, s.bloomBFBO, s.accA.fbo, s.accB.fbo]) gl.deleteFramebuffer(f);
+}
+// Desktop only: size the main view (canvas backing-store + its FBO set) to FILL #canvasBox. The browser keeps the
+// fixed 768^2 main (so its goldens are unchanged). Aspect-correct: fitZoom uses min(W,H)/pool, so the visible field is
+// pool/zoom regardless of size -- filling just adds pixels + more world on the long axis.
+function resizeMain(){
+  if (!gl) return;
+  const box = document.getElementById('canvasBox');
+  const w = Math.max(64, Math.floor(box.clientWidth)), h = Math.max(64, Math.floor(box.clientHeight));
+  if (w === cv.width && h === cv.height && mainSet && mainSet.w === w && mainSet.h === h) return;
+  cv.width = w; cv.height = h; CANVAS_W = w; CANVAS_H = h; mainW = w; mainH = h;
+  const old = mainSet; mainSet = makeFBOSet(w, h); deleteFBOSet(old);
+  SC_REF = (Math.min(w, h) / P.pool) * 6;   // rim-brightness ref tracks the view size (uScaleRatio stays = zoom/6)
+  render();
 }
 
 function initGL(){
@@ -1334,7 +1369,7 @@ function render(){
     }
     if (vis.length) miniCursor = (miniCursor + n) % vis.length;
   }
-  renderView(cam, VIEW_MAIN, VIEW_MAIN, mainSet, 0, 0, true, VIEW_ROUND);   // main micrograph LAST: 768^2, overpaints the scratch corner
+  renderView(cam, mainW, mainH, mainSet, 0, 0, true, mainRound);   // main micrograph LAST (fills the window on desktop); overpaints the scratch corner
 }
 
 let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (running only gates ticks, not render)
@@ -1452,17 +1487,21 @@ const mmss = t => { const s = Math.max(0, Math.floor((t || 0) / TICKS_PER_SECOND
 function resetOverlays(clock = 0){ known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }
 
 function startPlayback(){
+  document.body.classList.add('desktop');            // fill-the-window layout (browser keeps the fixed 768 layout -> goldens unchanged)
   document.querySelector('header').hidden = true;    // drop the top-of-screen UI entirely (Karl); everything lives in the bottom bar
   document.getElementById('scrubbar').hidden = false;
+  mainRound = 0;                                      // square edge-to-edge fill (no rounded micrograph corners)
 
-  const $seed = document.getElementById('sbSeed'), $speed = document.getElementById('sbSpeed'), $speedv = document.getElementById('sbSpeedv');
-  const $play = document.getElementById('sbPlay'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
+  const $seed = document.getElementById('sbSeed'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
+  const $seedUp = document.getElementById('sbSeedUp'), $seedDown = document.getElementById('sbSeedDown');
+  const speedBtns = [...document.querySelectorAll('#sbSpeeds .sbSpeed')];
   let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null;
 
   function updateBar(){
     if (!dragging){ $slider.max = Math.max(0, frontier); $slider.value = head; }
     $time.textContent = `${mmss(head)} / ${mmss(frontier)}`;
-    $play.textContent = playing ? '⏸' : '▶';
+    // highlight the active speed while playing (2^N == ticksPerFrame); nothing highlighted when paused
+    for (const b of speedBtns) b.classList.toggle('active', playing && ticksPerFrame === (1 << (+b.dataset.n)));
   }
   // drag-snap: restore the nearest keyframe <= t (no re-sim). Coalesce to the latest target while one is in flight.
   async function snapTo(t){
@@ -1486,8 +1525,17 @@ function startPlayback(){
   }
 
   window.pool.scrub.onFrontier(t => { frontier = Math.max(frontier, t); if (!dragging) updateBar(); });
-  $play.onclick = () => { playing = !playing; updateBar(); };
-  $speed.oninput = () => { ticksPerFrame = +$speed.value; $speedv.textContent = ticksPerFrame + '×'; };
+  // 4 fast-forward buttons: each plays at 2^N x real-time (1x, 2x, 4x, 8x); clicking the ACTIVE speed pauses.
+  for (const b of speedBtns) b.onclick = () => {
+    const tpf = 1 << (+b.dataset.n);
+    if (playing && ticksPerFrame === tpf) playing = false;          // click the playing speed -> pause
+    else { ticksPerFrame = tpf; playing = true; }
+    updateBar();
+  };
+  // seed +/- : step to the previous/next seed (and load/generate its run)
+  const stepSeed = (d) => { const v = Math.max(0, (parseInt($seed.value, 10) || 0) + d); $seed.value = v; selectSeed(v); };
+  $seedUp.onclick = () => stepSeed(1);
+  $seedDown.onclick = () => stepSeed(-1);
   $seed.onchange = () => { const v = parseInt($seed.value, 10); if (Number.isFinite(v) && v >= 0) selectSeed(v); };
   // scrubbing does NOT pause: keep `playing` as-is while dragging (loop holds via !dragging), so releasing resumes -> "takes off" (Karl)
   $slider.oninput = () => { dragging = true; head = +$slider.value; $time.textContent = `${mmss(head)} / ${mmss(frontier)}`; snapTo(head); };
@@ -1503,8 +1551,10 @@ function startPlayback(){
     render(); updateBar();
     requestAnimationFrame(playbackLoop);
   }
-  ticksPerFrame = +$speed.value;
-  seedJunk(mulberry32((+$seed.value >>> 0) ^ 0x5eed1234));   // seed detritus SYNCHRONOUSLY: the loop renders before selectSeed's async IPC resolves
+  ticksPerFrame = 1;   // default 1x; playback starts paused until a speed button is pressed
+  seedJunk(mulberry32((+$seed.value >>> 0) ^ 0x5eed1234));   // seed detritus BEFORE any render (loop + resizeMain both render)
+  resizeMain();                                              // size the main view to FILL the window (safe: junk seeded, world may be null)
+  window.addEventListener('resize', resizeMain);            // keep filling when the window is resized
   selectSeed(+$seed.value);
   requestAnimationFrame(playbackLoop);
 }
