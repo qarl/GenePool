@@ -445,6 +445,40 @@ uniform float uBright;
 out vec4 frag;
 void main(){ frag = vec4(uColor * (vA * uBright), 1.0); }   // additive glow (blendFunc ONE,ONE)
 `;
+// INSTANCED hair strip: one instance per strand, params {root, dir, len, wid, theta, bright} (screen space); the VS
+// expands a TRIANGLE_STRIP of uSegs segments along the strand's CIRCULAR ARC (the exact curve emitHair builds on the
+// CPU, but smooth at any zoom -> no facets) and tapers width+alpha to the tip. Pairs with the SAME trivial HAIR_FS
+// (no new per-pixel math -> golden-safe, cross-arch-stable). theta->0 degrades to a straight segment (stable). (P1.)
+const HAIR_INST_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec4 p0;   // rx,ry (screen root) , nx,ny (outward dir)
+layout(location=1) in vec4 p1;   // len, wid(half-width at root), theta(total bend), bright
+uniform vec2 uRes; uniform int uSegs;
+out float vA;
+void main(){
+  int seg = gl_VertexID >> 1;                         // 0..uSegs
+  float side = float(gl_VertexID & 1) * 2.0 - 1.0;    // -1 / +1 (strip edges)
+  float f = float(seg) / float(uSegs);                // 0..1 along the strand
+  vec2 root = p0.xy; vec2 d0 = normalize(p0.zw);
+  float len = p1.x, wid = p1.y, theta = p1.z, bright = p1.w;
+  vec2 pos, tang;
+  if (abs(theta) < 1e-3){ pos = root + d0 * (len * f); tang = d0; }   // straight (theta~0 is the common case; no cancellation)
+  else {
+    float R = len / theta;                            // signed radius
+    vec2 nrm = vec2(-d0.y, d0.x);                     // +90deg (CCW), matches emitHair's ang+=theta stepping
+    vec2 C = root + nrm * R;                          // arc centre
+    float a = f * theta, ca = cos(a), sa = sin(a);    // swept angle
+    vec2 rc = root - C;
+    pos  = C + vec2(rc.x*ca - rc.y*sa, rc.x*sa + rc.y*ca);
+    tang = vec2(d0.x*ca - d0.y*sa, d0.x*sa + d0.y*ca);
+  }
+  float w = wid * (1.0 - f);                          // taper half-width to the tip
+  vec2 perp = vec2(-tang.y, tang.x);
+  vec2 P = pos + perp * (side * w);
+  vA = (1.0 - f) * bright;                            // taper intensity to the tip (matches emitHair)
+  gl_Position = vec4(P.x/uRes.x*2.0 - 1.0, 1.0 - P.y/uRes.y*2.0, 0.0, 1.0);
+}`;
+const HAIR_SEGS = 20;   // strip segments/strand: chord deviation ~ len*theta/(2*(2N)^2) -> sub-pixel/facet-free at branchy zoom
 
 // --- junk/detritus: plain thickness discs (NO cytoplasm/grain), summed into the slab thickness like a tiny body ---
 const JUNK_FS = `#version 300 es
@@ -463,6 +497,7 @@ const uR = {}, uF = {};                  // resolve / final uniform locations
 let mainSet=null, smallSet=null;   // per-VIEW FBO sets (makeFBOSet): { slabTex/FBO, accA/B (MRT), hairTex/FBO, sceneTex/FBO, bloomA/B(+FBO) }. Main=768^2, small=256^2.
 let bodyVAO=null, bodyVBO=null, emptyVAO=null;
 let hairProg=null, uHairRes=null, uHairColor=null, uHairBright=null, hairVAO=null, hairVBO=null;
+let hairInstProg=null, hairInstVAO=null, hairInstVBO=null, uHiRes=null, uHiSegs=null, uHiColor=null, uHiBright=null;   // instanced strip (P1)
 let junkProg=null, uJunkRes=null, uJunkSoft=null;
 let brightProg=null, blurProg=null, postProg=null; const uBr={}, uBl={}, uPo={};
 let boxProg=null, uBoxRes=null, uBoxColor=null, boxVAO=null, boxVBO=null;
@@ -589,6 +624,16 @@ function initGL(){
   hairVBO = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, hairVBO);
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 3*4, 0);
   gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 3*4, 8);
+  gl.bindVertexArray(null);
+
+  // instanced hair strip (P1): dedicated VAO, 2 vec4 per-instance attribs (divisor set ONCE here), corners via gl_VertexID
+  hairInstProg = makeProgram(HAIR_INST_VS, HAIR_FS);
+  uHiRes = gl.getUniformLocation(hairInstProg, 'uRes'); uHiSegs = gl.getUniformLocation(hairInstProg, 'uSegs');
+  uHiColor = gl.getUniformLocation(hairInstProg, 'uColor'); uHiBright = gl.getUniformLocation(hairInstProg, 'uBright');
+  hairInstVAO = gl.createVertexArray(); gl.bindVertexArray(hairInstVAO);
+  hairInstVBO = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, hairInstVBO);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, 0);  gl.vertexAttribDivisor(0, 1);   // p0
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, 16); gl.vertexAttribDivisor(1, 1);   // p1
   gl.bindVertexArray(null);
 
   junkProg = makeProgram(BODY_VS, JUNK_FS);   // plain discs, shares the body vertex format
@@ -774,6 +819,19 @@ function emitDisc(cx, cy, screenR, rad, t, vBase, blur){
 // --- hairs: a separate [x,y,alpha] buffer, drawn additively as a glow on top of the composite ---
 let hairBuf = new Float32Array(1 << 19), ho = 0;
 let hairsEmitted = 0;   // strands drawn this frame (reset in render()); a debug/perf metric (FPS HUD + __bench)
+// GPU-strip path (window.__hairMode==='gpu'): one instance/strand, 8 floats {rx,ry,nx,ny,len,wid,theta,bright}.
+let hairInst = new Float32Array(8 * 4096), hio = 0;   // grows as needed; hio/8 = strands
+let hairGPU = false;   // snapshot of (window.__hairMode==='gpu') per view, read once at renderView top
+function emitHairInstance(rx, ry, nx, ny, len, wid, theta, bright){
+  if (hio + 8 > hairInst.length){ const nb = new Float32Array(hairInst.length * 2); nb.set(hairInst); hairInst = nb; }
+  hairInst[hio++]=rx; hairInst[hio++]=ry; hairInst[hio++]=nx; hairInst[hio++]=ny;
+  hairInst[hio++]=len; hairInst[hio++]=wid; hairInst[hio++]=theta; hairInst[hio++]=bright;
+}
+// window.__hairMode: 'cpu' (default, the tessellated ribbons) or 'gpu' (the instanced arc strip). Settable via ?hair=gpu
+// on the URL (so the headless harness + desktop can A/B) or window.__hairMode at runtime.
+if (typeof window !== 'undefined' && !window.__hairMode){
+  try { window.__hairMode = new URLSearchParams(location.search).get('hair') || 'cpu'; } catch { window.__hairMode = 'cpu'; }
+}
 function hairVtx(x, y, a){ if (ho+3 > hairBuf.length){ const nb=new Float32Array(hairBuf.length*2); nb.set(hairBuf); hairBuf=nb; } hairBuf[ho++]=x; hairBuf[ho++]=y; hairBuf[ho++]=a; }
 function hairTri(ax,ay,aa, bx,by,ba, cx,cy,ca){ if (CAP) CAP.hairs.push([CAP.part, ax,ay, bx,by, cx,cy]); hairVtx(ax,ay,aa); hairVtx(bx,by,ba); hairVtx(cx,cy,ca); }
 // one strand: root (rx,ry), outward unit normal (nx,ny), screen length/width, total tip deflection `theta`.
@@ -789,6 +847,7 @@ function hairJit(nx, ny, len, key){
 const HAIR_NSEG = 4;
 function emitHair(rx, ry, nx, ny, len, wid, theta, bright){
   hairsEmitted++;
+  if (hairGPU){ emitHairInstance(rx, ry, nx, ny, len, wid, theta, bright); return; }   // GPU strip: params only, expanded in the VS
   const step = len/HAIR_NSEG; let ang = Math.atan2(ny, nx), cx=rx, cy=ry;
   let pLx=0,pLy=0,pRx=0,pRy=0,pa=bright;
   for (let s=0;s<=HAIR_NSEG;s++){
@@ -1173,11 +1232,13 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   // this view's offscreen pipeline; same local names the body already uses, so the pipeline code is unchanged
   const { slabFBO, slabTex, hairFBO, hairTex, accA, accB, sceneFBO, sceneTex, bloomAFBO, bloomA, bloomBFBO, bloomB } = set;
   try {
-  o = 0; ho = 0;
+  o = 0; ho = 0; hio = 0;
+  hairGPU = (typeof window !== 'undefined' && window.__hairMode === 'gpu');   // read the hair mode ONCE per view
   // ---- tessellate every creature ONCE, bucketed into K depth slabs (sorted front->back); food joins the deepest slab
   const slabStart = new Array(K_SLABS).fill(0), segCount = new Array(K_SLABS).fill(0);   // segments (cyto/grain)
   const junkStart = new Array(K_SLABS).fill(0), junkCount = new Array(K_SLABS).fill(0);  // detritus + food (plain)
   const hairStart = new Array(K_SLABS).fill(0), hairCount = new Array(K_SLABS).fill(0);
+  const hairInstStart = new Array(K_SLABS).fill(0), hairInstCount = new Array(K_SLABS).fill(0);   // GPU strip: per-slab instances
   const nJunk = Math.floor(P.junk * MAX_JUNK);
   if (world){
     const S = sc();
@@ -1203,9 +1264,9 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     segs.sort((a,b)=>a.slab-b.slab);
     let si = 0;
     for (let k=0;k<K_SLABS;k++){
-      slabStart[k] = o/9; hairStart[k] = ho/3;
-      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // body -> buf, hairs -> hairBuf
-      segCount[k] = (o/9) - slabStart[k]; hairCount[k] = (ho/3) - hairStart[k];
+      slabStart[k] = o/9; hairStart[k] = ho/3; hairInstStart[k] = hio/8;
+      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // body -> buf, hairs -> hairBuf/hairInst
+      segCount[k] = (o/9) - slabStart[k]; hairCount[k] = (ho/3) - hairStart[k]; hairInstCount[k] = (hio/8) - hairInstStart[k];
       // plain (no cyto/grain) stuff for this slab: floating detritus at this depth, + food in the deepest slab
       junkStart[k] = o/9;
       const S = sc();
@@ -1219,7 +1280,10 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   gl.bindBuffer(gl.ARRAY_BUFFER, bodyVBO);
   gl.bufferData(gl.ARRAY_BUFFER, buf.subarray(0, o), gl.DYNAMIC_DRAW);   // upload all body slabs once
   gl.bindVertexArray(null);
-  if (ho > 0){                                                          // upload all hair slabs once
+  if (hairGPU){                                                         // GPU strip: upload the per-instance params once
+    if (hio > 0){ gl.bindVertexArray(hairInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, hairInstVBO);
+      gl.bufferData(gl.ARRAY_BUFFER, hairInst.subarray(0, hio), gl.DYNAMIC_DRAW); gl.bindVertexArray(null); }
+  } else if (ho > 0){                                                    // CPU ribbons: upload all hair slabs once
     gl.bindVertexArray(hairVAO); gl.bindBuffer(gl.ARRAY_BUFFER, hairVBO);
     gl.bufferData(gl.ARRAY_BUFFER, hairBuf.subarray(0, ho), gl.DYNAMIC_DRAW);
     gl.bindVertexArray(null);
@@ -1252,7 +1316,17 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     // this slab's hairs -> hairTex (additive glow; the resolve then depth-attenuates it)
     gl.bindFramebuffer(gl.FRAMEBUFFER, hairFBO);
     gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
-    if (P.hair > 0 && hairCount[k] > 0){
+    if (P.hair > 0 && hairGPU && hairInstCount[k] > 0){   // GPU strip: one instanced draw of this slab's strands
+      gl.useProgram(hairInstProg);
+      gl.uniform2f(uHiRes, W, H); gl.uniform1i(uHiSegs, HAIR_SEGS); gl.uniform3f(uHiColor, 1.0, 1.0, 0.97); gl.uniform1f(uHiBright, P.hair);
+      gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE);
+      gl.bindVertexArray(hairInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, hairInstVBO);
+      const base = hairInstStart[k] * 32;   // byteOffset for this slab (no baseInstance in WebGL2 -> rebind the pointers)
+      gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, base + 0);   // divisor(0/1) already set once in initGL (VAO state)
+      gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, base + 16);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, HAIR_SEGS * 2 + 2, hairInstCount[k]);
+      gl.bindVertexArray(null); gl.disable(gl.BLEND);
+    } else if (P.hair > 0 && hairCount[k] > 0){
       gl.useProgram(hairProg);
       gl.uniform2f(uHairRes, W, H); gl.uniform3f(uHairColor, 1.0, 1.0, 0.97); gl.uniform1f(uHairBright, P.hair);
       gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE);
