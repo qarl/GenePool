@@ -117,7 +117,9 @@ async function createWindow(){
     else if (level >= 2) console.error(`[renderer] ${message}  (${source}:${line})`);
   });
   win.webContents.on('render-process-gone', (_e, d) => console.error('[renderer gone]', d.reason));
-  const q = process.env.GP_BENCH ? '?zoombench=1' : '';   // GP_BENCH=1 -> run the real-GPU zoom-sweep hair bench on load
+  const params = new URLSearchParams();                   // dev knob: GP_BENCH=1 -> real-GPU zoom-sweep bench (forwarded [bench] log)
+  if (process.env.GP_BENCH) params.set('zoombench', '1');
+  const q = params.toString() ? '?' + params.toString() : '';
   win.loadURL(`http://127.0.0.1:${port}/viewer-micrograph-gl.html${q}`);
 }
 

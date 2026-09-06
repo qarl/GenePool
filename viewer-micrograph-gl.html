@@ -425,18 +425,7 @@ uniform vec4 uColor;
 out vec4 frag;
 void main(){ frag = uColor; }`;   // rgba -> alpha lets the outside-wall darkening be semi-transparent
 
-// --- hairs: thin glowing rim-coloured strands, drawn additively on top of the composite ---
-const HAIR_VS = `#version 300 es
-precision highp float;
-layout(location=0) in vec2 aPos;   // screen pixels
-layout(location=1) in float aA;    // intensity (1 at root, 0 at tip)
-uniform vec2 uRes;
-out float vA;
-void main(){
-  vA = aA;
-  vec2 clip = vec2(aPos.x / uRes.x * 2.0 - 1.0, 1.0 - aPos.y / uRes.y * 2.0);
-  gl_Position = vec4(clip, 0.0, 1.0);
-}`;
+// --- hairs: thin glowing rim-coloured strands, drawn additively on top of the composite (instanced arc strip). ---
 const HAIR_FS = `#version 300 es
 precision highp float;
 in float vA;
@@ -496,8 +485,7 @@ let bodyProg=null, resolveProg=null, finalProg=null, uBodyRes=null, uBodyCyto=nu
 const uR = {}, uF = {};                  // resolve / final uniform locations
 let mainSet=null, smallSet=null;   // per-VIEW FBO sets (makeFBOSet): { slabTex/FBO, accA/B (MRT), hairTex/FBO, sceneTex/FBO, bloomA/B(+FBO) }. Main=768^2, small=256^2.
 let bodyVAO=null, bodyVBO=null, emptyVAO=null;
-let hairProg=null, uHairRes=null, uHairColor=null, uHairBright=null, hairVAO=null, hairVBO=null;
-let hairInstProg=null, hairInstVAO=null, hairInstVBO=null, uHiRes=null, uHiSegs=null, uHiColor=null, uHiBright=null;   // instanced strip (P1)
+let hairInstProg=null, hairInstVAO=null, hairInstVBO=null, uHiRes=null, uHiSegs=null, uHiColor=null, uHiBright=null;   // instanced hair strip
 let junkProg=null, uJunkRes=null, uJunkSoft=null;
 let brightProg=null, blurProg=null, postProg=null; const uBr={}, uBl={}, uPo={};
 let boxProg=null, uBoxRes=null, uBoxColor=null, boxVAO=null, boxVBO=null;
@@ -615,18 +603,7 @@ function initGL(){
 
   emptyVAO = gl.createVertexArray(); // for the attributeless fullscreen triangle
 
-  // hairs: their own program + dynamic buffer ([x,y,alpha]), rendered additively over the composite
-  hairProg = makeProgram(HAIR_VS, HAIR_FS);
-  uHairRes = gl.getUniformLocation(hairProg, 'uRes');
-  uHairColor = gl.getUniformLocation(hairProg, 'uColor');
-  uHairBright = gl.getUniformLocation(hairProg, 'uBright');
-  hairVAO = gl.createVertexArray(); gl.bindVertexArray(hairVAO);
-  hairVBO = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, hairVBO);
-  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 3*4, 0);
-  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 3*4, 8);
-  gl.bindVertexArray(null);
-
-  // instanced hair strip (P1): dedicated VAO, 2 vec4 per-instance attribs (divisor set ONCE here), corners via gl_VertexID
+  // instanced hair strip: dedicated VAO, 2 vec4 per-instance attribs (divisor set ONCE here), corners via gl_VertexID
   hairInstProg = makeProgram(HAIR_INST_VS, HAIR_FS);
   uHiRes = gl.getUniformLocation(hairInstProg, 'uRes'); uHiSegs = gl.getUniformLocation(hairInstProg, 'uSegs');
   uHiColor = gl.getUniformLocation(hairInstProg, 'uColor'); uHiBright = gl.getUniformLocation(hairInstProg, 'uBright');
@@ -747,14 +724,11 @@ function partPointsGL(ph, p, gscale){
 // ------------------------------------------------------------------ geometry -> vertex buffer
 let buf = new Float32Array(1 << 21);   // grows if needed
 let o = 0;
-// CAP: when non-null (during a Copy-Swimmer capture) every emitted triangle also records its SCREEN-space corners, so we
-// can dump EXACTLY what the renderer draws for one creature (no headless re-derivation that could diverge from the real path).
-let CAP = null;   // { tris:[[part,kind,ax,ay,bx,by,cx,cy]...], hairs:[[part,ax,ay,bx,by,cx,cy]...], part, kind }  kind:0 strip,1 dome
 function vtx(x, y, cu, rad, v, t, blur){
   if (o + 9 > buf.length){ const nb = new Float32Array(buf.length * 2); nb.set(buf); buf = nb; }
   buf[o++]=x; buf[o++]=y; buf[o++]=cu; buf[o++]=rad; buf[o++]=v; buf[o++]=t[0]; buf[o++]=t[1]; buf[o++]=t[2]; buf[o++]=blur;
 }
-function tri(A,acu,ar,av,aT, B,bcu,br,bv,bT, C,ccu,cr,cv,cT, blur){ if (CAP) CAP.tris.push([CAP.part, CAP.kind, A[0],A[1], B[0],B[1], C[0],C[1], ar,br,cr]); vtx(A[0],A[1],acu,ar,av,aT,blur); vtx(B[0],B[1],bcu,br,bv,bT,blur); vtx(C[0],C[1],ccu,cr,cv,cT,blur); }
+function tri(A,acu,ar,av,aT, B,bcu,br,bv,bT, C,ccu,cr,cv,cT, blur){ vtx(A[0],A[1],acu,ar,av,aT,blur); vtx(B[0],B[1],bcu,br,bv,bT,blur); vtx(C[0],C[1],ccu,cr,cv,cT,blur); }
 // quad spanning two rings: verts A,B carry tint tA, verts C,D carry tint tB (colour gradient); blur is per-segment
 function quad(A,acu,ar,av, B,bcu,br,bv, C,ccu,cr,cv, D,dcu,dr,dv, tA, tB, blur){ tri(A,acu,ar,av,tA, B,bcu,br,bv,tA, C,ccu,cr,cv,tB, blur); tri(A,acu,ar,av,tA, C,ccu,cr,cv,tB, D,dcu,dr,dv,tB, blur); }
 
@@ -816,25 +790,10 @@ function emitDisc(cx, cy, screenR, rad, t, vBase, blur){
   for (let i=1;i<=DISCK;i++){ const a=i/DISCK*6.28318; const Pp=[cx+Math.cos(a)*screenR, cy+Math.sin(a)*screenR]; tri(c,0,rad,vBase,t, prev,1,rad,vBase,t, Pp,1,rad,vBase,t, blur); prev=Pp; }
 }
 
-// --- hairs: a separate [x,y,alpha] buffer, drawn additively as a glow on top of the composite ---
-let hairBuf = new Float32Array(1 << 19), ho = 0;
-let hairsEmitted = 0;   // strands drawn this frame (reset in render()); a debug/perf metric (FPS HUD + __bench)
-// GPU-strip path (window.__hairMode==='gpu'): one instance/strand, 8 floats {rx,ry,nx,ny,len,wid,theta,bright}.
+// --- hairs: instanced GPU strip. One strand = one instance (8 floats {rx,ry,nx,ny,len,wid,theta,bright}, screen space);
+//     HAIR_INST_VS expands it into a smooth tapered arc strip, drawn additively as a glow on top of the composite. ---
 let hairInst = new Float32Array(8 * 4096), hio = 0;   // grows as needed; hio/8 = strands
-let hairGPU = false;   // snapshot of (window.__hairMode==='gpu') per view, read once at renderView top
-function emitHairInstance(rx, ry, nx, ny, len, wid, theta, bright){
-  if (hio + 8 > hairInst.length){ const nb = new Float32Array(hairInst.length * 2); nb.set(hairInst); hairInst = nb; }
-  hairInst[hio++]=rx; hairInst[hio++]=ry; hairInst[hio++]=nx; hairInst[hio++]=ny;
-  hairInst[hio++]=len; hairInst[hio++]=wid; hairInst[hio++]=theta; hairInst[hio++]=bright;
-}
-// window.__hairMode: 'cpu' (default, the tessellated ribbons) or 'gpu' (the instanced arc strip). Settable via ?hair=gpu
-// on the URL (so the headless harness + desktop can A/B) or window.__hairMode at runtime.
-if (typeof window !== 'undefined' && !window.__hairMode){
-  try { window.__hairMode = new URLSearchParams(location.search).get('hair') || 'cpu'; } catch { window.__hairMode = 'cpu'; }
-}
-function hairVtx(x, y, a){ if (ho+3 > hairBuf.length){ const nb=new Float32Array(hairBuf.length*2); nb.set(hairBuf); hairBuf=nb; } hairBuf[ho++]=x; hairBuf[ho++]=y; hairBuf[ho++]=a; }
-function hairTri(ax,ay,aa, bx,by,ba, cx,cy,ca){ if (CAP) CAP.hairs.push([CAP.part, ax,ay, bx,by, cx,cy]); hairVtx(ax,ay,aa); hairVtx(bx,by,ba); hairVtx(cx,cy,ca); }
-// one strand: root (rx,ry), outward unit normal (nx,ny), screen length/width, total tip deflection `theta`.
+let hairsEmitted = 0;   // strands drawn this frame (reset in render()); a debug/perf metric (FPS HUD + __bench)
 // per-HAIR stable pseudo-random: hash an integer key -> [0,1). Keyed on the hair's arc position/index (NOT time), so
 // each strand's length/angle offset is fixed (organic jitter, not flicker) and identical frame to frame.
 function hair01(k){ let h = k>>>0; h = Math.imul(h ^ (h>>>16), 0x45d9f3b); h = Math.imul(h ^ (h>>>16), 0x45d9f3b); h ^= h>>>16; return (h>>>0)/4294967296; }
@@ -843,21 +802,12 @@ function hairJit(nx, ny, len, key){
   const a = (hair01(key ^ 0x9e3779b9)*2 - 1) * P.hairAngJit, c = Math.cos(a), s = Math.sin(a);
   return [nx*c - ny*s, nx*s + ny*c, len * (1 + (hair01(key)*2 - 1) * P.hairLenJit)];
 }
-// Steps outward while rotating by theta/NSEG each step (curved sway), tapering width + glow to the tip.
-const HAIR_NSEG = 4;
+// one strand: root (rx,ry), outward normal (nx,ny), screen len/half-width, total tip deflection `theta` -> one instance.
 function emitHair(rx, ry, nx, ny, len, wid, theta, bright){
   hairsEmitted++;
-  if (hairGPU){ emitHairInstance(rx, ry, nx, ny, len, wid, theta, bright); return; }   // GPU strip: params only, expanded in the VS
-  const step = len/HAIR_NSEG; let ang = Math.atan2(ny, nx), cx=rx, cy=ry;
-  let pLx=0,pLy=0,pRx=0,pRy=0,pa=bright;
-  for (let s=0;s<=HAIR_NSEG;s++){
-    const frac=s/HAIR_NSEG, w=wid*(1-frac), a=(1-frac)*bright;   // brightness scale (dims baby hairs), tapering to tip
-    const px=-Math.sin(ang), py=Math.cos(ang);        // perpendicular to the strand heading
-    const Lx=cx-px*w, Ly=cy-py*w, Rx=cx+px*w, Ry=cy+py*w;
-    if (s>0) hairTri(pLx,pLy,pa, pRx,pRy,pa, Rx,Ry,a), hairTri(pLx,pLy,pa, Rx,Ry,a, Lx,Ly,a);
-    pLx=Lx;pLy=Ly;pRx=Rx;pRy=Ry;pa=a;
-    cx += Math.cos(ang)*step; cy += Math.sin(ang)*step; ang += theta/HAIR_NSEG;
-  }
+  if (hio + 8 > hairInst.length){ const nb = new Float32Array(hairInst.length * 2); nb.set(hairInst); hairInst = nb; }
+  hairInst[hio++]=rx; hairInst[hio++]=ry; hairInst[hio++]=nx; hairInst[hio++]=ny;
+  hairInst[hio++]=len; hairInst[hio++]=wid; hairInst[hio++]=theta; hairInst[hio++]=bright;
 }
 // hairs radiating OUTWARD from a rounded cap (mouth / tip / shoulder): a fan of strands around the dome outline.
 // A,B = cap base corners (screen); (ax,ay) = outward axis (screen); capLenScreen = cap bulge; radWorld = cap thickness.
@@ -908,9 +858,7 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   const tEnd = [ part.red, part.green, part.blue ];
   const pp = (part.parent >= 1) ? ph.parts[part.parent] : part;
   const tStart = [ pp.red, pp.green, pp.blue ];
-  if (CAP){ CAP.part = p; CAP.kind = 0; }
   emitStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge, steps);   // merge (branch base fillet+fade) computed in render, arc-based
-  if (CAP) CAP.kind = 1;
   // The strip's END is rotated by the branch BEND (inside emitStrip), but the tip dome attaches to the RAW eL/eR/axis. On a
   // SHORT limb the bend has not eased to 0 by the tip, so the dome is left misaligned from the strip end -> a cut at the tip
   // dome transition. Apply the SAME end-bend (th at u=1, same pivot) to the dome base edge + bulge axis so the dome's base
@@ -927,7 +875,6 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   }
   if (pt.terminal && domeLOD > 0.02)   emitDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur, lod); // tip
   if (pt.capLenR > 0 && domeLOD > 0.02) emitDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur, lod); // mouth only now
-  if (CAP) CAP.kind = 2;
 
   // hairs along both side edges: roots welded to the body (follow the swim), tips beat in a metachronal wave along v,
   // length scales with the segment's local thickness, and they DRAG from this part's own velocity through the water.
@@ -1020,21 +967,6 @@ function buildSegs(id, sb, ph, g, fade, S, segs, lodOverride){
     }
     segs.push({ sb, ph, p, g, S, fade, slab, v0: arc[p]+vOff, v1: arc[p]+vOff + ph.parts[p].length, merge, lod });
   }
-}
-
-// captureCreatureGeom: run the SAME tessellation for one creature with CAP active, returning the exact screen-space triangles
-// it draws (body strip + domes + hairs), tagged by part and kind. Buffers are snapshot/restored so the live draw is untouched.
-function captureCreatureGeom(id, sb){
-  const ph = sb._phenotype; if (!ph || !ph.parts) return null;
-  const g = (sb._growthScale !== undefined) ? sb._growthScale : 1;
-  const fade = fades.get(id) ?? 1, S = sc();
-  const segs = []; buildSegs(id, sb, ph, g, fade, S, segs, 1);   // lodOverride=1: capture at FULL detail regardless of screen size
-  const so = o, sho = ho;
-  CAP = { tris: [], hairs: [], part: -1, kind: 0 };
-  for (const s of segs) tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge);
-  const out = { tris: CAP.tris, hairs: CAP.hairs };
-  CAP = null; o = so; ho = sho;   // restore buffer cursors -> the next real render is unaffected
-  return out;
 }
 
 // ================================================================== species clustering (engine-native junk-DNA gate)
@@ -1232,12 +1164,10 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   // this view's offscreen pipeline; same local names the body already uses, so the pipeline code is unchanged
   const { slabFBO, slabTex, hairFBO, hairTex, accA, accB, sceneFBO, sceneTex, bloomAFBO, bloomA, bloomBFBO, bloomB } = set;
   try {
-  o = 0; ho = 0; hio = 0;
-  hairGPU = (typeof window !== 'undefined' && window.__hairMode === 'gpu');   // read the hair mode ONCE per view
+  o = 0; hio = 0;
   // ---- tessellate every creature ONCE, bucketed into K depth slabs (sorted front->back); food joins the deepest slab
   const slabStart = new Array(K_SLABS).fill(0), segCount = new Array(K_SLABS).fill(0);   // segments (cyto/grain)
   const junkStart = new Array(K_SLABS).fill(0), junkCount = new Array(K_SLABS).fill(0);  // detritus + food (plain)
-  const hairStart = new Array(K_SLABS).fill(0), hairCount = new Array(K_SLABS).fill(0);
   const hairInstStart = new Array(K_SLABS).fill(0), hairInstCount = new Array(K_SLABS).fill(0);   // GPU strip: per-slab instances
   const nJunk = Math.floor(P.junk * MAX_JUNK);
   if (world){
@@ -1264,9 +1194,9 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     segs.sort((a,b)=>a.slab-b.slab);
     let si = 0;
     for (let k=0;k<K_SLABS;k++){
-      slabStart[k] = o/9; hairStart[k] = ho/3; hairInstStart[k] = hio/8;
-      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // body -> buf, hairs -> hairBuf/hairInst
-      segCount[k] = (o/9) - slabStart[k]; hairCount[k] = (ho/3) - hairStart[k]; hairInstCount[k] = (hio/8) - hairInstStart[k];
+      slabStart[k] = o/9; hairInstStart[k] = hio/8;
+      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // body -> buf, hairs -> hairInst
+      segCount[k] = (o/9) - slabStart[k]; hairInstCount[k] = (hio/8) - hairInstStart[k];
       // plain (no cyto/grain) stuff for this slab: floating detritus at this depth, + food in the deepest slab
       junkStart[k] = o/9;
       const S = sc();
@@ -1280,13 +1210,9 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   gl.bindBuffer(gl.ARRAY_BUFFER, bodyVBO);
   gl.bufferData(gl.ARRAY_BUFFER, buf.subarray(0, o), gl.DYNAMIC_DRAW);   // upload all body slabs once
   gl.bindVertexArray(null);
-  if (hairGPU){                                                         // GPU strip: upload the per-instance params once
-    if (hio > 0){ gl.bindVertexArray(hairInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, hairInstVBO);
-      gl.bufferData(gl.ARRAY_BUFFER, hairInst.subarray(0, hio), gl.DYNAMIC_DRAW); gl.bindVertexArray(null); }
-  } else if (ho > 0){                                                    // CPU ribbons: upload all hair slabs once
-    gl.bindVertexArray(hairVAO); gl.bindBuffer(gl.ARRAY_BUFFER, hairVBO);
-    gl.bufferData(gl.ARRAY_BUFFER, hairBuf.subarray(0, ho), gl.DYNAMIC_DRAW);
-    gl.bindVertexArray(null);
+  if (hio > 0){                                                         // upload the per-instance hair params once
+    gl.bindVertexArray(hairInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, hairInstVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, hairInst.subarray(0, hio), gl.DYNAMIC_DRAW); gl.bindVertexArray(null);
   }
 
   // ---- clear the FRONT accumulator (emitted=0, frontAbsorb=0); it seeds the front-to-back sweep ----
@@ -1316,7 +1242,7 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     // this slab's hairs -> hairTex (additive glow; the resolve then depth-attenuates it)
     gl.bindFramebuffer(gl.FRAMEBUFFER, hairFBO);
     gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
-    if (P.hair > 0 && hairGPU && hairInstCount[k] > 0){   // GPU strip: one instanced draw of this slab's strands
+    if (P.hair > 0 && hairInstCount[k] > 0){   // this slab's strands: one instanced arc-strip draw
       gl.useProgram(hairInstProg);
       gl.uniform2f(uHiRes, W, H); gl.uniform1i(uHiSegs, HAIR_SEGS); gl.uniform3f(uHiColor, 1.0, 1.0, 0.97); gl.uniform1f(uHiBright, P.hair);
       gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE);
@@ -1325,13 +1251,6 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
       gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, base + 0);   // divisor(0/1) already set once in initGL (VAO state)
       gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, base + 16);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, HAIR_SEGS * 2 + 2, hairInstCount[k]);
-      gl.bindVertexArray(null); gl.disable(gl.BLEND);
-    } else if (P.hair > 0 && hairCount[k] > 0){
-      gl.useProgram(hairProg);
-      gl.uniform2f(uHairRes, W, H); gl.uniform3f(uHairColor, 1.0, 1.0, 0.97); gl.uniform1f(uHairBright, P.hair);
-      gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE);
-      gl.bindVertexArray(hairVAO);
-      gl.drawArrays(gl.TRIANGLES, hairStart[k], hairCount[k]);
       gl.bindVertexArray(null); gl.disable(gl.BLEND);
     }
     // resolve: prev accumulator + this slab (body + hairs) -> next accumulator
@@ -1465,15 +1384,9 @@ function tickFPS(){
   if (_fpsPrev){ const f = 1000 / Math.max(0.001, now - _fpsPrev); _fpsEMA = _fpsEMA ? _fpsEMA * 0.9 + f * 0.1 : f; }
   _fpsPrev = now;
   const pop = world ? world.getLivingSwimbotCount() : 0;
-  const mode = (typeof window !== 'undefined' && window.__hairMode === 'gpu') ? 'GPU' : 'cpu';
-  if (fpsHud) fpsHud.textContent = `${_fpsEMA.toFixed(0)} fps · ${mode} hair · ${hairsEmitted} hairs · ${pop} pop`;
-  if (window.pool && now - _fpsLogT > 2000){ _fpsLogT = now; console.info(`[fps] ${_fpsEMA.toFixed(1)} fps  ${mode}  hairs=${hairsEmitted}  pop=${pop}`); }
+  if (fpsHud) fpsHud.textContent = `${_fpsEMA.toFixed(0)} fps · ${hairsEmitted} hairs · ${pop} pop`;
+  if (window.pool && now - _fpsLogT > 2000){ _fpsLogT = now; console.info(`[fps] ${_fpsEMA.toFixed(1)} fps  hairs=${hairsEmitted}  pop=${pop}`); }
 }
-
-// press 'h' to flip the hair path (cpu ribbons <-> gpu strip) live -> A/B fps on the HUD at the exact same spot.
-window.addEventListener('keydown', (e) => {
-  if (e.key === 'h' || e.key === 'H'){ window.__hairMode = (window.__hairMode === 'gpu') ? 'cpu' : 'gpu'; console.info(`[fps] hair mode -> ${window.__hairMode}`); }
-});
 
 function loop(){
   if (loopStopped) return;
@@ -1585,23 +1498,16 @@ window.__bench = function(s, ticks, camOv, frames, junkFrac){
            living: world.getLivingSwimbotCount(), nJunk, zoom: cam.zoom };
 };
 
-// Zoom-sweep A/B bench (real-GPU when run in the desktop app; SwiftShader is misleading for the GPU strip). Runs
-// __bench at several zooms x {cpu ribbons, gpu strip}, logs a [bench] table -> main forwards it -> I read the numbers
-// myself. Trigger: ?zoombench on the URL (desktop main.mjs adds it when GP_BENCH=1). Uses focus:'biggest' so hairs frame.
+// Zoom-sweep bench: __bench (median ms/frame) at several zooms, logs a [bench] table -> main forwards it -> I read the
+// numbers myself (real-GPU in the desktop app; SwiftShader headless is a relative yardstick only). Trigger: ?zoombench
+// on the URL (desktop main.mjs adds it when GP_BENCH=1). Samples the whole-pool zoom band where hair count -> 100k+.
 function benchZooms(){
   const TICKS = 12000, FRAMES = 30;   // ~peak population; finely sample the "smidge zoomed in" band where hairs -> 100k+
-  const cases = [
-    { z: 1, focus: false }, { z: 1.5, focus: false }, { z: 2, focus: false }, { z: 2.5, focus: false },
-    { z: 3, focus: false }, { z: 4, focus: false }, { z: 6, focus: false },   // whole-pool sweep = Karl's slow band
-  ];
-  console.warn('[bench] zoom(view) |  cpu-ribbons ms (fps) |  gpu-strip ms (fps) | delta | hairs | living');
-  for (const c of cases){
-    const cam = c.focus ? { zoom: c.z, focus: 'biggest' } : { zoom: c.z };
-    const res = {};
-    for (const mode of ['cpu', 'gpu']){ window.__hairMode = mode; res[mode] = window.__bench(1, TICKS, cam, FRAMES); }
-    const cp = res.cpu, gp = res.gpu, d = (gp.median - cp.median) / cp.median * 100;
-    const tag = (c.focus ? 'z' : 'W') + String(c.z);   // W = whole-pool, z = focus-biggest
-    console.warn(`[bench] ${tag.padStart(4)} | ${cp.median.toFixed(1).padStart(7)} (${(1000/cp.median).toFixed(0).padStart(3)}fps) | ${gp.median.toFixed(1).padStart(7)} (${(1000/gp.median).toFixed(0).padStart(3)}fps) | ${(d>=0?'+':'')}${d.toFixed(0)}% | ${cp.nHairs} | ${cp.living}`);
+  const zooms = [1, 1.5, 2, 2.5, 3, 4, 6];   // whole-pool sweep = Karl's slow band
+  console.warn('[bench] zoom |    ms/frame (fps) | hairs | living');
+  for (const z of zooms){
+    const r = window.__bench(1, TICKS, { zoom: z }, FRAMES);
+    console.warn(`[bench] W${String(z).padStart(3)} | ${r.median.toFixed(1).padStart(7)} (${(1000/r.median).toFixed(0).padStart(3)}fps) | ${r.nHairs} | ${r.living}`);
   }
   console.warn('[bench] done');
 }

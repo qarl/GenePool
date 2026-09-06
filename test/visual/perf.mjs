@@ -20,13 +20,13 @@ const update = args.includes('--update');
 const junk = args.includes('--junk') ? Number(args[args.indexOf('--junk') + 1]) : null;
 const REGRESS = 8;   // % median change beyond which we flag (headless timing is noisy -> keep the band generous)
 
-// Two scenes: 'wide' = zoomed-OUT whole pool (max creature+detritus count, hairs LOD'd OFF) -> the classic regression
-// yardstick + the baseline. 'hairy' = medium zoom where hairs are ON (lod>=0.5) -> the scene that actually measures
-// hair cost (the wide scene draws ZERO hairs). __bench returns a CPU/GPU split (cpuMedian before gl.finish, gpuMedian
-// the SwiftShader raster -> pessimistic proxy) + nHairs; SwiftShader fps is a relative yardstick, not real-GPU fps.
+// Two scenes: 'wide' = zoomed-OUT whole pool (max creature+detritus count AND the hair-heavy case: every grown creature
+// on-screen -> ~100k strands) -> the classic regression yardstick + the baseline. 'hairy' = medium zoom, frustum-culled
+// to a few thousand strands. __bench returns a CPU/GPU timing split (cpuMedian before gl.finish, gpuMedian the SwiftShader
+// raster -> pessimistic proxy) + nHairs; SwiftShader fps is a relative yardstick, not real-GPU fps.
 const SCENES = [
   { name: 'wide',  seed: 1, ticks: 60000, cam: { zoom: 1 }, frames: 90 },   // baseline scene (must stay first)
-  { name: 'hairy', seed: 1, ticks: 60000, cam: { zoom: 8 }, frames: 90 },   // hairs on -> the metric that matters for hair work
+  { name: 'hairy', seed: 1, ticks: 60000, cam: { zoom: 8 }, frames: 90 },   // medium zoom, culled hairs
 ];
 
 const srv = spawn('node', ['engine/parallel/serve.mjs'], { cwd: REPO, env: { ...process.env, PORT: String(PORT) }, stdio: 'ignore' });
@@ -39,27 +39,20 @@ try {
   await page.waitForFunction(() => typeof window.__bench === 'function', { timeout: 10000 });
   chrome = browser.version();
   for (const S of SCENES) {
-    const m = {};
-    for (const mode of ['cpu', 'gpu']) {   // A/B the two hair paths in the same page (window.__hairMode read per view)
-      await page.evaluate((hm) => { window.__hairMode = hm; }, mode);
-      m[mode] = await page.evaluate(([s, t, c, f, j]) => window.__bench(s, t, c, f, j), [S.seed, S.ticks, S.cam, S.frames, junk]);
-    }
-    results.push({ S, cpu: m.cpu, gpu: m.gpu });
+    const r = await page.evaluate(([s, t, c, f, j]) => window.__bench(s, t, c, f, j), [S.seed, S.ticks, S.cam, S.frames, junk]);
+    results.push({ S, r });
   }
 } finally { await browser.close(); srv.kill(); }
 
 let git = ''; try { git = execSync('git rev-parse --short HEAD', { cwd: REPO }).toString().trim(); } catch {}
 console.log(`\nRender bench  [${git || '?'}, ${process.arch}, SwiftShader (relative yardstick, NOT real-GPU fps)]`);
-console.log(`  scene   zoom   CPU-ribbons ms   GPU-strip ms   delta      hairs`);
-for (const { S, cpu, gpu } of results) {
-  const d = (gpu.median - cpu.median) / cpu.median * 100;
-  const warn = (S.name === 'hairy' && !cpu.nHairs) ? '  ⚠ ZERO hairs' : '';
-  console.log(`  ${S.name.padEnd(6)} ${String(cpu.zoom).padStart(3)}    ${cpu.median.toFixed(1).padStart(8)} (${(1000/cpu.median).toFixed(0)}fps)   ` +
-    `${gpu.median.toFixed(1).padStart(6)} (${(1000/gpu.median).toFixed(0)}fps)   ${(d>=0?'+':'')}${d.toFixed(1)}%   ` +
-    `${cpu.nHairs} (cpu-emit ${cpu.cpuMedian.toFixed(1)}→${gpu.cpuMedian.toFixed(1)}ms)${warn}`);
+console.log(`  scene   zoom     ms/frame   (fps)    cpu-emit ms    hairs`);
+for (const { S, r } of results) {
+  console.log(`  ${S.name.padEnd(6)} ${String(r.zoom).padStart(3)}    ${r.median.toFixed(1).padStart(8)} (${(1000/r.median).toFixed(0).padStart(3)}fps)    ` +
+    `${r.cpuMedian.toFixed(1).padStart(6)}       ${r.nHairs}`);
 }
 
-const rw = results[0].cpu;   // baseline compares the CPU 'wide' scene (unchanged reference)
+const rw = results[0].r;   // baseline compares the 'wide' scene (unchanged reference)
 const cur = {
   medianMs: +rw.median.toFixed(2), meanMs: +rw.mean.toFixed(2), minMs: +rw.min.toFixed(2), p90Ms: +rw.p90.toFixed(2),
   cpuMs: +rw.cpuMedian.toFixed(2), fps: +(1000 / rw.median).toFixed(1), living: rw.living, nJunk: rw.nJunk, zoom: rw.zoom,
