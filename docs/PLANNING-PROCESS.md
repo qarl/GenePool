@@ -1,8 +1,12 @@
 # Planning process (for big / risky / architectural changes)
 
-Our standard process before building anything substantial. It's cheap relative to the feature and has repeatedly
-caught blocking bugs and surfaced real product decisions *before* any code was written (species-list, scrub/playback,
-…). Not for small, reversible changes — those follow the normal bias-to-action loop.
+**This is the NORM for larger changes** (Karl, 2026-09-06) — the default before building anything substantial, not an
+optional extra. It's cheap relative to the feature and has repeatedly caught blocking bugs and surfaced real product
+decisions *before* any code was written (species-list, scrub/playback, GPU-hair, …).
+
+**When to use it:** any larger change — new subsystem, architectural/multi-phase work, a shader/pipeline rewrite,
+anything risky or hard to reverse. **When to skip it:** small, reversible tweaks (a param, a CSS/UI nudge, a bounded
+bug-fix) — those follow the normal bias-to-action loop. When unsure, lean toward running it.
 
 ## The five steps
 
