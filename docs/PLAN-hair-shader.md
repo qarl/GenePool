@@ -2,6 +2,10 @@
 
 Follows `docs/PLANNING-PROCESS.md`.
 
+> ⚠️ Read the **"Hardening review — folded in"** section first — decisions **H1–H10** GOVERN and supersede conflicting
+> text above them (notably: per-slab draws not one draw (H1), screen-space params (H2), θ≈0 is the constant case (H3),
+> the goal is "no facets", not "look-identical" (H5)).
+
 ## Problem
 Zoomed in on long hairs, you see **facets** (visible kinks). And every hair is **warped on the CPU every frame**.
 
@@ -83,6 +87,67 @@ metachronal `beat` + physical `drag`; left/right mirroring; bloom contribution; 
 2. Wire side hairs + cap hairs through the params path; match taper/jitter/beat/drag/growth/LOD.
 3. Visual A/B vs current (Karl's eyes) + re-record goldens; perf measure (CPU frame time zoomed-in, hair-heavy scene).
 4. Remove the toggle (or keep it) once parity is accepted.
+
+## Hardening review — folded in (2026-09-06, before the 5-panel; these DECISIONS govern + supersede conflicting text above)
+A single reviewer hardened this plan against the code. Verdict: approach (instanced analytic-arc hairs, fragment
+arc-SDF) is SOUND + BUILDABLE in WebGL2, but one central claim was wrong (per-slab compositing) and several "edge" cases
+are actually the common case. Decisions:
+
+- **H1 (BLOCKER) — hairs are depth-composited PER SLAB; do 8 instanced draws, NOT one.** Hairs bucket into
+  `hairStart[k]/hairCount[k]` over `K_SLABS=8` (viewer ~1200); each slab clears `hairFBO`, draws only its hairs
+  (~1247-1256), and the resolve pass depth-attenuates them (`atten=exp(-prevFA)`, ~325/347) — this is what stops
+  overlapping swimmers' hairs blowing out. A single all-hairs draw collapses the 8 attenuation levels → reintroduces the
+  blow-out. ⇒ **My "one draw call for all hairs / same hairFBO … preserved by construction" was FALSE.** Keep the
+  per-slab structure: **8 instanced draws**, one per slab into `hairFBO`. WebGL2 has **no baseInstance**, so before each
+  slab's `drawArraysInstanced(TRIANGLES/STRIP, 0, 4, hairCount[k])` rebind each divisor-1 attribute's
+  `vertexAttribPointer` with `byteOffset = hairStart[k]*stride`.
+- **H2 (MAJOR) — params in SCREEN space, not world space.** Hair roots are derived screen-space today (`bez()` of screen
+  points ~878, + merge-bend rotation ~879-881, + death-swell, + `*S`). World-space params would force reproducing
+  merge-bend/death-swell/dome-weld in the shader (big refactor, real fidelity risk) for ~zero payoff (`render()`
+  re-derives every hair every frame anyway; beat/drag animate per frame). ⇒ **Instance params = exactly emitHair's
+  current inputs `{rx,ry, nx,ny, len, wid, theta, bright}` (screen space).** VS does screen→clip like the current
+  `HAIR_VS` (~433); no camera uniforms. Supersedes the "world space … shaders project with the camera" text.
+- **H3 (MAJOR) — θ≈0 is the CONSTANT case, not an edge case.** `beat=hairSway*sin(…)` (~885) crosses 0 twice per cycle
+  for every hair, and `theta=beat−hairDrag*(v·perp)`. So `R=len/θ→∞` (catastrophic float cancellation) and any
+  arc↔line discontinuity flickers on every hair every cycle. ⇒ Use a numerically stable arc-SDF (Inigo-Quilez
+  half-aperture form, or arc-local coords) with a **seamless arc↔line blend over a small θ band**. Phase 0 MUST test an
+  animated sweep of θ through 0, not a static hair.
+- **H4 (MAJOR) — bounding quad must include the arc SAGITTA.** The arc bulges laterally by `sagitta≈R(1−cos(θ/2))≈
+  len·θ/8` beyond the root→tip chord; a chord-aligned OBB + halfwidth CUTS the strand. ⇒ perp extent =
+  `sagitta + halfwidth + AA`. Also **clamp |θ|** (≈2.5) and verify the real `part.velocity` range (with `hairDrag=1.0`
+  a fast part could push |θ|>π where the arc curls >180° and the OBB + arc-param mapping degenerate).
+- **H5 (MAJOR) — restate the goal: NOT "look-identical".** Today's hairs are hard-edged flat ribbons (`antialias:false`,
+  ~188): **constant alpha ACROSS width**, linear alpha taper ALONG length (~789-792); the 4-segment joint gaps ARE the
+  facets. An SDF necessarily adds edge AA + removes seams → intentionally smoother. ⇒ Goal = "**no facets; glow/taper/
+  colour/additive preserved; edges necessarily smoother**." Match the profile: **flat box across width** (≤1px AA), not
+  a Gaussian/"glow falloff across width"; `alpha=(1−param)*bright` along length. Neighbour-hair additive **summing is
+  preserved** (each instance is its own additive fragment); only **self-overlap on an extreme arc** differs (SDF
+  min-distance vs summed triangles) — acceptable, note it.
+- **H6 (MAJOR) — the perf harness measures ZERO hairs; fix it before trusting numbers.** `hairLOD` fades hairs OUT at
+  low zoom (~827) and `perf.mjs` runs at `zoom:1` → no hairs; facets appear at HIGH zoom where the frustum cull leaves
+  few creatures (little hair CPU); the CPU bulk is at MEDIUM zoom. And `__bench` reports fused `gl.finish()` wall time
+  while the win is CPU-side and the SDF's larger fragment footprint is a GPU-side RISK. ⇒ add a **medium-zoom,
+  many-haired-creature** perf scene and **time the CPU emit loop separately** from GPU (before `gl.finish()`); Phase 3
+  must prove the CPU win AND bound the new GPU cost.
+- **H7 (MINOR) — Copy-Swimmer capture (`CAP.hairs`) breaks.** `hairTri` pushes corners into `CAP.hairs` (~773) for
+  `captureCreatureGeom` (~962-970); instance params bypass `hairTri`. ⇒ either exclude hairs from the capture, or
+  reconstruct arc→triangles for the capture path only. (Add `CAP` to the fidelity/hook list.)
+- **H8 (MINOR) — goldens are EXACT-0 on the recording arch → don't lose the net mid-change.** Default the runtime toggle
+  to the **OLD** path so `branchy` (zoom 26, hairs) + `speciated` mini stay green through Phases 1-2; A/B, then
+  **re-record + flip the default in ONE commit**. Confirm the SDF's `atan2`/`sqrt` are cross-arch stable (maxΔ≤1,
+  integer-hash-noise discipline) or widen the cross-arch tolerance for the hair scenes only.
+- **H9 (MINOR) — the taper needs the per-pixel arc PARAMETER, under-specified.** param = angle-about-center ÷ θ (arc
+  branch) / chord projection (line branch, θ→0); map param→width and param→alpha, `w→0` at param=1, flat root cap
+  (occluded by the body). Phase 0 must prototype the param mapping, not just distance-to-arc.
+- **H10 (MINOR) — beef up the gates.** Phase 0 must prove: animated θ-through-0 (H3), sagitta coverage at max θ (H4),
+  tapered width+alpha as f(param) (H9), thin-width AA at several zooms. Phase 3 must include the medium-zoom CPU-vs-GPU
+  split (H6).
+
+**Verified correct (panel need not re-litigate):** the strand IS a circular arc (`ang += theta/HAIR_NSEG`, constant
+curvature; `R≈len/theta`); WebGL2 has VS/FS only (no geometry/tessellation) so a fixed-N VS stays faceted; instancing +
+`gl_VertexID` quad expansion is the right primitive (the fullscreen triangle already uses `gl_VertexID`, ~301); hairs are
+view-only (no engine-determinism impact); the fidelity checklist is complete EXCEPT per-slab compositing (H1) + `CAP`
+(H7); the VS-high-N-strip fallback is a clean drop-in.
 
 ## Provenance
 Karl (2026-09-06): facets on long zoomed hairs; asked whether a hair/vertex shader kills facets + beats CPU warping.
