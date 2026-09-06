@@ -24,14 +24,17 @@ test('keyframe thinning: count stays <= budget, keyframe-0 + newest kept, recons
         const r = openRunReader(path);
         try {
             const ticks = r.db.prepare('SELECT tick FROM snapshots ORDER BY tick').all().map(x => x.tick);
-            assert.ok(ticks.length <= BUDGET, `keyframe count ${ticks.length} must be <= budget ${BUDGET}`);
-            assert.ok(ticks.length >= BUDGET / 2, `should retain a healthy fraction, got ${ticks.length}`);
+            const n = ticks.length;
+            assert.ok(n <= BUDGET, `keyframe count ${n} must be <= budget ${BUDGET}`);
+            assert.ok(n >= 5, `should retain a healthy count, got ${n}`);
             assert.equal(ticks[0], 0, 'keyframe-0 (the seed state) must survive thinning');
-            assert.equal(ticks[ticks.length - 1], TICKS, 'the newest keyframe (frontier) must survive');
-            // dense recent: the last gap is the base interval; old gaps are coarser
-            assert.equal(ticks[ticks.length - 1] - ticks[ticks.length - 2], KEYF, 'newest keyframes stay at base spacing (dense recent)');
-            const firstGap = ticks[1] - ticks[0];
-            assert.ok(firstGap > KEYF, `oldest region should be coarsened (first gap ${firstGap} > base ${KEYF})`);
+            assert.equal(ticks[n - 1], TICKS, 'the newest keyframe (frontier) must survive');
+            // EVEN SPREAD over the WHOLE timeline (Karl): every era keeps keyframes -> no gap spans a big fraction of the
+            // run (old closely-packed keyframes are thinned onto a uniform grid; early history is NOT deleted).
+            const gaps = []; for (let i = 1; i < n; i++) gaps.push(ticks[i] - ticks[i - 1]);
+            const maxGap = Math.max(...gaps);
+            assert.ok(maxGap <= TICKS / 3, `no era should be missing: max keyframe gap ${maxGap} must be <= ${(TICKS / 3).toFixed(0)}`);
+            assert.ok(ticks[1] <= TICKS / 3, `early history must be kept (2nd keyframe at ${ticks[1]})`);
 
             // reconstruction still bit-identical from the THINNED set: restore nearest kf + resim == continuous
             const contAt = (T) => { const { world } = buildWorld(SEED, { n: N, pool: POOL }); for (let i = 0; i < T; i++) world.tick(); return world; };

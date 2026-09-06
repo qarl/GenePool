@@ -65,8 +65,7 @@
   #scrubbar label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   #scrubbar #sbSlider { flex: 1; min-width: 120px; }
   #scrubbar button { min-width: 36px; cursor: pointer; }
-  #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 104px; text-align: right; color: #c7d3e0; }
-  #scrubbar .spin { min-width: 26px; padding: 4px 9px; font-size: 14px; line-height: 1; }
+  #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 172px; text-align: right; color: #c7d3e0; }
   #scrubbar #sbSpeeds { display: inline-flex; gap: 4px; }
   /* all 4 the SAME size as a single-triangle button: fixed width + overlapping triangles (negative letter-spacing;
      padding-left compensates the trailing negative space so the glyph cluster stays centred) */
@@ -104,7 +103,7 @@
   <div id="species"></div>
 </div></div>
 <footer id="scrubbar" hidden>
-  <label>Seed <button id="sbSeedDown" class="spin" title="previous seed">−</button><input id="sbSeed" type="number" min="0" step="1" value="1" style="width:56px"><button id="sbSeedUp" class="spin" title="next seed">+</button></label>
+  <label>Seed <input id="sbSeed" type="number" min="0" step="1" value="1"></label>
   <span id="sbSpeeds">
     <button class="sbSpeed" data-n="0" title="play 1×">▶</button>
     <button class="sbSpeed" data-n="1" title="fast 2×">▶▶</button>
@@ -156,7 +155,7 @@ const P = {
   grainScale: 2.0,  // grain fineness (bigger = finer)
   junk: 1.0,        // floating detritus amount (0..1 of the seeded pool)
   junkOpacity: 0.225, // detritus density/darkness (-25% visibility)
-  junkSoft: 3.0,    // detritus edge softness (0.5 = sharp, higher = soft/out-of-focus)
+  junkSoft: 6.0,    // detritus edge softness (0.5 = sharp, higher = soft/out-of-focus) [Karl: doubled 3->6]
   hair: 0.15,       // hairs: glow brightness (0 = off)
   hairLen: 4,       // hair length (world units)
   hairSpace: 1,     // spacing between hairs along the perimeter (world units; smaller = denser)
@@ -1486,7 +1485,18 @@ window.__bench = function(s, ticks, camOv, frames, junkFrac){
 // keyframe (drag = snap, no re-sim) and, while playing, ticking that restored world forward -- deterministic, so it
 // stays in lockstep with the generator. Time is shown mm:ss (never ticks).
 const TICKS_PER_SECOND = 60;   // 1x speed = real-time
-const mmss = t => { const s = Math.max(0, Math.floor((t || 0) / TICKS_PER_SECOND)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+// adaptive sim-time: mm:ss under an hour, h:mm:ss under a day, "Nd hh:mm:ss" beyond (unbounded runs reach days).
+const _p2 = n => String(n).padStart(2, '0');
+const timeUnits = t => { const s = Math.max(0, Math.floor((t || 0) / TICKS_PER_SECOND)); return s >= 86400 ? 3 : s >= 3600 ? 2 : 1; };
+function fmtTime(t, units = timeUnits(t)) {
+  let s = Math.max(0, Math.floor((t || 0) / TICKS_PER_SECOND));
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  if (units >= 3) return `${d}d ${_p2(h)}:${_p2(m)}:${_p2(s)}`;
+  if (units >= 2) return `${h}:${_p2(m)}:${_p2(s)}`;
+  return `${_p2(m)}:${_p2(s)}`;
+}
 function resetOverlays(clock = 0){ known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }
 
 function startPlayback(){
@@ -1496,13 +1506,12 @@ function startPlayback(){
   // (main view keeps VIEW_ROUND rounded corners, matching the canvas border-radius below)
 
   const $seed = document.getElementById('sbSeed'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
-  const $seedUp = document.getElementById('sbSeedUp'), $seedDown = document.getElementById('sbSeedDown');
   const speedBtns = [...document.querySelectorAll('#sbSpeeds .sbSpeed')];
   let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null;
 
   function updateBar(){
     if (!dragging){ $slider.max = Math.max(0, frontier); $slider.value = head; }
-    $time.textContent = `${mmss(head)} / ${mmss(frontier)}`;
+    { const u = timeUnits(frontier); $time.textContent = `${fmtTime(head, u)} / ${fmtTime(frontier, u)}`; }
     // highlight the active speed while playing (2^N == ticksPerFrame); nothing highlighted when paused
     for (const b of speedBtns) b.classList.toggle('active', playing && ticksPerFrame === (1 << (+b.dataset.n)));
   }
@@ -1536,12 +1545,9 @@ function startPlayback(){
     updateBar();
   };
   // seed +/- : step to the previous/next seed (and load/generate its run)
-  const stepSeed = (d) => { const v = Math.max(0, (parseInt($seed.value, 10) || 0) + d); $seed.value = v; selectSeed(v); };
-  $seedUp.onclick = () => stepSeed(1);
-  $seedDown.onclick = () => stepSeed(-1);
-  $seed.onchange = () => { const v = parseInt($seed.value, 10); if (Number.isFinite(v) && v >= 0) selectSeed(v); };
+  $seed.onchange = () => { const v = parseInt($seed.value, 10); if (Number.isFinite(v) && v >= 0) selectSeed(v); };   // native number-input arrows fire this
   // scrubbing does NOT pause: keep `playing` as-is while dragging (loop holds via !dragging), so releasing resumes -> "takes off" (Karl)
-  $slider.oninput = () => { dragging = true; head = +$slider.value; $time.textContent = `${mmss(head)} / ${mmss(frontier)}`; snapTo(head); };
+  $slider.oninput = () => { dragging = true; head = +$slider.value; const u = timeUnits(frontier); $time.textContent = `${fmtTime(head, u)} / ${fmtTime(frontier, u)}`; snapTo(head); };
   $slider.onchange = () => { dragging = false; snapTo(+$slider.value); };
 
   function playbackLoop(){

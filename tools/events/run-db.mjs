@@ -83,22 +83,23 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
     }
 
     // Keyframe budget (Karl: 500). Keyframes are just restore anchors -- any tick is reachable by restore-nearest +
-    // resim -- so old ones can be thinned freely. When the count exceeds the budget, DELETE every other keyframe in the
-    // OLDEST HALF (preserving keyframe-0, always the oldest): recent history stays dense, old history coarsens
-    // geometrically each pass, and the count stays bounded (~budget) no matter how long the run gets. This is what lets
-    // a run generate ~forever with a bounded file + a slider that can still address every kept keyframe.
+    // resim -- so they can be thinned freely. Keep an EVEN SPREAD across the WHOLE timeline (Karl): keyframes live on a
+    // uniform grid of KEYFRAME_BASE*stride ticks (tick 0 is always on it), plus the newest. When the count exceeds the
+    // budget, DOUBLE the stride and drop everything off the coarser grid -- so the grid coarsens UNIFORMLY as the run
+    // grows and every era keeps its keyframes (no dense-recent bias, no deleted early history). Count stays ~budget.
     const KEYFRAME_BUDGET = meta.keyframeBudget || 500;
+    const KEYFRAME_BASE = meta.keyframeInterval || parseInt(getMeta('keyframeInterval') || '2000', 10) || 2000;
     if (!resuming) setMeta('keyframeBudget', KEYFRAME_BUDGET);
+    let keyframeStride = parseInt(getMeta('keyframeStride') || '1', 10) || 1;   // grid coarseness (resume-safe)
     const countSnaps = db.prepare('SELECT COUNT(*) c FROM snapshots');
-    const thinStmt = db.prepare(`
-        DELETE FROM snapshots WHERE tick IN (
-            SELECT tick FROM (SELECT tick, ROW_NUMBER() OVER (ORDER BY tick) AS rn, COUNT(*) OVER () AS total FROM snapshots)
-            WHERE rn > 1 AND rn <= total / 2 AND (rn % 2) = 0
-        )`);   // rn=1 is keyframe-0 (kept); delete even ranks in the oldest half => keep 1,3,5,... => halve the old region
+    const maxTickStmt = db.prepare('SELECT MAX(tick) m FROM snapshots');
+    const thinGridStmt = db.prepare('DELETE FROM snapshots WHERE (tick / ?) % ? != 0 AND tick != ?');   // keep grid + newest
     function thinIfNeeded() {
         if (countSnaps.get().c <= KEYFRAME_BUDGET) return;
+        const maxT = maxTickStmt.get().m;
+        keyframeStride *= 2;
         db.exec('BEGIN');
-        try { thinStmt.run(); db.exec('COMMIT'); }
+        try { thinGridStmt.run(KEYFRAME_BASE, keyframeStride, maxT); setMetaStmt.run('keyframeStride', String(keyframeStride)); db.exec('COMMIT'); }
         catch (err) { db.exec('ROLLBACK'); throw err; }
     }
 
