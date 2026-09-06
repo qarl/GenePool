@@ -1583,13 +1583,20 @@ window.__bench = function(s, ticks, camOv, frames, junkFrac){
 // __bench at several zooms x {cpu ribbons, gpu strip}, logs a [bench] table -> main forwards it -> I read the numbers
 // myself. Trigger: ?zoombench on the URL (desktop main.mjs adds it when GP_BENCH=1). Uses focus:'biggest' so hairs frame.
 function benchZooms(){
-  const zooms = [2, 6, 12, 26, 60], TICKS = 8000, FRAMES = 30;
-  console.warn('[bench] zoom |  cpu-ribbons ms (fps) |  gpu-strip ms (fps) | delta | hairs | living');
-  for (const z of zooms){
+  const TICKS = 30000, FRAMES = 30;   // grown pool -> realistic hair counts (esp. whole-pool zoom-out)
+  // whole-pool (no focus) at low zoom = ALL creatures + hairs, no cull -> the full-zoom-out case; focus:'biggest' zooms in.
+  const cases = [
+    { z: 1, focus: false }, { z: 2, focus: false }, { z: 4, focus: false },   // full/near zoom-out (max hairs)
+    { z: 8, focus: true }, { z: 20, focus: true }, { z: 50, focus: true },     // zoomed in on the biggest specimen
+  ];
+  console.warn('[bench] zoom(view) |  cpu-ribbons ms (fps) |  gpu-strip ms (fps) | delta | hairs | living');
+  for (const c of cases){
+    const cam = c.focus ? { zoom: c.z, focus: 'biggest' } : { zoom: c.z };
     const res = {};
-    for (const mode of ['cpu', 'gpu']){ window.__hairMode = mode; res[mode] = window.__bench(1, TICKS, { zoom: z, focus: 'biggest' }, FRAMES); }
-    const c = res.cpu, g = res.gpu, d = (g.median - c.median) / c.median * 100;
-    console.warn(`[bench] z=${String(z).padStart(2)} | ${c.median.toFixed(1).padStart(7)} (${(1000/c.median).toFixed(0).padStart(3)}fps) | ${g.median.toFixed(1).padStart(7)} (${(1000/g.median).toFixed(0).padStart(3)}fps) | ${(d>=0?'+':'')}${d.toFixed(0)}% | ${c.nHairs} | ${c.living}`);
+    for (const mode of ['cpu', 'gpu']){ window.__hairMode = mode; res[mode] = window.__bench(1, TICKS, cam, FRAMES); }
+    const cp = res.cpu, gp = res.gpu, d = (gp.median - cp.median) / cp.median * 100;
+    const tag = (c.focus ? 'z' : 'W') + String(c.z);   // W = whole-pool, z = focus-biggest
+    console.warn(`[bench] ${tag.padStart(4)} | ${cp.median.toFixed(1).padStart(7)} (${(1000/cp.median).toFixed(0).padStart(3)}fps) | ${gp.median.toFixed(1).padStart(7)} (${(1000/gp.median).toFixed(0).padStart(3)}fps) | ${(d>=0?'+':'')}${d.toFixed(0)}% | ${cp.nHairs} | ${cp.living}`);
   }
   console.warn('[bench] done');
 }
@@ -1687,7 +1694,9 @@ function startPlayback(){
 function boot(){
   if (!gl) return;
   initGL();
-  if (window.pool && window.pool.scrub){ startPlayback(); }          // desktop: generate-then-scrub player
+  let bench = false; try { bench = new URLSearchParams(location.search).has('zoombench'); } catch {}
+  if (bench){ /* ?zoombench: benchZooms runs via its own setTimeout; do NOT start playback (it would collide + freeze) */ }
+  else if (window.pool && window.pool.scrub){ startPlayback(); }     // desktop: generate-then-scrub player
   else { build(); requestAnimationFrame(loop); }                     // browser: live loop (unchanged)
 }
 boot();
