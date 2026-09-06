@@ -39,20 +39,27 @@ try {
   await page.waitForFunction(() => typeof window.__bench === 'function', { timeout: 10000 });
   chrome = browser.version();
   for (const S of SCENES) {
-    const r = await page.evaluate(([s, t, c, f, j]) => window.__bench(s, t, c, f, j), [S.seed, S.ticks, S.cam, S.frames, junk]);
-    results.push({ S, r });
+    const m = {};
+    for (const mode of ['cpu', 'gpu']) {   // A/B the two hair paths in the same page (window.__hairMode read per view)
+      await page.evaluate((hm) => { window.__hairMode = hm; }, mode);
+      m[mode] = await page.evaluate(([s, t, c, f, j]) => window.__bench(s, t, c, f, j), [S.seed, S.ticks, S.cam, S.frames, junk]);
+    }
+    results.push({ S, cpu: m.cpu, gpu: m.gpu });
   }
 } finally { await browser.close(); srv.kill(); }
 
 let git = ''; try { git = execSync('git rev-parse --short HEAD', { cwd: REPO }).toString().trim(); } catch {}
 console.log(`\nRender bench  [${git || '?'}, ${process.arch}, SwiftShader (relative yardstick, NOT real-GPU fps)]`);
-for (const { S, r } of results) {
-  const fps = (1000 / r.median).toFixed(1), warn = (S.name === 'hairy' && !r.nHairs) ? '  ⚠ ZERO hairs — raise the zoom!' : '';
-  console.log(`  ${S.name.padEnd(6)} zoom ${String(r.zoom).padStart(2)}  ${r.median.toFixed(1)} ms/frame (${fps} fps)   ` +
-    `cpu ${r.cpuMedian.toFixed(1)} · gpu ${r.gpuMedian.toFixed(1)}   ${r.living} living · ${r.nHairs} hairs · ${r.nJunk} junk${warn}`);
+console.log(`  scene   zoom   CPU-ribbons ms   GPU-strip ms   delta      hairs`);
+for (const { S, cpu, gpu } of results) {
+  const d = (gpu.median - cpu.median) / cpu.median * 100;
+  const warn = (S.name === 'hairy' && !cpu.nHairs) ? '  ⚠ ZERO hairs' : '';
+  console.log(`  ${S.name.padEnd(6)} ${String(cpu.zoom).padStart(3)}    ${cpu.median.toFixed(1).padStart(8)} (${(1000/cpu.median).toFixed(0)}fps)   ` +
+    `${gpu.median.toFixed(1).padStart(6)} (${(1000/gpu.median).toFixed(0)}fps)   ${(d>=0?'+':'')}${d.toFixed(1)}%   ` +
+    `${cpu.nHairs} (cpu-emit ${cpu.cpuMedian.toFixed(1)}→${gpu.cpuMedian.toFixed(1)}ms)${warn}`);
 }
 
-const rw = results[0].r;   // baseline compares the 'wide' scene
+const rw = results[0].cpu;   // baseline compares the CPU 'wide' scene (unchanged reference)
 const cur = {
   medianMs: +rw.median.toFixed(2), meanMs: +rw.mean.toFixed(2), minMs: +rw.min.toFixed(2), p90Ms: +rw.p90.toFixed(2),
   cpuMs: +rw.cpuMedian.toFixed(2), fps: +(1000 / rw.median).toFixed(1), living: rw.living, nJunk: rw.nJunk, zoom: rw.zoom,

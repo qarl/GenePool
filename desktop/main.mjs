@@ -113,11 +113,12 @@ async function createWindow(){
   });
   // surface renderer warnings/errors + a crash to the main stdout (dev diagnostics for the scrub/playback UI)
   win.webContents.on('console-message', (_e, level, message, line, source) => {
-    if (message && message.includes('[fps]')) console.log(message);   // forward the FPS debug readout so I can read real-GPU fps
+    if (message && (message.includes('[fps]') || message.includes('[bench]'))) console.log(message);   // forward fps/bench readouts (real-GPU)
     else if (level >= 2) console.error(`[renderer] ${message}  (${source}:${line})`);
   });
   win.webContents.on('render-process-gone', (_e, d) => console.error('[renderer gone]', d.reason));
-  win.loadURL(`http://127.0.0.1:${port}/viewer-micrograph-gl.html`);
+  const q = process.env.GP_BENCH ? '?zoombench=1' : '';   // GP_BENCH=1 -> run the real-GPU zoom-sweep hair bench on load
+  win.loadURL(`http://127.0.0.1:${port}/viewer-micrograph-gl.html${q}`);
 }
 
 // --- IPC: real files + recording, all in-process ---

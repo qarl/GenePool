@@ -1579,6 +1579,22 @@ window.__bench = function(s, ticks, camOv, frames, junkFrac){
            living: world.getLivingSwimbotCount(), nJunk, zoom: cam.zoom };
 };
 
+// Zoom-sweep A/B bench (real-GPU when run in the desktop app; SwiftShader is misleading for the GPU strip). Runs
+// __bench at several zooms x {cpu ribbons, gpu strip}, logs a [bench] table -> main forwards it -> I read the numbers
+// myself. Trigger: ?zoombench on the URL (desktop main.mjs adds it when GP_BENCH=1). Uses focus:'biggest' so hairs frame.
+function benchZooms(){
+  const zooms = [2, 6, 12, 26, 60], TICKS = 8000, FRAMES = 30;
+  console.warn('[bench] zoom |  cpu-ribbons ms (fps) |  gpu-strip ms (fps) | delta | hairs | living');
+  for (const z of zooms){
+    const res = {};
+    for (const mode of ['cpu', 'gpu']){ window.__hairMode = mode; res[mode] = window.__bench(1, TICKS, { zoom: z, focus: 'biggest' }, FRAMES); }
+    const c = res.cpu, g = res.gpu, d = (g.median - c.median) / c.median * 100;
+    console.warn(`[bench] z=${String(z).padStart(2)} | ${c.median.toFixed(1).padStart(7)} (${(1000/c.median).toFixed(0).padStart(3)}fps) | ${g.median.toFixed(1).padStart(7)} (${(1000/g.median).toFixed(0).padStart(3)}fps) | ${(d>=0?'+':'')}${d.toFixed(0)}% | ${c.nHairs} | ${c.living}`);
+  }
+  console.warn('[bench] done');
+}
+try { if (typeof window !== 'undefined' && new URLSearchParams(location.search).has('zoombench')) setTimeout(benchZooms, 300); } catch {}
+
 // ================================================================== scrub / playback (desktop only)
 // The browser keeps the live loop above. In the Electron app a utilityProcess GENERATES the seed's run (real Node,
 // same V8 -> D1) and main serves it read-only over IPC (window.pool.scrub). A tick is DECODED by restoring the nearest
