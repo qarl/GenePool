@@ -18,3 +18,7 @@ test/visual/goldens/*.diff.png
 
 # scrub/playback per-seed run databases (regenerable cache)
 runs/
+
+# local Jimmy fleet artifacts (transcripts, agent config) -- never source
+.Jimmy/
+AGENTS.md

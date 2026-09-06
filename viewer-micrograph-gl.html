@@ -298,6 +298,99 @@ void main(){
   frag = vec4(col * th, th);
 }`;
 
+// INSTANCED dome cap: one instance per rounded cap; the VS expands a fixed DOME_R x DOME_C grid (GL_TRIANGLES) into the
+// same ellipsoidal cap emitDome built on the CPU, and outputs the SAME per-vertex attribs as BODY_VS -> pairs with the
+// UNCHANGED BODY_FS. Cross-arch-safe by construction: the ring profile sqrt(1-a^2) and the column coords are precomputed
+// on the CPU (byte-identical float32) and passed as uniform arrays, and wBase/uAcross are baked per-instance -> the VS
+// uses ONLY +,-,* (no sqrt/div/trig), so the floor/fract noise inputs (cu, rad, v) are identical on every backend.
+const DOME_R = 16, DOME_C = 24;   // rings x cross (>= the old aspect-redistribution peak in BOTH axes; idle GPU, fixed)
+const STEPS = 10;                 // body-strip sub-steps (declared here: the BODY_INST_VS template literal reads it)
+const DOME_INST_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec4 a0;   // center.xy , uAcross.xy (unit across-width dir)
+layout(location=1) in vec4 a1;   // axis.xy , wBase , capLenScreen
+layout(location=2) in vec4 a2;   // radWorld , blur , vBase , vTip
+layout(location=3) in vec4 a3;   // tint.rgb , (pad)
+uniform vec2 uRes;
+uniform float uProf[${DOME_R + 1}];   // sqrt(1-a^2) at each ring a=k/DOME_R  (CPU-precomputed, byte-identical)
+uniform float uCol[${DOME_C + 1}];    // across coord -1..+1 at each column                (CPU-precomputed)
+out float vCU; out float vRad; out float vV; out vec3 vTint; out float vBlur;
+void main(){
+  vec2 center = a0.xy, uAcross = a0.zw, axis = a1.xy;
+  float wBase = a1.z, capLen = a1.w, radWorld = a2.x, blur = a2.y, vBase = a2.z, vTip = a2.w;
+  int tri = gl_VertexID / 3, corner = gl_VertexID - tri*3, quad = tri >> 1, whichTri = tri & 1;
+  int ring = quad / ${DOME_C}, col = quad - ring*${DOME_C};                 // DOME_R rings x DOME_C cols
+  // corner -> (ring index rOff 0/1 , col index cOff 0/1) reproducing quad(A=(0,0),B=(0,1),C=(1,1),D=(1,0)) as tri ABC + ACD
+  int rOff, cOff;
+  if (whichTri == 0){ rOff = (corner==2)?1:0;              cOff = (corner==0)?0:1; }   // tri ABC: A(r0,c0) B(r0,c1) C(r1,c1)
+  else              { rOff = (corner==0)?0:1;              cOff = (corner==1)?1:0; }   // tri ACD: A(r0,c0) C(r1,c1) D(r1,c0)
+  float a = float(ring + rOff) / float(${DOME_R});          // exact (DOME_R is a power of two)
+  float prof = uProf[ring + rOff];                          // sqrt(1-a^2), CPU-exact -> no GPU sqrt
+  float cc = uCol[col + cOff];                              // across coord, CPU-exact -> no GPU div
+  float rr = wBase * prof;                                  // screen half-width of this ring
+  vec2 pos = center + axis * (capLen * a) + uAcross * (cc * rr);
+  vCU = cc; vRad = radWorld * prof; vV = vBase + (vTip - vBase) * a;   // a+(b-a)*t form (matches JS lerp)
+  vTint = a3.rgb; vBlur = blur;
+  gl_Position = vec4(pos.x / uRes.x * 2.0 - 1.0, 1.0 - pos.y / uRes.y * 2.0, 0.0, 1.0);
+}`;
+
+// INSTANCED body strip: one instance per part; the VS expands a 3-col x (STEPS+1)-row grid (GL_TRIANGLES, 120 verts) into
+// the SAME flexed ribbon emitStrip built on the CPU, outputting the SAME per-vertex attribs as BODY_VS -> pairs with the
+// UNCHANGED BODY_FS. Cross-arch discipline: u samples come from a uniform (byte-identical), the branch bend uses a
+// POLYNOMIAL sincos (no GPU trig), and the Bezier is the exact Bernstein form (u=0->start, u=1->end exact -> welds to the
+// CPU dome base). Only the smoothstep divisions (bend/ramp, merge parts only) remain per-backend -> verified at the gate.
+const BODY_INST_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec4 a0v;   // sL.xy , sR.xy
+layout(location=1) in vec4 a1v;   // c1L.xy , c2L.xy
+layout(location=2) in vec4 a2v;   // eL.xy , c1R.xy
+layout(location=3) in vec4 a3v;   // c2R.xy , eR.xy
+layout(location=4) in vec4 a4v;   // wStart , wEnd , fade , blur
+layout(location=5) in vec4 a5v;   // v0 , v1 , hasMerge , da
+layout(location=6) in vec4 a6v;   // tStart.rgb , px
+layout(location=7) in vec4 a7v;   // tEnd.rgb , py
+layout(location=8) in vec4 a8v;   // rw , rampRw , mergeA0 , mergeA1
+uniform vec2 uRes;
+uniform float uU[${STEPS + 1}];   // u = ring/STEPS samples (CPU-precomputed, byte-identical -> stable lerps)
+out float vCU; out float vRad; out float vV; out vec3 vTint; out float vBlur;
+void sincos(float x, out float s, out float c){          // poly over [-pi/2,pi/2] (~1e-6), +,-,* only -> cross-arch stable
+  float x2 = x*x;
+  s = x * (1.0 - x2*(0.16666667 - x2*(0.00833333 - x2*0.00019841)));
+  c = 1.0 - x2*(0.5 - x2*(0.04166667 - x2*(0.00138889 - x2*0.00002480)));
+}
+vec2 bez2(vec2 A, vec2 B, vec2 C, vec2 D, float t){      // Bernstein (matches JS bez op order); exact at t=0 and t=1
+  float m=1.0-t, m2=m*m, t2=t*t; float w0=m2*m, w1=3.0*m2*t, w2=3.0*m*t2, w3=t2*t;
+  return A*w0 + B*w1 + C*w2 + D*w3;
+}
+void main(){
+  vec2 sL=a0v.xy, sR=a0v.zw, c1L=a1v.xy, c2L=a1v.zw, eL=a2v.xy, c1R=a2v.zw, c2R=a3v.xy, eR=a3v.zw;
+  float wStart=a4v.x, wEnd=a4v.y, fade=a4v.z, blur=a4v.w;
+  float v0=a5v.x, v1=a5v.y, hasMerge=a5v.z, da=a5v.w;
+  vec3 tStart=a6v.xyz, tEnd=a7v.xyz; vec2 piv=vec2(a6v.w, a7v.w);
+  float rw=a8v.x, rampRw=a8v.y, mA0=a8v.z, mA1=a8v.w;
+  int tri=gl_VertexID/3, corner=gl_VertexID-tri*3, quad=tri>>1, whichTri=tri&1, rowgap=quad>>1, hf=quad&1;   // hf: 0=left half,1=right ('half' is reserved)
+  int ringSel = (whichTri==0) ? ((corner==2)?1:0) : ((corner==0)?0:1);   // prev(0)/cur(1) ring, matches quad(A,B,C)+(A,C,D)
+  int ring = rowgap + ringSel;
+  int cuInt = (hf==0) ? ((whichTri==0) ? ((corner==0)?-1:0) : ((corner==1)?0:-1))
+                      : ((whichTri==0) ? ((corner==0)?0:1) : ((corner==1)?1:0));
+  float u = uU[ring];
+  float th=0.0, ramp=1.0;
+  if (hasMerge > 0.5){ float arc = mA0 + (mA1-mA0)*u; th = da*(1.0 - smoothstep(0.0, rw, arc)); ramp = smoothstep(0.0, rampRw, arc); }
+  float bs, bc; sincos(th, bs, bc);
+  vec2 Lp = bez2(sL,c1L,c2L,eL,u), Rp = bez2(sR,c1R,c2R,eR,u);
+  if (hasMerge > 0.5){
+    vec2 dL=Lp-piv; Lp = piv + vec2(dL.x*bc - dL.y*bs, dL.x*bs + dL.y*bc);
+    vec2 dR=Rp-piv; Rp = piv + vec2(dR.x*bc - dR.y*bs, dR.x*bs + dR.y*bc);
+  }
+  vec2 pos = (cuInt<0) ? Lp : (cuInt>0) ? Rp : (Lp+Rp)*0.5;
+  vCU = float(cuInt);
+  vRad = (wStart + (wEnd-wStart)*u) * fade * ramp;
+  vV = v0 + (v1-v0)*u;
+  vTint = tStart + (tEnd-tStart)*u;
+  vBlur = blur;
+  gl_Position = vec4(pos.x/uRes.x*2.0 - 1.0, 1.0 - pos.y/uRes.y*2.0, 0.0, 1.0);
+}`;
+
 // fullscreen triangle (attributeless) -- shared by the resolve and final passes
 const COMP_VS = `#version 300 es
 precision highp float;
@@ -491,6 +584,8 @@ let mainSet=null, smallSet=null;   // per-VIEW FBO sets (makeFBOSet): { slabTex/
 let bodyVAO=null, bodyVBO=null, emptyVAO=null;
 let hairInstVAO=null, hairInstVBO=null;   // per-strand instance data (8 floats/hair)
 let hairSdfProg=null, uSdfRes=null, uSdfColor=null, uSdfBright=null;   // hair program: 2-tri quad, arc+taper in the FS
+let domeProg=null, uDome={}, domeInstVAO=null, domeInstVBO=null;   // instanced dome caps (pairs with BODY_FS)
+let stripProg=null, uStrip={}, stripInstVAO=null, stripInstVBO=null;   // instanced body strips (pairs with BODY_FS)
 let junkProg=null, uJunkRes=null, uJunkSoft=null;
 let brightProg=null, blurProg=null, postProg=null; const uBr={}, uBl={}, uPo={};
 let boxProg=null, uBoxRes=null, uBoxColor=null, boxVAO=null, boxVBO=null;
@@ -619,6 +714,30 @@ function initGL(){
   gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, 16); gl.vertexAttribDivisor(1, 1);   // p1
   gl.bindVertexArray(null);
 
+  // instanced dome caps: 4 vec4 per-instance attribs; pairs with BODY_FS (same body appearance). Ring/col profiles are
+  // uniform arrays (CPU-precomputed) so the VS is transcendental/division-free -> cross-arch-stable floor/fract inputs.
+  domeProg = makeProgram(DOME_INST_VS, BODY_FS);
+  for (const n of ['uRes','uCyto','uCells','uLighten','uGrain','uGrainScale','uSat','uTime','uCytoDrift','uProf','uCol']) uDome[n] = gl.getUniformLocation(domeProg, n);
+  gl.useProgram(domeProg);
+  const prof = new Float32Array(DOME_R + 1); for (let k=0;k<=DOME_R;k++){ const a=k/DOME_R; prof[k]=Math.sqrt(Math.max(0,1-a*a)); }
+  const cols = new Float32Array(DOME_C + 1); for (let k=0;k<=DOME_C;k++){ cols[k] = -1 + 2*k/DOME_C; }
+  gl.uniform1fv(uDome.uProf, prof); gl.uniform1fv(uDome.uCol, cols);   // constant -> set once
+  domeInstVAO = gl.createVertexArray(); gl.bindVertexArray(domeInstVAO);
+  domeInstVBO = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, domeInstVBO);
+  for (let i=0;i<4;i++){ gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i, 4, gl.FLOAT, false, 64, i*16); gl.vertexAttribDivisor(i, 1); }
+  gl.bindVertexArray(null);
+
+  // instanced body strips: 9 vec4 per-instance attribs; pairs with BODY_FS. u samples are a uniform (byte-identical).
+  stripProg = makeProgram(BODY_INST_VS, BODY_FS);
+  for (const n of ['uRes','uCyto','uCells','uLighten','uGrain','uGrainScale','uSat','uTime','uCytoDrift','uU']) uStrip[n] = gl.getUniformLocation(stripProg, n);
+  gl.useProgram(stripProg);
+  const uu = new Float32Array(STEPS + 1); for (let k=0;k<=STEPS;k++) uu[k] = k/STEPS;
+  gl.uniform1fv(uStrip.uU, uu);   // constant -> set once
+  stripInstVAO = gl.createVertexArray(); gl.bindVertexArray(stripInstVAO);
+  stripInstVBO = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, stripInstVBO);
+  for (let i=0;i<9;i++){ gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i, 4, gl.FLOAT, false, 144, i*16); gl.vertexAttribDivisor(i, 1); }
+  gl.bindVertexArray(null);
+
   junkProg = makeProgram(BODY_VS, JUNK_FS);   // plain discs, shares the body vertex format
   uJunkRes = gl.getUniformLocation(junkProg, 'uRes');
   uJunkSoft = gl.getUniformLocation(junkProg, 'uSoft');
@@ -738,7 +857,7 @@ function tri(A,acu,ar,av,aT, B,bcu,br,bv,bT, C,ccu,cr,cv,cT, blur){ vtx(A[0],A[1
 // quad spanning two rings: verts A,B carry tint tA, verts C,D carry tint tB (colour gradient); blur is per-segment
 function quad(A,acu,ar,av, B,bcu,br,bv, C,ccu,cr,cv, D,dcu,dr,dv, tA, tB, blur){ tri(A,acu,ar,av,tA, B,bcu,br,bv,tA, C,ccu,cr,cv,tB, blur); tri(A,acu,ar,av,tA, C,ccu,cr,cv,tB, D,dcu,dr,dv,tB, blur); }
 
-const STEPS = 10, DOME_RINGS = 8, DOME_CROSS = 16, DISCK = 16;   // more strip steps -> smoother flexing; smooth caps
+const DOME_RINGS = 8, DOME_CROSS = 16, DISCK = 16;   // CPU-path (A/B) dome budget + junk disc resolution; STEPS is declared above
 function emitStrip(pt, tStart, tEnd, v0, v1, rs, blur, merge, steps=STEPS){
   // merge (branch base): thickness ramps up from 0, and the side edges spread ALONG the trunk axis (fillet) -- BOTH
   // measured in ARC-LENGTH from the branch base (merge.a0..a1 over merge.rw), so short first segments still fade smoothly.
@@ -794,6 +913,39 @@ function emitDome(baseA, baseB, axX, axY, capLenScreen, radWorld, t, vBase, vTip
 function emitDisc(cx, cy, screenR, rad, t, vBase, blur){
   const c=[cx,cy]; let prev=[cx+screenR,cy];
   for (let i=1;i<=DISCK;i++){ const a=i/DISCK*6.28318; const Pp=[cx+Math.cos(a)*screenR, cy+Math.sin(a)*screenR]; tri(c,0,rad,vBase,t, prev,1,rad,vBase,t, Pp,1,rad,vBase,t, blur); prev=Pp; }
+}
+// GPU dome: pack ONE instance record (16 floats = 4 vec4) instead of tessellating. center/uAcross/wBase baked on the CPU
+// (byte-identical) so the VS stays transcendental/division-free. Same args as emitDome (minus lod -> caller bakes it).
+let domeInst = new Float32Array(16 * 1024), dio = 0;   // grows as needed; dio/16 = domes
+function pushDome(baseA, baseB, axX, axY, capLenScreen, radWorld, t, vBase, vTip, blur){
+  const cx=(baseA[0]+baseB[0])*0.5, cy=(baseA[1]+baseB[1])*0.5;
+  const hx=(baseB[0]-baseA[0])*0.5, hy=(baseB[1]-baseA[1])*0.5;
+  const wBase=Math.hypot(hx,hy)||1e-6, ux=hx/wBase, uy=hy/wBase;   // unit across-width (matches emitDome)
+  if (dio + 16 > domeInst.length){ const nb=new Float32Array(domeInst.length*2); nb.set(domeInst); domeInst=nb; }
+  domeInst[dio++]=cx; domeInst[dio++]=cy; domeInst[dio++]=ux; domeInst[dio++]=uy;
+  domeInst[dio++]=axX; domeInst[dio++]=axY; domeInst[dio++]=wBase; domeInst[dio++]=capLenScreen;
+  domeInst[dio++]=radWorld; domeInst[dio++]=blur; domeInst[dio++]=vBase; domeInst[dio++]=vTip;
+  domeInst[dio++]=t[0]; domeInst[dio++]=t[1]; domeInst[dio++]=t[2]; domeInst[dio++]=0;
+}
+// GPU strip: pack ONE instance record (36 floats = 9 vec4) instead of tessellating the ribbon. Same inputs as emitStrip;
+// merge params (or zeros + hasMerge=0) baked in; rw/rampRw clamped >0 so the shader's smoothsteps never hit UB.
+let stripInst = new Float32Array(36 * 2048), sio = 0;   // grows as needed; sio/36 = parts
+function pushStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge){
+  if (sio + 36 > stripInst.length){ const nb=new Float32Array(stripInst.length*2); nb.set(stripInst); stripInst=nb; }
+  const hm = merge ? 1 : 0;
+  const px = merge?merge.px:0, py = merge?merge.py:0, da = merge?merge.da:0;
+  const rw = merge?Math.max(merge.rw,1e-3):1, rampRw = merge?Math.max(merge.rampRw,1e-3):1, mA0 = merge?merge.a0:0, mA1 = merge?merge.a1:0;
+  const s=stripInst; let i=sio;
+  s[i++]=pt.sL[0];s[i++]=pt.sL[1];s[i++]=pt.sR[0];s[i++]=pt.sR[1];
+  s[i++]=pt.c1L[0];s[i++]=pt.c1L[1];s[i++]=pt.c2L[0];s[i++]=pt.c2L[1];
+  s[i++]=pt.eL[0];s[i++]=pt.eL[1];s[i++]=pt.c1R[0];s[i++]=pt.c1R[1];
+  s[i++]=pt.c2R[0];s[i++]=pt.c2R[1];s[i++]=pt.eR[0];s[i++]=pt.eR[1];
+  s[i++]=pt.wStart;s[i++]=pt.wEnd;s[i++]=fade;s[i++]=blur;
+  s[i++]=v0;s[i++]=v1;s[i++]=hm;s[i++]=da;
+  s[i++]=tStart[0];s[i++]=tStart[1];s[i++]=tStart[2];s[i++]=px;
+  s[i++]=tEnd[0];s[i++]=tEnd[1];s[i++]=tEnd[2];s[i++]=py;
+  s[i++]=rw;s[i++]=rampRw;s[i++]=mA0;s[i++]=mA1;
+  sio=i;
 }
 
 // --- hairs: instanced. One strand = one instance (8 floats {rx,ry,nx,ny,len,wid,theta,bright}, screen space); the hair
@@ -864,7 +1016,8 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   const tEnd = [ part.red, part.green, part.blue ];
   const pp = (part.parent >= 1) ? ph.parts[part.parent] : part;
   const tStart = [ pp.red, pp.green, pp.blue ];
-  emitStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge, steps);   // merge (branch base fillet+fade) computed in render, arc-based
+  if (!(typeof window!=='undefined' && window.__gpuStrip === false)) pushStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge);   // GPU strip (default)
+  else emitStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge, steps);   // CPU strip (A/B: window.__gpuStrip=false)
   // The strip's END is rotated by the branch BEND (inside emitStrip), but the tip dome attaches to the RAW eL/eR/axis. On a
   // SHORT limb the bend has not eased to 0 by the tip, so the dome is left misaligned from the strip end -> a cut at the tip
   // dome transition. Apply the SAME end-bend (th at u=1, same pivot) to the dome base edge + bulge axis so the dome's base
@@ -879,8 +1032,14 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
     const rot=(Pp)=>{ const dx=Pp[0]-merge.px, dy=Pp[1]-merge.py; return [merge.px+dx*c-dy*s, merge.py+dx*s+dy*c]; };
     deL=rot(pt.eL); deR=rot(pt.eR); dnx=pt.nx*c-pt.ny*s; dny=pt.nx*s+pt.ny*c;
   }
-  if (pt.terminal && domeLOD > 0.02)   emitDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur, lod); // tip
-  if (pt.capLenR > 0 && domeLOD > 0.02) emitDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur, lod); // mouth only now
+  const gpuDome = !(typeof window!=='undefined' && window.__gpuDome === false);   // GPU dome is the path; set window.__gpuDome=false to A/B the old CPU tessellation
+  if (gpuDome){
+    if (pt.terminal && domeLOD > 0.02)   pushDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur); // tip
+    if (pt.capLenR > 0 && domeLOD > 0.02) pushDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur); // mouth
+  } else {
+    if (pt.terminal && domeLOD > 0.02)   emitDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur, lod); // tip (CPU)
+    if (pt.capLenR > 0 && domeLOD > 0.02) emitDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur, lod); // mouth (CPU)
+  }
 
   // hairs along both side edges: roots welded to the body (follow the swim), tips beat in a metachronal wave along v,
   // length scales with the segment's local thickness, and they DRAG from this part's own velocity through the water.
@@ -1170,11 +1329,13 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   // this view's offscreen pipeline; same local names the body already uses, so the pipeline code is unchanged
   const { slabFBO, slabTex, hairFBO, hairTex, accA, accB, sceneFBO, sceneTex, bloomAFBO, bloomA, bloomBFBO, bloomB } = set;
   try {
-  o = 0; hio = 0;
+  o = 0; hio = 0; dio = 0; sio = 0;
   // ---- tessellate every creature ONCE, bucketed into K depth slabs (sorted front->back); food joins the deepest slab
   const slabStart = new Array(K_SLABS).fill(0), segCount = new Array(K_SLABS).fill(0);   // segments (cyto/grain)
   const junkStart = new Array(K_SLABS).fill(0), junkCount = new Array(K_SLABS).fill(0);  // detritus + food (plain)
   const hairInstStart = new Array(K_SLABS).fill(0), hairInstCount = new Array(K_SLABS).fill(0);   // GPU strip: per-slab instances
+  const domeInstStart = new Array(K_SLABS).fill(0), domeInstCount = new Array(K_SLABS).fill(0);   // GPU dome caps: per-slab instances
+  const stripInstStart = new Array(K_SLABS).fill(0), stripInstCount = new Array(K_SLABS).fill(0); // GPU body strips: per-slab instances
   const nJunk = Math.floor(P.junk * MAX_JUNK);
   if (world){
     const S = sc();
@@ -1200,9 +1361,9 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     segs.sort((a,b)=>a.slab-b.slab);
     let si = 0;
     for (let k=0;k<K_SLABS;k++){
-      slabStart[k] = o/9; hairInstStart[k] = hio/8;
+      slabStart[k] = o/9; hairInstStart[k] = hio/8; domeInstStart[k] = dio/16; stripInstStart[k] = sio/36;
       while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // body -> buf, hairs -> hairInst
-      segCount[k] = (o/9) - slabStart[k]; hairInstCount[k] = (hio/8) - hairInstStart[k];
+      segCount[k] = (o/9) - slabStart[k]; hairInstCount[k] = (hio/8) - hairInstStart[k]; domeInstCount[k] = (dio/16) - domeInstStart[k]; stripInstCount[k] = (sio/36) - stripInstStart[k];
       // plain (no cyto/grain) stuff for this slab: floating detritus at this depth, + food in the deepest slab
       junkStart[k] = o/9;
       const S = sc();
@@ -1219,6 +1380,14 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   if (hio > 0){                                                         // upload the per-instance hair params once
     gl.bindVertexArray(hairInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, hairInstVBO);
     gl.bufferData(gl.ARRAY_BUFFER, hairInst.subarray(0, hio), gl.DYNAMIC_DRAW); gl.bindVertexArray(null);
+  }
+  if (dio > 0){                                                         // upload the per-instance dome-cap params once
+    gl.bindVertexArray(domeInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, domeInstVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, domeInst.subarray(0, dio), gl.DYNAMIC_DRAW); gl.bindVertexArray(null);
+  }
+  if (sio > 0){                                                         // upload the per-instance body-strip params once
+    gl.bindVertexArray(stripInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, stripInstVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, stripInst.subarray(0, sio), gl.DYNAMIC_DRAW); gl.bindVertexArray(null);
   }
 
   // ---- clear the FRONT accumulator (emitted=0, frontAbsorb=0); it seeds the front-to-back sweep ----
@@ -1242,6 +1411,26 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     if (junkCount[k] > 0){   // detritus + food -> plain thickness discs (no cyto/grain)
       gl.useProgram(junkProg); gl.uniform2f(uJunkRes, W, H); gl.uniform1f(uJunkSoft, P.junkSoft);
       gl.drawArrays(gl.TRIANGLES, junkStart[k], junkCount[k]);
+    }
+    if (domeInstCount[k] > 0){   // this slab's rounded caps -> instanced dome, SAME BODY_FS appearance (additive, order-free)
+      gl.useProgram(domeProg); gl.uniform2f(uDome.uRes, W, H);
+      gl.uniform1f(uDome.uCyto, P.cyto); gl.uniform1f(uDome.uCells, P.cells); gl.uniform1f(uDome.uLighten, P.lighten);
+      gl.uniform1f(uDome.uGrain, P.grain); gl.uniform1f(uDome.uGrainScale, P.grainScale); gl.uniform1f(uDome.uSat, P.desat);
+      gl.uniform1f(uDome.uTime, hairTime); gl.uniform1f(uDome.uCytoDrift, P.cytoDrift);
+      gl.bindVertexArray(domeInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, domeInstVBO);
+      const dbase = domeInstStart[k] * 64;   // byteOffset for this slab (no baseInstance -> rebind the 4 vec4 pointers)
+      for (let i=0;i<4;i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, 64, dbase + i*16);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, DOME_R*DOME_C*6, domeInstCount[k]);
+    }
+    if (stripInstCount[k] > 0){   // this slab's body strips -> instanced (bezier+bend+taper in the VS), SAME BODY_FS appearance
+      gl.useProgram(stripProg); gl.uniform2f(uStrip.uRes, W, H);
+      gl.uniform1f(uStrip.uCyto, P.cyto); gl.uniform1f(uStrip.uCells, P.cells); gl.uniform1f(uStrip.uLighten, P.lighten);
+      gl.uniform1f(uStrip.uGrain, P.grain); gl.uniform1f(uStrip.uGrainScale, P.grainScale); gl.uniform1f(uStrip.uSat, P.desat);
+      gl.uniform1f(uStrip.uTime, hairTime); gl.uniform1f(uStrip.uCytoDrift, P.cytoDrift);
+      gl.bindVertexArray(stripInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, stripInstVBO);
+      const sbase = stripInstStart[k] * 144;   // byteOffset for this slab (no baseInstance -> rebind the 9 vec4 pointers)
+      for (let i=0;i<9;i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, 144, sbase + i*16);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, STEPS*12, stripInstCount[k]);
     }
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);
