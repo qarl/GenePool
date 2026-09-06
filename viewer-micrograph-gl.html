@@ -68,14 +68,17 @@
   #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 104px; text-align: right; color: #c7d3e0; }
   #scrubbar .spin { min-width: 26px; padding: 4px 9px; font-size: 14px; line-height: 1; }
   #scrubbar #sbSpeeds { display: inline-flex; gap: 4px; }
-  #scrubbar .sbSpeed { min-width: 30px; padding: 4px 8px 4px 7px; letter-spacing: -2px; }
+  /* all 4 the SAME size as a single-triangle button: fixed width + overlapping triangles (negative letter-spacing;
+     padding-left compensates the trailing negative space so the glyph cluster stays centred) */
+  #scrubbar .sbSpeed { box-sizing: border-box; width: 46px; padding: 4px 0; display: inline-flex; align-items: center;
+    justify-content: center; letter-spacing: -0.34em; padding-left: 0.34em; }
   #scrubbar .sbSpeed.active { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
   /* desktop app: the main micrograph FILLS the window (the browser keeps the fixed 768^2 layout -> goldens unchanged) */
   body.desktop { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   body.desktop #wrap { flex: 1; min-height: 0; padding: 8px; }
   body.desktop #stage { flex: 1; min-height: 0; }
   body.desktop #canvasBox { flex: 1; min-width: 0; }
-  body.desktop #cv { width: 100%; height: 100%; border-radius: 0; box-shadow: none; }
+  body.desktop #cv { width: 100%; height: 100%; border-radius: 12px; box-shadow: none; }
   body.desktop #species { height: auto; align-self: stretch; }   /* list keeps its 256px width; fills the height */
   body.desktop #scrubbar { position: static; }                    /* in normal flow at the bottom (not overlaying the fill) */
 </style>
@@ -1490,7 +1493,7 @@ function startPlayback(){
   document.body.classList.add('desktop');            // fill-the-window layout (browser keeps the fixed 768 layout -> goldens unchanged)
   document.querySelector('header').hidden = true;    // drop the top-of-screen UI entirely (Karl); everything lives in the bottom bar
   document.getElementById('scrubbar').hidden = false;
-  mainRound = 0;                                      // square edge-to-edge fill (no rounded micrograph corners)
+  // (main view keeps VIEW_ROUND rounded corners, matching the canvas border-radius below)
 
   const $seed = document.getElementById('sbSeed'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
   const $seedUp = document.getElementById('sbSeedUp'), $seedDown = document.getElementById('sbSeedDown');
