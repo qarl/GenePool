@@ -426,48 +426,52 @@ out vec4 frag;
 void main(){ frag = uColor; }`;   // rgba -> alpha lets the outside-wall darkening be semi-transparent
 
 // --- hairs: thin glowing rim-coloured strands, drawn additively on top of the composite (instanced arc strip). ---
-const HAIR_FS = `#version 300 es
+// HAIRS: ONE quad (2 triangles) per strand, curve drawn PER-PIXEL in the fragment shader. A vertex shader can only move
+// vertices you give it (a quad is always straight), so the curve lives in the FS: the VS emits an oriented bounding quad
+// in the hair's local frame (x=along d0, y=along nrm) and passes the fragment's local coords; the FS computes the exact
+// distance to the true arc centerline + tapered half-width and paints it with a ~1px soft edge (free AA, facet-free at
+// ANY zoom). theta~0 -> straight capsule (no atan, the common+stable case). One instance per strand: 8 floats
+// {root, dir, len, wid(half-width@root), theta(total bend), bright} in screen space. Chosen over a tessellated arc strip
+// after measuring both on the real GPU: perf-identical (hairs are CPU-bound, not GPU-bound) but this is smoother + simpler.
+const HAIR_SDF_VS = `#version 300 es
 precision highp float;
-in float vA;
-uniform vec3 uColor;
-uniform float uBright;
-out vec4 frag;
-void main(){ frag = vec4(uColor * (vA * uBright), 1.0); }   // additive glow (blendFunc ONE,ONE)
-`;
-// INSTANCED hair strip: one instance per strand, params {root, dir, len, wid, theta, bright} (screen space); the VS
-// expands a TRIANGLE_STRIP of uSegs segments along the strand's CIRCULAR ARC (the exact curve emitHair builds on the
-// CPU, but smooth at any zoom -> no facets) and tapers width+alpha to the tip. Pairs with the SAME trivial HAIR_FS
-// (no new per-pixel math -> golden-safe, cross-arch-stable). theta->0 degrades to a straight segment (stable). (P1.)
-const HAIR_INST_VS = `#version 300 es
-precision highp float;
-layout(location=0) in vec4 p0;   // rx,ry (screen root) , nx,ny (outward dir)
+layout(location=0) in vec4 p0;   // rx,ry root , nx,ny dir
 layout(location=1) in vec4 p1;   // len, wid(half-width at root), theta(total bend), bright
-uniform vec2 uRes; uniform int uSegs;
-out float vA;
+uniform vec2 uRes;
+out vec2 vLocal;                                        // fragment position in the hair-local frame
+flat out vec4 vHair;                                    // len, wid, theta, bright (constant per strand)
 void main(){
-  int seg = gl_VertexID >> 1;                         // 0..uSegs
-  float side = float(gl_VertexID & 1) * 2.0 - 1.0;    // -1 / +1 (strip edges)
-  float f = float(seg) / float(uSegs);                // 0..1 along the strand
-  vec2 root = p0.xy; vec2 d0 = normalize(p0.zw);
-  float len = p1.x, wid = p1.y, theta = p1.z, bright = p1.w;
-  vec2 pos, tang;
-  if (abs(theta) < 1e-3){ pos = root + d0 * (len * f); tang = d0; }   // straight (theta~0 is the common case; no cancellation)
-  else {
-    float R = len / theta;                            // signed radius
-    vec2 nrm = vec2(-d0.y, d0.x);                     // +90deg (CCW), matches emitHair's ang+=theta stepping
-    vec2 C = root + nrm * R;                          // arc centre
-    float a = f * theta, ca = cos(a), sa = sin(a);    // swept angle
-    vec2 rc = root - C;
-    pos  = C + vec2(rc.x*ca - rc.y*sa, rc.x*sa + rc.y*ca);
-    tang = vec2(d0.x*ca - d0.y*sa, d0.x*sa + d0.y*ca);
-  }
-  float w = wid * (1.0 - f);                          // taper half-width to the tip
-  vec2 perp = vec2(-tang.y, tang.x);
-  vec2 P = pos + perp * (side * w);
-  vA = (1.0 - f) * bright;                            // taper intensity to the tip (matches emitHair)
+  vec2 root = p0.xy; vec2 d0 = normalize(p0.zw); vec2 nrm = vec2(-d0.y, d0.x);
+  float len = p1.x, wid = p1.y, theta = p1.z;
+  float pad = wid + 1.0;                                // width + ~1px AA margin
+  float B = 0.0; if (abs(theta) >= 1e-3){ float R = len/theta; B = R*(1.0 - cos(theta)); }  // centerline tip bulge (local y)
+  float xmin = -pad, xmax = len + pad, ymin = min(0.0, B) - pad, ymax = max(0.0, B) + pad;
+  float cx = float(gl_VertexID & 1), cy = float((gl_VertexID >> 1) & 1);   // strip 0..3 -> (0,0)(1,0)(0,1)(1,1)
+  float lx = mix(xmin, xmax, cx), ly = mix(ymin, ymax, cy);
+  vec2 P = root + d0*lx + nrm*ly;
+  vLocal = vec2(lx, ly); vHair = vec4(len, wid, theta, p1.w);
   gl_Position = vec4(P.x/uRes.x*2.0 - 1.0, 1.0 - P.y/uRes.y*2.0, 0.0, 1.0);
 }`;
-const HAIR_SEGS = 20;   // strip segments/strand: chord deviation ~ len*theta/(2*(2N)^2) -> sub-pixel/facet-free at branchy zoom
+const HAIR_SDF_FS = `#version 300 es
+precision highp float;
+in vec2 vLocal; flat in vec4 vHair;
+uniform vec3 uColor; uniform float uBright;
+out vec4 frag;
+void main(){
+  float x = vLocal.x, y = vLocal.y, len = vHair.x, wid = vHair.y, theta = vHair.z, bright = vHair.w;
+  float f, d;                                           // f = along-strand param 0..1 ; d = perp distance to centerline
+  if (abs(theta) < 1e-3){ f = x / len; d = abs(y); }    // straight capsule (common case; no atan, stable)
+  else {
+    float R = len / theta; vec2 vq = vec2(x, y - R);     // vector from arc centre C=(0,R)
+    d = abs(length(vq) - abs(R));
+    f = atan(R*vq.x, -R*vq.y) / theta;                   // signed swept angle / theta  (sign-correct for R<0)
+  }
+  if (f < 0.0 || f > 1.0) discard;
+  float hw = wid * (1.0 - f);                            // tapered half-width (matches the strip)
+  float cov = 1.0 - smoothstep(hw - 1.0, hw + 0.5, d);   // ~1px soft edge (free AA)
+  if (cov <= 0.0) discard;
+  frag = vec4(uColor * ((1.0 - f) * bright * uBright * cov), 1.0);   // taper intensity to the tip; additive
+}`;
 
 // --- junk/detritus: plain thickness discs (NO cytoplasm/grain), summed into the slab thickness like a tiny body ---
 const JUNK_FS = `#version 300 es
@@ -485,7 +489,8 @@ let bodyProg=null, resolveProg=null, finalProg=null, uBodyRes=null, uBodyCyto=nu
 const uR = {}, uF = {};                  // resolve / final uniform locations
 let mainSet=null, smallSet=null;   // per-VIEW FBO sets (makeFBOSet): { slabTex/FBO, accA/B (MRT), hairTex/FBO, sceneTex/FBO, bloomA/B(+FBO) }. Main=768^2, small=256^2.
 let bodyVAO=null, bodyVBO=null, emptyVAO=null;
-let hairInstProg=null, hairInstVAO=null, hairInstVBO=null, uHiRes=null, uHiSegs=null, uHiColor=null, uHiBright=null;   // instanced hair strip
+let hairInstVAO=null, hairInstVBO=null;   // per-strand instance data (8 floats/hair)
+let hairSdfProg=null, uSdfRes=null, uSdfColor=null, uSdfBright=null;   // hair program: 2-tri quad, arc+taper in the FS
 let junkProg=null, uJunkRes=null, uJunkSoft=null;
 let brightProg=null, blurProg=null, postProg=null; const uBr={}, uBl={}, uPo={};
 let boxProg=null, uBoxRes=null, uBoxColor=null, boxVAO=null, boxVBO=null;
@@ -603,10 +608,11 @@ function initGL(){
 
   emptyVAO = gl.createVertexArray(); // for the attributeless fullscreen triangle
 
-  // instanced hair strip: dedicated VAO, 2 vec4 per-instance attribs (divisor set ONCE here), corners via gl_VertexID
-  hairInstProg = makeProgram(HAIR_INST_VS, HAIR_FS);
-  uHiRes = gl.getUniformLocation(hairInstProg, 'uRes'); uHiSegs = gl.getUniformLocation(hairInstProg, 'uSegs');
-  uHiColor = gl.getUniformLocation(hairInstProg, 'uColor'); uHiBright = gl.getUniformLocation(hairInstProg, 'uBright');
+  // instanced hairs: one instance/strand (2 vec4 per-instance attribs, divisor set ONCE here), a 2-triangle quad via
+  // gl_VertexID; the arc + taper are drawn per-pixel in the FS (HAIR_SDF_*).
+  hairSdfProg = makeProgram(HAIR_SDF_VS, HAIR_SDF_FS);
+  uSdfRes = gl.getUniformLocation(hairSdfProg, 'uRes');
+  uSdfColor = gl.getUniformLocation(hairSdfProg, 'uColor'); uSdfBright = gl.getUniformLocation(hairSdfProg, 'uBright');
   hairInstVAO = gl.createVertexArray(); gl.bindVertexArray(hairInstVAO);
   hairInstVBO = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, hairInstVBO);
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, 0);  gl.vertexAttribDivisor(0, 1);   // p0
@@ -790,8 +796,8 @@ function emitDisc(cx, cy, screenR, rad, t, vBase, blur){
   for (let i=1;i<=DISCK;i++){ const a=i/DISCK*6.28318; const Pp=[cx+Math.cos(a)*screenR, cy+Math.sin(a)*screenR]; tri(c,0,rad,vBase,t, prev,1,rad,vBase,t, Pp,1,rad,vBase,t, blur); prev=Pp; }
 }
 
-// --- hairs: instanced GPU strip. One strand = one instance (8 floats {rx,ry,nx,ny,len,wid,theta,bright}, screen space);
-//     HAIR_INST_VS expands it into a smooth tapered arc strip, drawn additively as a glow on top of the composite. ---
+// --- hairs: instanced. One strand = one instance (8 floats {rx,ry,nx,ny,len,wid,theta,bright}, screen space); the hair
+//     program draws a 2-triangle quad and paints the arc+taper per-pixel (HAIR_SDF_*), additively as a glow on top. ---
 let hairInst = new Float32Array(8 * 4096), hio = 0;   // grows as needed; hio/8 = strands
 let hairsEmitted = 0;   // strands drawn this frame (reset in render()); a debug/perf metric (FPS HUD + __bench)
 // per-HAIR stable pseudo-random: hash an integer key -> [0,1). Keyed on the hair's arc position/index (NOT time), so
@@ -1242,15 +1248,15 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     // this slab's hairs -> hairTex (additive glow; the resolve then depth-attenuates it)
     gl.bindFramebuffer(gl.FRAMEBUFFER, hairFBO);
     gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
-    if (P.hair > 0 && hairInstCount[k] > 0){   // this slab's strands: one instanced arc-strip draw
-      gl.useProgram(hairInstProg);
-      gl.uniform2f(uHiRes, W, H); gl.uniform1i(uHiSegs, HAIR_SEGS); gl.uniform3f(uHiColor, 1.0, 1.0, 0.97); gl.uniform1f(uHiBright, P.hair);
+    if (P.hair > 0 && hairInstCount[k] > 0){   // this slab's strands: one instanced draw, 2 triangles/strand (arc in the FS)
       gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE);
       gl.bindVertexArray(hairInstVAO); gl.bindBuffer(gl.ARRAY_BUFFER, hairInstVBO);
       const base = hairInstStart[k] * 32;   // byteOffset for this slab (no baseInstance in WebGL2 -> rebind the pointers)
       gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, base + 0);   // divisor(0/1) already set once in initGL (VAO state)
       gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, base + 16);
-      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, HAIR_SEGS * 2 + 2, hairInstCount[k]);
+      gl.useProgram(hairSdfProg);
+      gl.uniform2f(uSdfRes, W, H); gl.uniform3f(uSdfColor, 1.0, 1.0, 0.97); gl.uniform1f(uSdfBright, P.hair);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, hairInstCount[k]);
       gl.bindVertexArray(null); gl.disable(gl.BLEND);
     }
     // resolve: prev accumulator + this slab (body + hairs) -> next accumulator
