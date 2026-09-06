@@ -19,7 +19,7 @@ import { openRunWriter } from '../events/run-db.mjs';
 import { createSpeciesAnalyzer } from '../../engine/analysis/species.mjs';
 import { makeStandardWorld, poolConfig, POOL_DEFAULTS } from '../../engine/pool-seed.mjs';
 
-export const GEN_DEFAULTS = { ticks: 20000, keyframeInterval: 2000, statsInterval: 250, tickThrottle: 100, ...POOL_DEFAULTS };
+export const GEN_DEFAULTS = { ticks: 20000, keyframeInterval: 2000, statsInterval: 250, tickThrottle: 100, keyframeBudget: 500, ...POOL_DEFAULTS };
 
 // Build the seed's world via the SHARED seeder (engine/pool-seed.mjs) so a generated run is IDENTICAL to what the live
 // viewer shows for that seed -- region 3000, 220 junk-zeroed founders, 700 food, the viewer's config. onEvent is
@@ -42,7 +42,7 @@ export function generateRun(path, seed, opts = {}) {
     const o = { ...GEN_DEFAULTS, ...opts };
     const writer = openRunWriter(path, {
         seed: seed >>> 0, config: poolConfig(o.pool),
-        keyframeInterval: o.keyframeInterval, statsInterval: o.statsInterval,
+        keyframeInterval: o.keyframeInterval, statsInterval: o.statsInterval, keyframeBudget: o.keyframeBudget,
         engineVersion: o.engineVersion ?? null, perceptionMode: 'mixed-live',
     }, { resume: !!o.resume });
 

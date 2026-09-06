@@ -82,6 +82,26 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
         setMeta('done', '0');
     }
 
+    // Keyframe budget (Karl: 500). Keyframes are just restore anchors -- any tick is reachable by restore-nearest +
+    // resim -- so old ones can be thinned freely. When the count exceeds the budget, DELETE every other keyframe in the
+    // OLDEST HALF (preserving keyframe-0, always the oldest): recent history stays dense, old history coarsens
+    // geometrically each pass, and the count stays bounded (~budget) no matter how long the run gets. This is what lets
+    // a run generate ~forever with a bounded file + a slider that can still address every kept keyframe.
+    const KEYFRAME_BUDGET = meta.keyframeBudget || 500;
+    if (!resuming) setMeta('keyframeBudget', KEYFRAME_BUDGET);
+    const countSnaps = db.prepare('SELECT COUNT(*) c FROM snapshots');
+    const thinStmt = db.prepare(`
+        DELETE FROM snapshots WHERE tick IN (
+            SELECT tick FROM (SELECT tick, ROW_NUMBER() OVER (ORDER BY tick) AS rn, COUNT(*) OVER () AS total FROM snapshots)
+            WHERE rn > 1 AND rn <= total / 2 AND (rn % 2) = 0
+        )`);   // rn=1 is keyframe-0 (kept); delete even ranks in the oldest half => keep 1,3,5,... => halve the old region
+    function thinIfNeeded() {
+        if (countSnaps.get().c <= KEYFRAME_BUDGET) return;
+        db.exec('BEGIN');
+        try { thinStmt.run(); db.exec('COMMIT'); }
+        catch (err) { db.exec('ROLLBACK'); throw err; }
+    }
+
     // ONE-TRANSACTION keyframe write (D4): pending events -> snapshot -> stats -> frontier LAST.
     function writeKeyframe(tick, snapshot, stats = null) {
         db.exec('BEGIN');
@@ -92,6 +112,7 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
             setMetaStmt.run('frontier', String(tick));        // advanced LAST -> readers clamp to it
             db.exec('COMMIT');
         } catch (err) { db.exec('ROLLBACK'); throw err; }
+        thinIfNeeded();                                       // bound the keyframe count (own txn; safe for a concurrent WAL reader)
     }
 
     // Dense stats-only write (no snapshot) -- same one-transaction discipline, advances frontier too.
