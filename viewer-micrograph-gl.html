@@ -58,6 +58,9 @@
   .cell .g { display: block; width: 18px; height: 20px;   /* glyph is a pre-centred bitmap (see measurePlateGlyphs) */
     background-repeat: no-repeat; background-position: center; background-size: 18px 20px; }
   #labMain { top: 12px; left: 12px; }   /* total population, top-LEFT of the main view (anchored to #canvasBox) */
+  /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
+  #fpsHud { position: absolute; top: 12px; right: 12px; z-index: 5; pointer-events: none; font: 11px ui-monospace, "SF Mono", Menlo, monospace;
+    color: #7fd0a0; background: #0b0e13cc; padding: 2px 7px; border-radius: 5px; font-variant-numeric: tabular-nums; }
   /* scrub/playback bottom bar (desktop only) */
   #scrubbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: flex; align-items: center; gap: 14px;
     padding: 8px 16px; background: #0d1117f2; border-top: 1px solid #1e2733; backdrop-filter: blur(4px);
@@ -99,6 +102,7 @@
 <div id="wrap"><div id="stage">
   <div id="canvasBox"><canvas id="cv" width="768" height="768"></canvas>
     <div class="tileLabel" id="labMain"></div>
+    <div id="fpsHud"></div>
   </div>
   <div id="species"></div>
 </div></div>
@@ -769,6 +773,7 @@ function emitDisc(cx, cy, screenR, rad, t, vBase, blur){
 
 // --- hairs: a separate [x,y,alpha] buffer, drawn additively as a glow on top of the composite ---
 let hairBuf = new Float32Array(1 << 19), ho = 0;
+let hairsEmitted = 0;   // strands drawn this frame (reset in render()); a debug/perf metric (FPS HUD + __bench)
 function hairVtx(x, y, a){ if (ho+3 > hairBuf.length){ const nb=new Float32Array(hairBuf.length*2); nb.set(hairBuf); hairBuf=nb; } hairBuf[ho++]=x; hairBuf[ho++]=y; hairBuf[ho++]=a; }
 function hairTri(ax,ay,aa, bx,by,ba, cx,cy,ca){ if (CAP) CAP.hairs.push([CAP.part, ax,ay, bx,by, cx,cy]); hairVtx(ax,ay,aa); hairVtx(bx,by,ba); hairVtx(cx,cy,ca); }
 // one strand: root (rx,ry), outward unit normal (nx,ny), screen length/width, total tip deflection `theta`.
@@ -783,6 +788,7 @@ function hairJit(nx, ny, len, key){
 // Steps outward while rotating by theta/NSEG each step (curved sway), tapering width + glow to the tip.
 const HAIR_NSEG = 4;
 function emitHair(rx, ry, nx, ny, len, wid, theta, bright){
+  hairsEmitted++;
   const step = len/HAIR_NSEG; let ang = Math.atan2(ny, nx), cx=rx, cy=ry;
   let pLx=0,pLy=0,pRx=0,pRy=0,pa=bright;
   for (let s=0;s<=HAIR_NSEG;s++){
@@ -1346,6 +1352,7 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
 // (Species tiles render into the right 256-wide column next — step 3.)
 function render(){
   if (!gl) return;
+  hairsEmitted = 0;   // count strands drawn this frame (FPS HUD + __bench perf metric)
   advanceFrame();
   if (world && (frameCount % SPECIES_RECOMPUTE) === 0){ speciesModel.recompute(world._swimbots.values()); updateSpeciesUI(); }   // recluster + refresh the list
   frameCount++;
@@ -1375,11 +1382,25 @@ function render(){
 }
 
 let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (running only gates ticks, not render)
+// debug FPS/hair HUD: smoothed real frame-rate from rAF deltas (DOM overlay, canvas-golden-safe). In the desktop app it
+// also logs to the console every ~2s so I can read the REAL-GPU frame-rate from main's forwarded log (not just Karl's eyes).
+const fpsHud = document.getElementById('fpsHud');
+let _fpsPrev = 0, _fpsEMA = 0, _fpsLogT = 0;
+function tickFPS(){
+  const now = performance.now();
+  if (_fpsPrev){ const f = 1000 / Math.max(0.001, now - _fpsPrev); _fpsEMA = _fpsEMA ? _fpsEMA * 0.9 + f * 0.1 : f; }
+  _fpsPrev = now;
+  const pop = world ? world.getLivingSwimbotCount() : 0;
+  if (fpsHud) fpsHud.textContent = `${_fpsEMA.toFixed(0)} fps · ${hairsEmitted} hairs · ${pop} pop`;
+  if (window.pool && now - _fpsLogT > 2000){ _fpsLogT = now; console.info(`[fps] ${_fpsEMA.toFixed(1)} fps  hairs=${hairsEmitted}  pop=${pop}`); }
+}
+
 function loop(){
   if (loopStopped) return;
   if (running && world){ for (let i=0;i<ticksPerFrame;i++) world.tick(); }
   if (recording && recBuf.length && window.pool){ window.pool.record(recBuf); recBuf = []; }   // flush this frame's events to the recorder
   render();
+  tickFPS();
   requestAnimationFrame(loop);
 }
 
@@ -1469,13 +1490,18 @@ window.__bench = function(s, ticks, camOv, frames, junkFrac){
   const _junk = P.junk; if (junkFrac !== undefined && junkFrac !== null) P.junk = junkFrac;
   const N = Math.max(1, frames|0);
   render(); gl.finish();                                        // warm-up: shader compile / buffer upload / first recluster
-  const t = new Array(N);
-  for (let f=0; f<N; f++){ const t0 = performance.now(); render(); gl.finish(); t[f] = performance.now() - t0; }
-  const nJunk = Math.floor(P.junk * MAX_JUNK);   // effective detritus load during the timed renders
+  const t = new Array(N), tc = new Array(N);                    // total (incl. gl.finish) + CPU-only (before gl.finish)
+  for (let f=0; f<N; f++){ const t0 = performance.now(); render(); const t1 = performance.now(); gl.finish(); t[f] = performance.now() - t0; tc[f] = t1 - t0; }
+  const nJunk = Math.floor(P.junk * MAX_JUNK), nHairs = hairsEmitted;   // detritus + strands drawn during the timed renders
   P.junk = _junk;
+  const med = (a) => { const s = a.slice().sort((x,y)=>x-y); return s[s.length>>1]; };
   t.sort((a,b)=>a-b);
   const sum = t.reduce((a,b)=>a+b,0);
+  const cpuMed = med(tc);
+  // tCPU = JS emit/submit (on SwiftShader ~ the CPU-side cost we optimize); tGPU = the gl.finish() delta (SwiftShader
+  // software raster -> a PESSIMISTIC proxy, not real-GPU). See perf.mjs / the hair plan P3.
   return { frames:N, median:t[N>>1], mean:sum/N, min:t[0], p90:t[Math.min(N-1, Math.floor(N*0.9))],
+           cpuMedian: cpuMed, gpuMedian: t[N>>1] - cpuMed, nHairs,
            living: world.getLivingSwimbotCount(), nJunk, zoom: cam.zoom };
 };
 
@@ -1557,7 +1583,7 @@ function startPlayback(){
       for (let i = 0; i < step; i++) world.tick();
       head += step;
     }
-    render(); updateBar();
+    render(); updateBar(); tickFPS();
     requestAnimationFrame(playbackLoop);
   }
   ticksPerFrame = 1;   // default 1x; playback starts paused until a speed button is pressed

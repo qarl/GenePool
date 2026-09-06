@@ -20,39 +20,52 @@ const update = args.includes('--update');
 const junk = args.includes('--junk') ? Number(args[args.indexOf('--junk') + 1]) : null;
 const REGRESS = 8;   // % median change beyond which we flag (headless timing is noisy -> keep the band generous)
 
-// zoomed-OUT whole-pool view of a grown, speciated pool -> every living creature is on-screen (no cull) + all detritus
-const SCENE = { seed: 1, ticks: 60000, cam: { zoom: 1 }, frames: 90 };
+// Two scenes: 'wide' = zoomed-OUT whole pool (max creature+detritus count, hairs LOD'd OFF) -> the classic regression
+// yardstick + the baseline. 'hairy' = medium zoom where hairs are ON (lod>=0.5) -> the scene that actually measures
+// hair cost (the wide scene draws ZERO hairs). __bench returns a CPU/GPU split (cpuMedian before gl.finish, gpuMedian
+// the SwiftShader raster -> pessimistic proxy) + nHairs; SwiftShader fps is a relative yardstick, not real-GPU fps.
+const SCENES = [
+  { name: 'wide',  seed: 1, ticks: 60000, cam: { zoom: 1 }, frames: 90 },   // baseline scene (must stay first)
+  { name: 'hairy', seed: 1, ticks: 60000, cam: { zoom: 8 }, frames: 90 },   // hairs on -> the metric that matters for hair work
+];
 
 const srv = spawn('node', ['engine/parallel/serve.mjs'], { cwd: REPO, env: { ...process.env, PORT: String(PORT) }, stdio: 'ignore' });
 await sleep(600);
 const browser = await chromium.launch({ executablePath: exeFor().exe, headless: true, args: LAUNCH_ARGS });
-let r, chrome;
+let results = [], chrome;
 try {
   const page = await browser.newPage({ viewport: { width: 1060, height: 820 }, deviceScaleFactor: 1 });
   await page.goto(`http://127.0.0.1:${PORT}/viewer-micrograph-gl.html`, { waitUntil: 'domcontentloaded', timeout: 20000 });
   await page.waitForFunction(() => typeof window.__bench === 'function', { timeout: 10000 });
   chrome = browser.version();
-  r = await page.evaluate(([s, t, c, f, j]) => window.__bench(s, t, c, f, j), [SCENE.seed, SCENE.ticks, SCENE.cam, SCENE.frames, junk]);
+  for (const S of SCENES) {
+    const r = await page.evaluate(([s, t, c, f, j]) => window.__bench(s, t, c, f, j), [S.seed, S.ticks, S.cam, S.frames, junk]);
+    results.push({ S, r });
+  }
 } finally { await browser.close(); srv.kill(); }
 
 let git = ''; try { git = execSync('git rev-parse --short HEAD', { cwd: REPO }).toString().trim(); } catch {}
+console.log(`\nRender bench  [${git || '?'}, ${process.arch}, SwiftShader (relative yardstick, NOT real-GPU fps)]`);
+for (const { S, r } of results) {
+  const fps = (1000 / r.median).toFixed(1), warn = (S.name === 'hairy' && !r.nHairs) ? '  ⚠ ZERO hairs — raise the zoom!' : '';
+  console.log(`  ${S.name.padEnd(6)} zoom ${String(r.zoom).padStart(2)}  ${r.median.toFixed(1)} ms/frame (${fps} fps)   ` +
+    `cpu ${r.cpuMedian.toFixed(1)} · gpu ${r.gpuMedian.toFixed(1)}   ${r.living} living · ${r.nHairs} hairs · ${r.nJunk} junk${warn}`);
+}
+
+const rw = results[0].r;   // baseline compares the 'wide' scene
 const cur = {
-  medianMs: +r.median.toFixed(2), meanMs: +r.mean.toFixed(2), minMs: +r.min.toFixed(2), p90Ms: +r.p90.toFixed(2),
-  fps: +(1000 / r.median).toFixed(1), living: r.living, nJunk: r.nJunk, zoom: r.zoom,
-  scene: SCENE, arch: process.arch, node: process.version, chrome, git, at: new Date().toISOString(),
+  medianMs: +rw.median.toFixed(2), meanMs: +rw.mean.toFixed(2), minMs: +rw.min.toFixed(2), p90Ms: +rw.p90.toFixed(2),
+  cpuMs: +rw.cpuMedian.toFixed(2), fps: +(1000 / rw.median).toFixed(1), living: rw.living, nJunk: rw.nJunk, zoom: rw.zoom,
+  scene: SCENES[0], arch: process.arch, node: process.version, chrome, git, at: new Date().toISOString(),
 };
-
-console.log(`\nZOOMED-OUT render bench  (seed ${SCENE.seed}, ${SCENE.ticks} ticks, zoom ${r.zoom}, ${r.living} living, ${r.nJunk} junk, ${SCENE.frames} frames)`);
-console.log(`  median ${cur.medianMs} ms/frame  (${cur.fps} fps)    min ${cur.minMs}   p90 ${cur.p90Ms}   mean ${cur.meanMs}    [${git || '?'}, ${process.arch}, SwiftShader]`);
-
 if (update) {
   mkdirSync(dirname(BASE), { recursive: true }); writeFileSync(BASE, JSON.stringify(cur, null, 2) + '\n');
-  console.log(`\nrecorded baseline -> perf/baseline.json  (${cur.medianMs} ms/frame @ ${git})`);
+  console.log(`\nrecorded baseline (wide) -> perf/baseline.json  (${cur.medianMs} ms/frame @ ${git})`);
 } else if (existsSync(BASE)) {
   const b = JSON.parse(readFileSync(BASE, 'utf8'));
   const d = (cur.medianMs - b.medianMs) / b.medianMs * 100;
   const tag = d > REGRESS ? `⚠ SLOWER by ${d.toFixed(1)}%` : d < -REGRESS ? `✓ faster by ${(-d).toFixed(1)}%` : `≈ ${d >= 0 ? '+' : ''}${d.toFixed(1)}% (within noise)`;
-  console.log(`\n  vs baseline ${b.medianMs} ms/frame (${b.git || '?'}, ${b.arch}):  ${tag}`);
+  console.log(`\n  wide vs baseline ${b.medianMs} ms/frame (${b.git || '?'}, ${b.arch}):  ${tag}`);
   if (b.arch !== process.arch) console.log('  NOTE: baseline was recorded on a different arch -- not comparable.');
 } else {
   console.log('\n  (no baseline yet -- run `node perf.mjs --update` to record one)');
