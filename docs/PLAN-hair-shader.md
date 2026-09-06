@@ -2,9 +2,10 @@
 
 Follows `docs/PLANNING-PROCESS.md`.
 
-> ⚠️ Read the **"Hardening review — folded in"** section first — decisions **H1–H10** GOVERN and supersede conflicting
-> text above them (notably: per-slab draws not one draw (H1), screen-space params (H2), θ≈0 is the constant case (H3),
-> the goal is "no facets", not "look-identical" (H5)).
+> ⚠️ **The "## 5-panel review — folded in" section at the bottom is the GOVERNING spec** (decisions P1–P6 + the
+> corrected build order); then the "## Hardening review — folded in" (H1–H10). **Headline (P1): the instanced
+> VERTEX-SHADER HIGH-N STRIP is now the PRIMARY approach; the fragment arc-SDF is demoted to an optional, Phase-0-gated
+> upgrade.** All earlier "arc-SDF is primary" text is superseded.
 
 ## Problem
 Zoomed in on long hairs, you see **facets** (visible kinks). And every hair is **warped on the CPU every frame**.
@@ -148,6 +149,93 @@ curvature; `R≈len/theta`); WebGL2 has VS/FS only (no geometry/tessellation) so
 `gl_VertexID` quad expansion is the right primitive (the fullscreen triangle already uses `gl_VertexID`, ~301); hairs are
 view-only (no engine-determinism impact); the fidelity checklist is complete EXCEPT per-slab compositing (H1) + `CAP`
 (H7); the VS-high-N-strip fallback is a clean drop-in.
+
+## 5-panel review — folded in (2026-09-06; THIS is the governing spec; supersedes conflicting text above, incl. H1–H10 where noted)
+Five distinct-lens reviewers (WebGL2 pipeline · shader-math/numerics · performance · fidelity/goldens · integration).
+Three independent technical lenses converged on the same conclusion. Decisions P1–P6 govern.
+
+- **P1 (THE DECISION) — the instanced VERTEX-SHADER HIGH-N STRIP is PRIMARY; the fragment arc-SDF is an optional,
+  Phase-0-gated upgrade (was: SDF primary, strip fallback — INVERTED).** Perf, fidelity, and shader-math all independently
+  said so:
+  - **It kills the facets.** A 16–24-seg strip's max chord deviation ≈ `len·θ/(2·(2·N)²)`; at the complaint zoom
+    (branchy, zoom-26), `len≈300px, θ≈2.5 → ~0.16px` — already sub-pixel/facet-free (len=100 → 0.05px).
+  - **It captures the FULL perf win.** Both approaches ship the same ~8 params/hair and move the per-hair warp
+    (~60–75% of per-hair CPU) to the GPU; the SDF adds *nothing* to the CPU win.
+  - **It's the LOWER-RISK and HIGHER-FIDELITY path.** It keeps the PROVEN trivial passthrough `HAIR_FS` (436-443) →
+    **no new per-pixel transcendentals**, so: no θ→0 cancellation (a real BLOCKER for the SDF — see P6), no in-shader
+    `atan2` (absent from all shaders today; unmeasured cross-arch risk), no OBB fragment overdraw, no thin-line AA
+    shimmer, no self-overlap loss on the beat peak, and — critically — **no dimming of the hero `branchy` frame** (the
+    SDF's AA on ~2.3px-wide hairs would drop peak additive intensity ~40% + lower bloom). It also stays hard-edged →
+    byte-closer to today and keeps `maxΔ≤1` cross-arch by construction.
+  - **The SDF's only unique wins** are true AA on sub-pixel strands + a 1-quad footprint — and its AA is as likely to
+    make the hero frame look *worse* (dimmer/softer) as better. ⇒ **Build the strip. Prototype the SDF in Phase 0 and
+    adopt it ONLY if it clears a `branchy` cross-arch (`maxΔ≤1`, `diffFraction≤0.0005`) + brightness A/B gate.**
+  - ⇒ **This retires the SDF-specific risks the hardening pass wrestled with** (H3 θ≈0, H4 sagitta/clamp, H5 flat-box
+    AA, H9 taper param) — they now apply ONLY to the optional SDF upgrade (P6), not the shipping path. The strip's VS
+    computes the arc at N discrete vertices (the same `ang`-stepping emitHair does, but on the GPU) — stable, no SDF.
+
+- **P2 (WebGL2 pipeline) — instancing mechanics (this is the codebase's FIRST instancing):** dedicated **instanced VAO**
+  with `vertexAttribDivisor(loc,1)` set **once at init** (in `initGL`, NOT `makeFBOSet` → survives resize/build/seed);
+  **`TRIANGLE_STRIP` + `gl_VertexID`** corner/segment expansion (not `TRIANGLES`); instance params = 2×`vec4` divisor-1
+  `{rx,ry,nx,ny,len,wid,theta,bright}` (screen space, H2). Per slab: `drawArraysInstanced(TRIANGLE_STRIP, 0, 2N+2,
+  hairCount[k])`, rebinding each divisor-1 attribute's `vertexAttribPointer(byteOffset = hairStart[k]*stride +
+  fieldOffset)` with the instance VBO bound to `ARRAY_BUFFER` and the instanced VAO bound. **`hairStart[k]` must be an
+  INSTANCE index (paramsWritten/8), not the vertex index (`ho/3`) it is today.** Confirmed: no `baseInstance` in core
+  WebGL2 (H1 correct), 8 per-slab draws is NOT a regression (already 8 today). Optional cleaner form: params in a
+  texture/UBO + `texelFetch(uBase + gl_InstanceID)`, per-slab `uBase` uniform — removes all rebinds.
+
+- **P3 (performance) — the perf gate + measurement (H6 was necessary but insufficient):**
+  - `__bench` runs **SwiftShader** (software raster) → its GPU number CPU-rasterizes shaders and is a **pessimistic
+    upper bound only**; the real-GPU verdict must come from **Karl's machine**. `EXT_disjoint_timer_query` is **absent in
+    Safari** → don't gate on a GPU timer.
+  - Instrument `__bench` to return `{tCPU, tGPU, nHairs, living}` — `tCPU` timed **before `gl.finish()`** (the CPU-emit
+    metric); assert `nHairs>0` or the scene silently measures nothing (hairs are LOD-faded to zero at zoom-1, so the
+    current perf scene measures ZERO hair cost).
+  - **Add a medium-zoom "hairy" scene** (tune zoom so several creatures sit at lod≥0.5; assert `nHairs>2000`).
+  - **GO to ship the strip:** `tCPU` median drops **≥15%** on `hairy` (A/B via the toggle). **SDF-over-strip:** only if
+    `branchy` real-GPU regression ≤8% AND no cross-arch fail AND facets actually still visible to Karl at his zoom.
+  - **Live FPS overlay + the A/B toggle = the real before/after** (Karl's request) — read old↔new on his GPU live.
+
+- **P4 (fidelity/goldens):** the strip **avoids** the SDF's fidelity hazards (hero-frame dimming, beat-peak self-sum
+  loss, cap-fan brightening) — all are SDF-only. Golden discipline (applies to whichever path): **do NOT blind re-record**
+  — first measure per-scene hair-pixel presence on the OLD build; the provably-hairless scenes (`founders` ticks-0 bald,
+  `adults` zoom-1) MUST diff **exactly 0** under the new path (the state-leak guard that catches a botched instance
+  path); `speciated.mini` (256², widS≈1.25px) is the most AA-sensitive. For the strip, EXACT-0 on the recording arch
+  should hold (no new transcendentals); re-record only the hair scenes, in one commit, with the non-hair scenes held
+  fixed as the anti-masking guard.
+
+- **P5 (integration) — toggle + coverage + build order:** ALL hair paths funnel through `renderView` (main, species
+  minis, `__golden`, `__bench`, desktop `playbackLoop`, `resizeMain`, `interaction.visual.mjs`), so **one toggle covers
+  everything**; the only separate path is CAP. Add **`window.__hairMode`** (default `'cpu'`, **read once per view**,
+  snapshot to a local like `_cam` at ~1165) that gates the THREE seams atomically: emit-fn selection
+  (`emitHair`→hairBuf vs `emitHairInstance`→instanceBuf), buffer upload, and draw. Land the toggle channel in **Phase 1**
+  so A/B is testable headlessly from first light. **CAP/`captureCreatureGeom` is DEAD CODE (no caller anywhere) →
+  delete it** (resolves H7 cleanly). Resize is a non-issue (hair program/VAO/VBO live in `initGL`, untouched by
+  `makeFBOSet`) — state it so nobody wires an instance buffer into `makeFBOSet`.
+
+- **P6 (shader-math) — applies ONLY IF the optional SDF upgrade is pursued:** ① near θ=0 the IQ arc-SDF still cancels
+  catastrophically — **branch to the exact segment SDF**, switching on **sagitta-in-pixels < 0.5** (inherently
+  C0-seamless, no blend band → no flicker; corrects H3). ② derive the taper param by **chord projection + a
+  cross-product sign test — NO `atan2` in the fragment shader** (corrects H8/H9). ③ build the OBB from the **real tip**
+  (`chord = 2R·sin(θ/2)` ≪ len) + one-sided sagitta; **clamp `|θ|≤~2`** (θ genuinely exceeds π for fast tails —
+  `velocity`=per-tick displacement × `hairDrag=1.0`; the clamp also prevents self-overlap, dissolving the additive
+  double-count concern; corrects H4's 2.5). ④ **energy-conserving thin-line AA** (hold a ≥0.5px footprint, scale alpha
+  by `w/wc`) or sub-pixel strands shimmer (corrects H5). ⑤ bloom spreads any hair-edge cross-arch delta to ~9×9 →
+  **expect to widen the hair-scene tolerance**; measure `branchy` arm64-vs-x64 in Phase 0. The strip needs NONE of this.
+
+**CORRECTED BUILD ORDER (adopt):**
+- **Phase 0** — a **servable** `hair-proto.html` (served by test/visual `server.mjs`, rendered headlessly via playwright
+  + cached SwiftShader). Prototype BOTH the high-N strip AND the arc-SDF; headless-capture the gates (facet-free at
+  branchy zoom; for the SDF also: animated θ-through-0, sagitta at max θ, taper, thin-AA, and **cross-arch maxΔ≤1 on
+  branchy**). GO/NO-GO — and the SDF-vs-strip decision is made HERE on evidence.
+- **Phase 1** — instance plumbing behind `window.__hairMode` (default `'cpu'`, read once per view); land the toggle in
+  `__golden`/`__bench`/`interaction` first; render one part's hairs via the strip.
+- **Phase 2** — wire side + cap hairs through the params path (taper/jitter/beat/drag/growth/LOD); record a NEW-path
+  golden family (`*.gpu.png`) + a **fast-motion hairy scene** (the θ range neither existing golden exercises); run
+  `interaction.visual.mjs` under `'gpu'` as a free GL-error net.
+- **Phase 3** — Karl's-eyes A/B (incl. the fast-motion scene) + FPS overlay; H6 medium-zoom CPU-vs-GPU split.
+- **Phase 4** — flip `__hairMode` default to `'gpu'`, re-record the hair goldens as the new reference (non-hair scenes
+  held fixed), delete CAP — all in ONE commit.
 
 ## Provenance
 Karl (2026-09-06): facets on long zoomed hairs; asked whether a hair/vertex shader kills facets + beats CPU warping.
