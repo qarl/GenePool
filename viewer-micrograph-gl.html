@@ -1017,6 +1017,18 @@ function tessFood(f){
   emitDisc(x, y, Math.max(1.2, 3.0*S), 2.4, FOOD_TINT, 0, 0);   // vBase, blur (junk/food never blur)
 }
 
+// buildSegs scratch: reused across creatures/frames to avoid per-frame GC churn (was ~7ms at pop 1000). chain/arc grow as
+// needed; the rank/chainLen Maps are cleared+refilled; seg records + their merge sub-objects come from a pool reset per view.
+let _bsChain = new Int32Array(64), _bsArc = new Float64Array(64);
+const _bsRank = new Map(), _bsChainLen = new Map();
+let _segPool = [], _segCur = 0;
+function segReset(){ _segCur = 0; }   // call once per renderView before its buildSegs loop
+function segAlloc(){
+  let s = _segPool[_segCur++];
+  if (!s) s = _segPool[_segCur-1] = { sb:null, ph:null, p:0, g:0, S:0, fade:0, slab:0, v0:0, v1:0, merge:null, lod:0,
+                                      _m:{ a0:0, a1:0, rw:0, rampRw:0, px:0, py:0, da:0 } };
+  return s;
+}
 // buildSegs: append one creature's per-part draw records (depth slab + arc-based Y-merge) to `segs`. Shared by render() and
 // the Copy-Swimmer capture, so the dumped geometry is exactly what the renderer draws (no separate path that could diverge).
 function buildSegs(id, sb, ph, g, fade, S, segs, lodOverride){
@@ -1028,24 +1040,26 @@ function buildSegs(id, sb, ph, g, fade, S, segs, lodOverride){
   const vOff = (((id * 2654435761) >>> 0) / 4294967296) * 600;
   // per-chain layering, BUT the TRUNK is forced to the front and every branch one layer BEHIND it -> the trunk's gel masks
   // the branch bases from the front (hides the merge transition). Branch limbs still layer over the body.
-  const chain = new Int32Array(ph.numParts);
-  const arc = new Float64Array(ph.numParts);   // arc-length (world) to each part's START -> body-space `v`
+  if (_bsChain.length < ph.numParts){ _bsChain = new Int32Array(ph.numParts*2); _bsArc = new Float64Array(ph.numParts*2); }
+  const chain = _bsChain, arc = _bsArc; chain[0] = 0; arc[0] = 0;   // reused scratch; [0] is read via parent=0, must be 0
+
   let reach = 0;   // longest root->tip PATH length (world) -- a POSE-INDEPENDENT size (from fixed part lengths), so LOD
   for (let p=1;p<ph.numParts;p++){ const par = ph.parts[p].parent; chain[p] = ph.parts[p].branch ? p : chain[par]; arc[p] = arc[par] + ph.parts[par].length; const tip = arc[p] + ph.parts[p].length; if (tip > reach) reach = tip; }
   // LOD from the STABLE path length (not the flexing max-part-distance, which wobbled ~25% and made caps/hairs flicker).
   // T=75 calibrated so this matches the old rs/60 aggressiveness on average. Capture forces full detail via lodOverride.
   const lod = (lodOverride !== undefined) ? lodOverride : Math.max(0, Math.min(1, reach * S / 75));
   const trunkChain = chain[1];
-  const rankOf = new Map([[trunkChain, 0]]); let nextRank = 1;
+  const rankOf = _bsRank; rankOf.clear(); rankOf.set(trunkChain, 0); let nextRank = 1;
   for (let p=1;p<ph.numParts;p++){ const c=chain[p]; if (!rankOf.has(c)) rankOf.set(c, nextRank++); }
-  const chainLen = new Map();   // total arc-length of each chain -> how much room a limb has to fade its thickness in
+  const chainLen = _bsChainLen; chainLen.clear();   // total arc-length of each chain -> how much room a limb has to fade its thickness in
   for (let p=1;p<ph.numParts;p++){ const c=chain[p]; chainLen.set(c, (chainLen.get(c)||0) + ph.parts[p].length); }
   const trunkSlab = Math.floor(base * (K_SLABS - 1));   // whole-integer slab offsets: trunk in front, each branch >=1 behind
   for (let p=1;p<ph.numParts;p++){
     if (ph.parts[p].length <= 0) continue;
     const cid = chain[p];
     const slab = Math.min(K_SLABS-1, trunkSlab + rankOf.get(cid));
-    let merge = null;
+    const s = segAlloc();   // pooled record (no per-part object alloc)
+    s.sb=sb; s.ph=ph; s.p=p; s.g=g; s.S=S; s.fade=fade; s.slab=slab; s.v0=arc[p]+vOff; s.v1=arc[p]+vOff+ph.parts[p].length; s.lod=lod; s.merge=null;
     if (cid !== trunkChain){
       const baseArc = arc[cid], bw = ph.parts[cid].width;              // branch base part
       const tp = ph.parts[ph.parts[cid].parent], tl = Math.hypot(tp.axis.x, tp.axis.y) || 1;   // trunk it attaches to
@@ -1063,9 +1077,9 @@ function buildSegs(id, sb, ph, g, fade, S, segs, lodOverride){
       // thickness (no faded ghost) rather than ramping past its end. Long limbs (longer than bw*4) get the gentle ramp for
       // free; only genuinely short limbs pay a steeper ramp, and they're small. (Length-aware, per Karl.)
       const rampRw = Math.min(bw*4, Math.max(chainLen.get(cid), 1e-3));
-      merge = { a0, a1: a0 + ph.parts[p].length, rw: bw*4, rampRw, px: ps[0], py: ps[1], da };
+      const m = s._m; m.a0=a0; m.a1=a0+ph.parts[p].length; m.rw=bw*4; m.rampRw=rampRw; m.px=ps[0]; m.py=ps[1]; m.da=da; s.merge=m;
     }
-    segs.push({ sb, ph, p, g, S, fade, slab, v0: arc[p]+vOff, v1: arc[p]+vOff + ph.parts[p].length, merge, lod });
+    segs.push(s);
   }
 }
 
@@ -1273,6 +1287,7 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   const nJunk = Math.floor(P.junk * MAX_JUNK);
   if (world){
     const S = sc();
+    segReset();                      // reuse the pooled seg records this view (they were consumed by the previous view)
     const segs = [];
     const mW = W + 40, mH = H + 40;   // small viewport margin
     for (const [id, sb] of known){
