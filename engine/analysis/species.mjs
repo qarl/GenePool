@@ -24,7 +24,6 @@ export const EXPRESSED = 83;
 export const SPECIES_ISO = 0.9;          // = engine reproductiveIsolation default; same-species iff junkSim > this
 export const SPECIES_K = 50;             // cap on tracked reps / list length (perf bound on N*K*NJ)
 export const SIG_EMA = 0.08;             // centroid smoothing per recompute -> the plate crawls
-export const SPECIES_MATCH = 0.94;       // EMA-centroid similarity to treat a cluster as the SAME lineage across reclusters
 export const LIFE_EMA = 0.05;            // slow EMA over per-death lifespans
 
 // --- PCA species-signature basis (docs/pca-plate-basis.md). Spliced verbatim from the viewer at build time to
@@ -63,40 +62,70 @@ export function signatureOf(vec) {        // -> 5 signed base36 symbols ('0' = m
 }
 
 // --- the stateful analyzer: one per run (generator) / per live world (viewer) ---
+// INCREMENTAL clustering: a creature's junk genes are IMMUTABLE for life, so its species is FIXED at birth. Rather than
+// re-cluster every living creature every recompute (O(N*K*NJ) -> ~8ms at pop 1000), we assign each creature ONCE the
+// first recompute it appears in, maintain per-lineage running sums, and just advance the EMAs (plate crawl) + rebuild the
+// list each call. Per-recompute cost is O(new + dead), not O(N). Same outputs (tracked/speciesList/pop EMAs/statsRow).
 export function createSpeciesAnalyzer() {
-    let tracked = new Map();             // id -> { ema, emaUsed, divEMA, sig, count, misses, seed, idset, rep, lifeEMA }
+    let tracked = new Map();             // id -> { ema, emaUsed, divEMA, sig, count, misses, seed, idset, rep, lifeEMA, sumJunk, sumUsed, sumSqUsed }
+    const assigned = new Map();          // sb -> lineage id (fixed at birth; genes never change -> membership never migrates)
     let nextSpeciesId = 1;
     let popUsedEMA = null, popSig = '00000', popDivEMA = null, popLifeEMA = null;
     let speciesById = new Map(), speciesList = [];
 
-    // Recompute clusters + lineages from the current living swimbots (an iterable of Swimbot objects). Mutates the
-    // analyzer's tracked lineages + population EMAs. Faithful copy of the viewer's computeSpecies().
+    function newLineage(jg) {
+        return { seed: Float64Array.from(jg), sumJunk: new Float64Array(NJ), sumUsed: new Float64Array(EXPRESSED), sumSqUsed: new Float64Array(EXPRESSED),
+                 count: 0, ema: null, emaUsed: null, divEMA: 0, sig: '00000', misses: 0, idset: new Set(), rep: null, lifeEMA: null };
+    }
+    function memberAdd(t, sb, jg) {       // running sums so per-lineage mean/variance need no re-scan of members
+        t.idset.add(sb); t.count++;
+        for (let k = 0; k < NJ; k++) t.sumJunk[k] += jg[k];
+        const gt = sb.getGenotype();
+        for (let k = 0; k < EXPRESSED; k++) { const v = gt.getGeneValue(k); t.sumUsed[k] += v; t.sumSqUsed[k] += v * v; }
+    }
+    function memberRemove(t, sb) {         // genes are immutable -> add-then-remove of the SAME integer values cancels exactly (no FP drift)
+        if (!t.idset.has(sb)) return;
+        t.idset.delete(sb); t.count--;
+        const jg = junkOf(sb), gt = sb.getGenotype();
+        for (let k = 0; k < NJ; k++) t.sumJunk[k] -= jg[k];
+        for (let k = 0; k < EXPRESSED; k++) { const v = gt.getGeneValue(k); t.sumUsed[k] -= v; t.sumSqUsed[k] -= v * v; }
+    }
+
+    // Recompute: assign NEW living creatures (once, by seed), drop the dead, advance every lineage's EMAs, rebuild the list.
     function recompute(swimbots) {
-        const reps = [];
+        const alive = new Set();
         for (const sb of swimbots) {
             if (!sb.getAlive()) continue;
             const ph = sb._phenotype; if (!ph || ph.numParts <= 1) continue;
+            alive.add(sb);
+            if (assigned.has(sb)) continue;                        // already in a lineage (fixed at birth) -> no re-scan
             const jg = junkOf(sb);
-            let best = null, bestS = SPECIES_ISO;
-            for (const r of reps) { const s = junkSim(jg, r.seed); if (s > bestS) { bestS = s; best = r; } }
-            if (best) best.members.push({ sb, jg });
-            else if (reps.length < SPECIES_K) reps.push({ seed: jg, members: [{ sb, jg }] });
-            else { let nb = reps[0], ns = -1; for (const r of reps) { const s = junkSim(jg, r.seed); if (s > ns) { ns = s; nb = r; } } nb.members.push({ sb, jg }); }
+            let best = null, bestId = null, bestS = SPECIES_ISO;
+            for (const [tid, t] of tracked) { const s = junkSim(jg, t.seed); if (s > bestS) { bestS = s; best = t; bestId = tid; } }
+            if (!best) {
+                if (tracked.size < SPECIES_K) { bestId = nextSpeciesId++; best = newLineage(jg); tracked.set(bestId, best); }
+                else { let ns = -1; for (const [tid, t] of tracked) { const s = junkSim(jg, t.seed); if (s > ns) { ns = s; best = t; bestId = tid; } } }
+            }
+            memberAdd(best, sb, jg); assigned.set(sb, bestId);
         }
-        for (const r of reps) {
-            const mean = new Float64Array(NJ), meanUsed = new Float64Array(EXPRESSED), sumSqUsed = new Float64Array(EXPRESSED);
-            for (const m of r.members) { for (let k = 0; k < NJ; k++) mean[k] += m.jg[k];
-                const gt = m.sb.getGenotype(); for (let k = 0; k < EXPRESSED; k++) { const v = gt.getGeneValue(k); meanUsed[k] += v; sumSqUsed[k] += v * v; } }
-            for (let k = 0; k < NJ; k++) mean[k] /= r.members.length;
-            for (let k = 0; k < EXPRESSED; k++) meanUsed[k] /= r.members.length;
-            let ss = 0; for (let k = 0; k < EXPRESSED; k++) { const vr = sumSqUsed[k] / r.members.length - meanUsed[k] * meanUsed[k]; ss += Math.sqrt(vr > 0 ? vr : 0); }
-            r.mean = mean; r.meanUsed = meanUsed; r.sumSqUsed = sumSqUsed; r.divRaw = ss / EXPRESSED;
-            r.count = r.members.length; r.idset = new Set(r.members.map(m => m.sb));
-            let best = null, bs = -1; for (const m of r.members) { const s = junkSim(m.jg, mean); if (s > bs) { bs = s; best = m.sb; } }
-            r.newRep = best;
+        for (const [sb, tid] of assigned) { if (!alive.has(sb)) { const t = tracked.get(tid); if (t) memberRemove(t, sb); assigned.delete(sb); } }
+        // per-lineage: running mean -> advance EMAs (the plate crawls) -> sig -> rep; prune extinct after a little hysteresis
+        const mean = new Float64Array(NJ), meanUsed = new Float64Array(EXPRESSED);
+        for (const [tid, t] of tracked) {
+            if (t.count <= 0) { if (++t.misses > 4) tracked.delete(tid); continue; }
+            t.misses = 0;
+            for (let k = 0; k < NJ; k++) mean[k] = t.sumJunk[k] / t.count;
+            let ss = 0; for (let k = 0; k < EXPRESSED; k++) { const mu = t.sumUsed[k] / t.count; meanUsed[k] = mu; const vr = t.sumSqUsed[k] / t.count - mu * mu; ss += Math.sqrt(vr > 0 ? vr : 0); }
+            const divRaw = ss / EXPRESSED;
+            if (!t.ema) { t.ema = Float64Array.from(mean); t.emaUsed = Float64Array.from(meanUsed); t.divEMA = divRaw; }
+            else { for (let k = 0; k < NJ; k++) t.ema[k] += SIG_EMA * (mean[k] - t.ema[k]);
+                   for (let k = 0; k < EXPRESSED; k++) t.emaUsed[k] += SIG_EMA * (meanUsed[k] - t.emaUsed[k]);
+                   t.divEMA += SIG_EMA * (divRaw - t.divEMA); }
+            t.sig = signatureOf(t.emaUsed);
+            if (!(t.rep && t.rep.getAlive() && t.idset.has(t.rep))) { let best = null, bs = -1; for (const m of t.idset) { const s = junkSim(junkOf(m), mean); if (s > bs) { bs = s; best = m; } } t.rep = best; }
         }
         let popTot = 0; const popSum = new Float64Array(EXPRESSED), popSumSq = new Float64Array(EXPRESSED);
-        for (const r of reps) { popTot += r.count; for (let k = 0; k < EXPRESSED; k++) { popSum[k] += r.meanUsed[k] * r.count; popSumSq[k] += r.sumSqUsed[k]; } }
+        for (const [, t] of tracked) { if (t.count <= 0) continue; popTot += t.count; for (let k = 0; k < EXPRESSED; k++) { popSum[k] += t.sumUsed[k]; popSumSq[k] += t.sumSqUsed[k]; } }
         if (popTot > 0) {
             if (!popUsedEMA) { popUsedEMA = new Float64Array(EXPRESSED); for (let k = 0; k < EXPRESSED; k++) popUsedEMA[k] = popSum[k] / popTot; }
             else for (let k = 0; k < EXPRESSED; k++) popUsedEMA[k] += SIG_EMA * (popSum[k] / popTot - popUsedEMA[k]);
@@ -105,44 +134,26 @@ export function createSpeciesAnalyzer() {
             const popDivRaw = ss / EXPRESSED;
             popDivEMA = popDivEMA == null ? popDivRaw : popDivEMA + SIG_EMA * (popDivRaw - popDivEMA);
         }
-        reps.sort((a, b) => b.count - a.count);
-        const usedTracked = new Set();
-        for (const r of reps) {
-            let bestId = null, bestS = SPECIES_MATCH;
-            for (const [tid, t] of tracked) { if (usedTracked.has(tid)) continue; const s = junkSim(r.mean, t.ema); if (s > bestS) { bestS = s; bestId = tid; } }
-            r.id = bestId || nextSpeciesId++; usedTracked.add(r.id);
-        }
-        const seen = new Set();
-        for (const r of reps) {
-            seen.add(r.id);
-            let t = tracked.get(r.id);
-            if (!t) { t = { ema: Float64Array.from(r.mean), emaUsed: Float64Array.from(r.meanUsed), divEMA: r.divRaw }; tracked.set(r.id, t); }
-            else { for (let k = 0; k < NJ; k++) t.ema[k] += SIG_EMA * (r.mean[k] - t.ema[k]);
-                   for (let k = 0; k < EXPRESSED; k++) t.emaUsed[k] += SIG_EMA * (r.meanUsed[k] - t.emaUsed[k]);
-                   t.divEMA += SIG_EMA * (r.divRaw - t.divEMA); }
-            t.misses = 0; t.seed = r.seed; t.idset = r.idset; t.count = r.count;
-            if (!(t.rep && t.rep.getAlive() && r.idset.has(t.rep))) t.rep = r.newRep;
-            t.sig = signatureOf(t.emaUsed); r.t = t;
-        }
-        for (const [tid, t] of tracked) if (!seen.has(tid) && ++t.misses > 4) tracked.delete(tid);
-        speciesById = new Map(reps.map(r => [r.id, r])); speciesList = reps;
+        const rs = [];
+        for (const [tid, t] of tracked) if (t.count > 0) rs.push({ id: tid, count: t.count, t });
+        rs.sort((a, b) => b.count - a.count);
+        speciesList = rs; speciesById = new Map(rs.map(r => [r.id, r]));
         return { speciesList, speciesById };
     }
 
-    // Fold one death's age into the whole-population EMA + the nearest lineage's EMA (matched by junk, like the
-    // clustering gate). `age` = age-at-death (D9 event age, == sb.getAge() at the death tick). Event-driven: exact.
+    // Fold one death's age into the whole-population EMA + its OWN lineage's EMA (assignment is fixed at birth, so no
+    // re-match needed). `age` = age-at-death (D9 event age, == sb.getAge() at the death tick). Event-driven: exact.
     function foldDeath(sb, age) {
         popLifeEMA = popLifeEMA == null ? age : popLifeEMA + LIFE_EMA * (age - popLifeEMA);
-        const jg = junkOf(sb); let bestT = null, bestS = SPECIES_ISO;
-        for (const [, t] of tracked) { const s = junkSim(jg, t.ema); if (s > bestS) { bestS = s; bestT = t; } }
-        if (bestT) bestT.lifeEMA = bestT.lifeEMA == null ? age : bestT.lifeEMA + LIFE_EMA * (age - bestT.lifeEMA);
+        const tid = assigned.get(sb), t = tid != null ? tracked.get(tid) : null;
+        if (t) t.lifeEMA = t.lifeEMA == null ? age : t.lifeEMA + LIFE_EMA * (age - t.lifeEMA);
     }
 
     // Compact, serializable panel state for a `stats` row: everything the playback panel needs to draw WITHOUT any
     // recompute (main plate + diversity + lifespan, and the per-lineage list keyed by stable id).
     function statsRow() {
         const lineages = [];
-        for (const [id, t] of tracked) lineages.push({ id, sig: t.sig, count: t.count, divEMA: t.divEMA, lifeEMA: t.lifeEMA ?? null });
+        for (const [id, t] of tracked) { if (t.count <= 0) continue; lineages.push({ id, sig: t.sig, count: t.count, divEMA: t.divEMA, lifeEMA: t.lifeEMA ?? null }); }
         lineages.sort((a, b) => b.count - a.count);
         return { popSig, popDivEMA, popLifeEMA, lineages };
     }

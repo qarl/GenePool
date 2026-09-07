@@ -1201,9 +1201,10 @@ function updateSpeciesUI(){
   // whole-population: plate, then the diversity bar, then count + lifespan circles. Top-left of the main view.
   if (labMain && world) labMain.innerHTML = `${plateHTML(speciesModel.popSig)}${dbarHTML(speciesModel.popDivEMA)}${crowHTML(world.getLivingSwimbotCount(), speciesModel.popLifeEMA)}`;
   if (!speciesPanel) return;
-  // The list is driven by the PERSISTENT lineages (`tracked`), NOT the per-frame `speciesList`: a lineage survives up to
-  // 4 missed reclusters (tracked.delete at misses>4), so a 1-frame absence must NOT drop its row / collapse its viewer.
-  const live = [...speciesModel.tracked.entries()];                 // [id, t]; t.count/t.sig hold last-known values during a miss
+  // The list is driven by the PERSISTENT lineages (`tracked`). Incremental clustering deletes a lineage only when it's
+  // truly extinct (count->0, after a little hysteresis); show only living lineages (count>0) so an extinct one lingering
+  // for seed-rematch never appears as a "0" row.
+  const live = [...speciesModel.tracked.entries()].filter(([, t]) => t.count > 0);   // [id, t]
   const lifeKey = t => t.lifeEMA ?? speciesModel.popLifeEMA ?? (MAX_LIFESPAN/2);   // no-death-yet -> pop avg (else half the cap)
   live.sort((a, b) => b[1].count*lifeKey(b[1]) - a[1].count*lifeKey(a[1]));   // sort by population x avg-lifespan (wobbly)
   const want = new Set();
