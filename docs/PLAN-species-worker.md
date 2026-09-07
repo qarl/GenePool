@@ -10,6 +10,10 @@ Status: REVIEWED (1 hardening pass). ⚠ RESHAPED — consider INCREMENTAL clust
 - Cost: an algorithm change in `species.mjs` (assign-on-birth instead of global re-cluster) + re-baselined goldens + slight cosmetic DRIFT from the current greedy global recluster (a living bot never migrates lineage even if a centroid drifts past it — arguably *more* correct for "species"; the panel is cosmetic-live so drift is acceptable). Keep a periodic full rebuild only if lineage seeding proves unstable — and if it must run, that's the one case to hand to a worker.
 - **This avoids ALL the worker surface below** (B1–B3, M1–M4, epoch races, Electron plumbing, the golden sync-split).
 
+⭐ Two build-time caveats (1-review follow-up) when doing incremental:
+- **The saving is the O(N·K·NJ) assignment SCAN only.** "Fixed at birth" means a living creature's lineage never changes — so skip re-deriving it. But the per-lineage centroids/EMAs still DRIFT (the plate is meant to crawl) as members are born/die, and `foldDeath` still needs the tracked EMAs to attribute each death's age — so incremental STILL advances the EMAs + folds deaths every frame; it just stops rescanning every living bot. Keep a periodic full rebuild to stay honest on founder edge cases (a newborn whose nearest rep later dies).
+- **Re-baseline includes `test/analysis/species.test.js`, not just the visual goldens.** That test does a byte-exact `deepEqual` on `statsRow` and encodes the EXACT current greedy sequence — it WILL need updating to the new contract. The ≥3-species asserts (`goldens.visual.mjs`, `interaction.visual.mjs`) should survive; the `statsRow` one won't.
+
 **Decision for Karl (worker vs incremental):** incremental is simpler, removes the 8ms on-thread, and needs no async — at the price of a small semantic drift + golden re-baseline. The worker removes the cost *exactly* (bit-identical membership) but carries all the surface below. Lean: **incremental.** Measure it first.
 
 Also do regardless (m6): **cache each bot's gene slices at birth** — removes ~235k `getGeneValue` virtual calls/frame (~1-2ms) and helps whichever path.
