@@ -1,6 +1,12 @@
 # PLAN — species clustering on a Web Worker
 
-Status: REVIEWED (1 hardening pass). ⚠ RESHAPED — consider INCREMENTAL clustering before the worker. Author: Jimmy-GenePool, 2026-09-06.
+Status: ✅ SHIPPED as INCREMENTAL clustering (`a87278a`), NOT the worker. Author: Jimmy-GenePool, 2026-09-06.
+
+## OUTCOME
+Built the incremental path (§0), not the Worker. `recompute()` now assigns each creature once (membership fixed at birth), keeps per-lineage running sums, advances the EMAs + rebuilds the list each call — O(new+dead), not O(N). Real-GPU pop~1014 whole-pool: render **22ms → 13ms** (species 8ms → ~0.5ms; + the buildSegs alloc pooling `299b9d0`) → felt ~37fps → ~70fps, no worker/async/stall. `species.test.js` passes (deterministic + coherent); visual goldens UNCHANGED (incremental == greedy on a static captured scene; the fixed-at-birth drift only shows in a live evolving world). The gene-slice caching (m6) is subsumed — junkOf now runs only on new/dead creatures, not every creature every frame. The Worker checklist (§8) stays recorded in case exact-to-greedy behavior is ever needed.
+
+---
+Status (pre-build): REVIEWED (1 hardening pass). ⚠ RESHAPED — consider INCREMENTAL clustering before the worker.
 
 ## §0. The review's key finding: membership is fixed at birth → incremental beats the worker
 
