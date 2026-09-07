@@ -25,14 +25,16 @@
   #cv { border-radius: 12px; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: grab; touch-action: none; }
   #cv.drag { cursor: grabbing; }
   #species { width: 256px; height: 768px; overflow-y: auto; scrollbar-gutter: stable; line-height: normal;
-    background: #0b0e13; border-radius: 12px; padding: 4px 0; box-sizing: border-box; }   /* scrollable list of ALL species */
+    background: #0b0e13; border-radius: 12px; padding: 0 0 4px; box-sizing: border-box; }   /* scrollable list of ALL species; no top pad -> first card sits flush with the canvas top */
+  #species .srow:first-child { margin-top: 0; }   /* first entry's top aligns perfectly with the top of the main view */
   /* NO padding: card + mini fill the row (same width); margin gives the gap+inset. So collapsed & expanded are the
      same width, and the info sits at the SAME (8,8) inset in both -> it lines up when you expand/collapse. */
   #species .srow { position: relative; margin: 6px 8px; cursor: pointer; }
   #species .srow .info { color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }
-  /* COLLAPSED = a little viewer card, FULL row width (= the expanded mini): micrograph-ish vignette + rounded corners */
+  /* COLLAPSED = a little viewer card, FULL row width (= the expanded mini): the SAME backlit field vignette the live
+     micrograph draws -- warm-white centre rgb(172,173,165) (= vec3(.99,1,.95)*uField) darkening radially to the edges. */
   #species .srow:not(.exp) .info { display: block; padding: 8px; border-radius: 12px;
-    background: radial-gradient(120% 200% at 50% 30%, #cfcbc1 0%, #bcb8ad 60%, #8c887e 100%); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+    background: radial-gradient(circle at 50% 50%, rgb(174,176,167) 0%, rgb(163,165,156) 61%, rgb(141,143,134) 100%); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
   #species .srow:not(.exp):hover .info { box-shadow: 0 1px 8px rgba(0,0,0,.6); }
   #species .srow .info .plate { margin-top: 0; }
   /* EXPANDED: mini fills the row; info overlays its top-left at the SAME (8,8) inset as the collapsed card */
@@ -70,12 +72,17 @@
   #scrubbar button { min-width: 36px; cursor: pointer; }
   #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 172px; text-align: right; color: #c7d3e0; }
   #scrubbar #sbSpeeds { display: inline-flex; gap: 4px; }
-  /* all 4 the SAME size as a single-triangle button: fixed width + overlapping triangles (negative letter-spacing;
-     padding-left compensates the trailing negative space so the glyph cluster stays centred) */
+  /* all 4 the SAME size as a single-triangle button (fixed width); the 2-4x buttons overlap their triangles */
   #scrubbar .sbSpeed { box-sizing: border-box; width: 46px; padding: 4px 0; display: inline-flex; align-items: center;
-    justify-content: center; letter-spacing: -0.34em; padding-left: 0.34em; }
-  /* single ▶ (1×): no overlap hack needed; nudge right to optically centre the left-heavy right-pointing glyph */
-  #scrubbar .sbSpeed[data-n="0"] { letter-spacing: normal; padding-left: 2px; }
+    justify-content: center; }
+  /* 2-4x: negative letter-spacing overlaps the glyphs, but a browser keeps the trailing letter-space after the LAST
+     glyph too, so the cluster centres 0.17em right of true centre. A padding-right of one full letter-space shifts the
+     centring box back left by exactly that -- and since the trailing space is always ONE letter-space regardless of
+     count, this single rule centres 2x, 3x and 4x identically. */
+  #scrubbar .sbSpeed[data-n="1"], #scrubbar .sbSpeed[data-n="2"], #scrubbar .sbSpeed[data-n="3"] {
+    letter-spacing: -0.34em; padding-right: 0.34em; }
+  /* single ▶ (1×): no overlap; nudge right to optically centre the left-heavy right-pointing glyph */
+  #scrubbar .sbSpeed[data-n="0"] { padding-left: 2px; }
   #scrubbar .sbSpeed.active { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
   /* desktop app: the main micrograph FILLS the window (the browser keeps the fixed 768^2 layout -> goldens unchanged) */
   body.desktop { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
@@ -104,7 +111,7 @@
 <div id="wrap"><div id="stage">
   <div id="canvasBox"><canvas id="cv" width="768" height="768"></canvas>
     <div class="tileLabel" id="labMain"></div>
-    <div id="fpsHud"></div>
+    <div id="fpsHud" hidden></div>   <!-- hidden by default; press F to toggle (see keydown handler) -->
   </div>
   <div id="species"></div>
 </div></div>
@@ -664,6 +671,7 @@ function resizeMain(){
   const w = Math.max(64, Math.floor(box.clientWidth)), h = Math.max(64, Math.floor(box.clientHeight));
   if (w === cv.width && h === cv.height && mainSet && mainSet.w === w && mainSet.h === h) return;
   cv.width = w; cv.height = h; CANVAS_W = w; CANVAS_H = h; mainW = w; mainH = h;
+  W = w; H = h;   // the RESTING active-view size = the canvas (renderView saves/restores around per-view overrides); input handlers (sc/toScreen/zoom-to-cursor) read these, so they must track the filled window, not stay at the parse-time 768
   const old = mainSet; mainSet = makeFBOSet(w, h); deleteFBOSet(old);
   SC_REF = (Math.min(w, h) / P.pool) * 6;   // rim-brightness ref tracks the view size (uScaleRatio stays = zoom/6)
   render();
@@ -1516,6 +1524,13 @@ let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (runnin
 // debug FPS/hair HUD: smoothed real frame-rate from rAF deltas (DOM overlay, canvas-golden-safe). In the desktop app it
 // also logs to the console every ~2s so I can read the REAL-GPU frame-rate from main's forwarded log (not just Karl's eyes).
 const fpsHud = document.getElementById('fpsHud');
+// F toggles the HUD (hidden by default). Ignore F typed into a field so seed/number inputs are unaffected.
+addEventListener('keydown', e => {
+  if (e.key !== 'f' && e.key !== 'F' || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (fpsHud) fpsHud.hidden = !fpsHud.hidden;
+});
 let _fpsPrev = 0, _fpsEMA = 0, _fpsLogT = 0;
 function tickFPS(){
   const now = performance.now();
@@ -1540,7 +1555,18 @@ document.getElementById('play').onclick = (e)=>{ running=!running; e.target.text
 document.getElementById('reset').onclick = ()=>{ seed++; build(); };
 document.getElementById('seedIn').onchange = (e)=>{ const v=parseInt(e.target.value,10); seed=Number.isFinite(v)&&v>=0?v:0; build(); };
 const speed=document.getElementById('speed'); speed.oninput=()=>{ ticksPerFrame=+speed.value; document.getElementById('speedv').textContent=ticksPerFrame+'×'; };
-cv.addEventListener('wheel', (e)=>{ e.preventDefault(); const f=Math.exp(-e.deltaY*0.0015); cam.zoom=Math.max(0.5, Math.min(60, cam.zoom*f)); }, {passive:false});
+cv.addEventListener('wheel', (e)=>{
+  e.preventDefault();
+  // zoom around the CURSOR: keep the world point under the mouse pinned on screen as the scale changes.
+  const rect = cv.getBoundingClientRect();
+  const px = (e.clientX-rect.left)/rect.width*W, py = (e.clientY-rect.top)/rect.height*H;   // cursor in backing-buffer px (robust to CSS/DPR scale)
+  const s0 = sc();
+  const wx = cam.x + (px-W/2)/s0, wy = cam.y + (py-H/2)/s0;   // world point under the cursor, before zoom
+  const f = Math.exp(-e.deltaY*0.0015);
+  cam.zoom = Math.max(0.5, Math.min(60, cam.zoom*f));
+  const s1 = sc();
+  cam.x = wx - (px-W/2)/s1; cam.y = wy - (py-H/2)/s1;         // re-centre so that same world point stays under the cursor
+}, {passive:false});
 let dragging=false, lastX=0, lastY=0;
 cv.addEventListener('mousedown', (e)=>{ dragging=true; lastX=e.clientX; lastY=e.clientY; cv.classList.add('drag'); });
 window.addEventListener('mouseup', ()=>{ dragging=false; cv.classList.remove('drag'); });
