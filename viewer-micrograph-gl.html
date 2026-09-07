@@ -74,6 +74,8 @@
      padding-left compensates the trailing negative space so the glyph cluster stays centred) */
   #scrubbar .sbSpeed { box-sizing: border-box; width: 46px; padding: 4px 0; display: inline-flex; align-items: center;
     justify-content: center; letter-spacing: -0.34em; padding-left: 0.34em; }
+  /* single ▶ (1×): no overlap hack needed; nudge right to optically centre the left-heavy right-pointing glyph */
+  #scrubbar .sbSpeed[data-n="0"] { letter-spacing: normal; padding-left: 2px; }
   #scrubbar .sbSpeed.active { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
   /* desktop app: the main micrograph FILLS the window (the browser keeps the fixed 768^2 layout -> goldens unchanged) */
   body.desktop { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
@@ -905,13 +907,19 @@ function emitHair(rx, ry, nx, ny, len, wid, theta, bright){
   hairInst[hio++]=rx; hairInst[hio++]=ry; hairInst[hio++]=nx; hairInst[hio++]=ny;
   hairInst[hio++]=len; hairInst[hio++]=wid; hairInst[hio++]=theta; hairInst[hio++]=bright;
 }
+// COUNT-LOD: strand spacing has a screen-space floor. World spacing P.hairSpace × S = on-screen spacing; when that drops
+// below MIN_HAIR_PX (zoomed out, where strands are sub-pixel and just melt into the rim) widen the world spacing so the
+// on-screen spacing stays >= MIN_HAIR_PX -> far fewer strands generated/uploaded/drawn, no visible change. At full zoom
+// (S large) MIN_HAIR_PX/S -> 0 so P.hairSpace wins and density is untouched. window.__hairMinPx overrides (0 = LOD off).
+const MIN_HAIR_PX = 2.0;
+const effHairSpace = (S) => Math.max(P.hairSpace, ((typeof window!=='undefined' && window.__hairMinPx!=null) ? window.__hairMinPx : MIN_HAIR_PX) / Math.max(S, 1e-6));
 // hairs radiating OUTWARD from a rounded cap (mouth / tip / shoulder): a fan of strands around the dome outline.
 // A,B = cap base corners (screen); (ax,ay) = outward axis (screen); capLenScreen = cap bulge; radWorld = cap thickness.
 function emitCapHairs(A, B, ax, ay, capLenScreen, radWorld, red, grow, fade, vArc, vx, vy, S){
   const cx=(A[0]+B[0])*0.5, cy=(A[1]+B[1])*0.5, hx=(B[0]-A[0])*0.5, hy=(B[1]-A[1])*0.5;
   const capLenW = capLenScreen / Math.max(S, 1e-6);
   const arcW = Math.PI * (radWorld + capLenW) * 0.5;          // half-ellipse perimeter (world) around the cap
-  const K = Math.max(2, Math.round(arcW / P.hairSpace));      // SAME spacing (world units) as the side hairs
+  const K = Math.max(2, Math.round(arcW / effHairSpace(S)));  // SAME (screen-floored) spacing as the side hairs
   const lenS = P.hairLen * (radWorld/3) * red * grow * S, widS = Math.max(0.25, P.hairWid*S);
   const beat = P.hairSway * Math.sin(vArc*P.hairWave - hairTime*P.hairBeat), hb = grow*fade, IN = 0.88;
   for (let i=0;i<K;i++){
@@ -974,7 +982,7 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   const grow = smoothstep(P.hairGrow, Math.min(0.99, P.hairGrow + 0.4), g);
   if (P.hair > 0 && part.red > 0.01 && grow > 0.001 && hairLOD > 0.01){
     const red = part.red, gLen = (part.length || 1) * g;   // grown segment length -> even hair spacing on babies too
-    const n = Math.max(1, Math.round(gLen / P.hairSpace));
+    const n = Math.max(1, Math.round(gLen / effHairSpace(S)));   // COUNT-LOD: screen-space spacing floor (see effHairSpace)
     const widS = Math.max(0.25, P.hairWid * S);
     const vx = part.velocity ? part.velocity.x : 0, vy = part.velocity ? part.velocity.y : 0;   // per-SEGMENT velocity
     for (let h=0; h<n; h++){
