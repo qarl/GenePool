@@ -48,3 +48,32 @@ test('keyframe thinning: count stays <= budget, keyframe-0 + newest kept, recons
         } finally { r.close(); }
     } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// Regression (Karl, 2026-09-06): the stride must be DERIVED from the span each thin, never a permanent ratchet. The old
+// `keyframeStride *= 2` only coarsened; across many resume/relaunch cycles it climbed far past what the frontier needed
+// (observed live: stride 512 on a 7.6M-tick run -> multi-hour scrub gaps). Poison the stride high, resume, and prove the
+// next thin SELF-CORRECTS it back down (even spread) instead of ratcheting to 1024.
+test('keyframe thinning: stride self-corrects from an over-coarsened value (no permanent ratchet)', async () => {
+    const { generateRun } = await import('../../tools/scrub/run-gen.mjs');
+    const { openRunReader } = await import('../../tools/events/run-db.mjs');
+    const { DatabaseSync } = require('node:sqlite');
+    const dir = mkdtempSync(join(tmpdir(), 'gp-thin2-'));
+    const path = join(dir, 'run.db');
+    const SEED = 7, N = 200, POOL = 3000, KEYF = 100, BUDGET = 20, TICKS = 12000;
+    const opts = { keyframeInterval: KEYF, statsInterval: KEYF, tickThrottle: 100, keyframeBudget: BUDGET, n: N, pool: POOL };
+    try {
+        generateRun(path, SEED, { ...opts, ticks: 6000 });
+        { const db = new DatabaseSync(path); db.prepare('INSERT OR REPLACE INTO run_meta (k,v) VALUES (?,?)').run('keyframeStride', '512'); db.close(); }   // simulate an over-ratcheted stride
+        generateRun(path, SEED, { ...opts, resume: true, ticks: TICKS });                                                                                    // resume -> next thin must self-correct
+        const r = openRunReader(path);
+        try {
+            const ticks = r.db.prepare('SELECT tick FROM snapshots ORDER BY tick').all().map(x => x.tick);
+            const n = ticks.length;
+            assert.ok(n <= BUDGET && n >= 5, `count ${n} must be a healthy [5,${BUDGET}] (a ratchet would over-thin to ~2)`);
+            const gaps = []; for (let i = 1; i < n; i++) gaps.push(ticks[i] - ticks[i - 1]);
+            assert.ok(Math.max(...gaps) <= TICKS / 3, `stride self-corrected: max gap ${Math.max(...gaps)} <= ${(TICKS / 3) | 0}`);
+            const stride = parseInt(r.db.prepare('SELECT v FROM run_meta WHERE k=?').get('keyframeStride').v, 10);
+            assert.ok(stride < 512, `stride derived DOWN from the poisoned 512 to fit the span, got ${stride}`);
+        } finally { r.close(); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+});

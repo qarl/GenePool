@@ -85,19 +85,29 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
     // Keyframe budget (Karl: 500). Keyframes are just restore anchors -- any tick is reachable by restore-nearest +
     // resim -- so they can be thinned freely. Keep an EVEN SPREAD across the WHOLE timeline (Karl): keyframes live on a
     // uniform grid of KEYFRAME_BASE*stride ticks (tick 0 is always on it), plus the newest. When the count exceeds the
-    // budget, DOUBLE the stride and drop everything off the coarser grid -- so the grid coarsens UNIFORMLY as the run
-    // grows and every era keeps its keyframes (no dense-recent bias, no deleted early history). Count stays ~budget.
+    // budget, DERIVE the coarsest-necessary stride FROM THE CURRENT SPAN and drop everything off that grid -- so the grid
+    // is always exactly as coarse as the frontier needs and no coarser (every era keeps its keyframes; count stays ~budget).
+    //
+    // Bug fix (Karl, 2026-09-06): this used to `keyframeStride *= 2` -- a permanent RATCHET. It only ever coarsened and
+    // never re-derived, so across many resume/relaunch cycles (each session generating a burst -> one thin -> one doubling)
+    // the stride climbed far past what the frontier warranted (observed: stride 512 on a 7.6M-tick run that needs 8), which
+    // deleted most keyframes and left multi-hour scrub gaps. Deriving from the span each time is self-correcting: it thins
+    // ONLY when over budget, never over-coarsens, and a run that was previously over-thinned re-densifies going forward.
     const KEYFRAME_BUDGET = meta.keyframeBudget || 500;
     const KEYFRAME_BASE = meta.keyframeInterval || parseInt(getMeta('keyframeInterval') || '2000', 10) || 2000;
     if (!resuming) setMeta('keyframeBudget', KEYFRAME_BUDGET);
-    let keyframeStride = parseInt(getMeta('keyframeStride') || '1', 10) || 1;   // grid coarseness (resume-safe)
+    let keyframeStride = parseInt(getMeta('keyframeStride') || '1', 10) || 1;   // grid coarseness (re-derived on each thin)
     const countSnaps = db.prepare('SELECT COUNT(*) c FROM snapshots');
     const maxTickStmt = db.prepare('SELECT MAX(tick) m FROM snapshots');
     const thinGridStmt = db.prepare('DELETE FROM snapshots WHERE (tick / ?) % ? != 0 AND tick != ?');   // keep grid + newest
     function thinIfNeeded() {
-        if (countSnaps.get().c <= KEYFRAME_BUDGET) return;
+        if (countSnaps.get().c <= KEYFRAME_BUDGET) return;   // thin ONLY when the count actually exceeds the budget
         const maxT = maxTickStmt.get().m;
-        keyframeStride *= 2;
+        // smallest power-of-2 stride whose uniform grid over [0,maxT] fits the budget (grid ~= floor(maxT/(BASE*stride))+1,
+        // +1 for the newest). Derived from the span every time -> can't over-coarsen, and self-corrects a prior over-thin.
+        let stride = 1;
+        while (Math.floor(maxT / (KEYFRAME_BASE * stride)) + 2 > KEYFRAME_BUDGET) stride *= 2;
+        keyframeStride = stride;
         db.exec('BEGIN');
         try { thinGridStmt.run(KEYFRAME_BASE, keyframeStride, maxT); setMetaStmt.run('keyframeStride', String(keyframeStride)); db.exec('COMMIT'); }
         catch (err) { db.exec('ROLLBACK'); throw err; }
