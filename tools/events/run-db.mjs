@@ -158,6 +158,10 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
 // ---- READER (main; Phase 3/4 opens this read-only) ---------------------------------------------------------------
 export function openRunReader(path, { readOnly = true } = {}) {
     const db = new DatabaseSync(path, { readOnly });
+    // Wait out a brief writer lock instead of failing "database is locked". This matters for an EXTINCT run: the generator
+    // resumes it, writes nothing (0 living -> loop skipped), then finish() checkpoints/closes -- a short exclusive window the
+    // read-only reader would otherwise hit while opening. 5s covers it; a live run never finishes so never conflicts.
+    db.exec('PRAGMA busy_timeout = 5000');
     const qFrontier = db.prepare(`SELECT v FROM run_meta WHERE k = 'frontier'`);
     const qMeta = db.prepare('SELECT v FROM run_meta WHERE k = ?');
     // nearest keyframe / stats at or before a tick (clamped to frontier by the callers below)
