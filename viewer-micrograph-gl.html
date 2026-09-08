@@ -446,7 +446,8 @@ void main(){
                       : ((whichTri==0) ? ((corner==0)?0:1) : ((corner==1)?1:0));
   float u = uU[ring];
   float th=0.0, ramp=1.0;
-  if (hasMerge > 0.5){ float arc = mA0 + (mA1-mA0)*u; th = da*(1.0 - smoothstep(0.0, rw, arc)); ramp = smoothstep(0.0, rampRw, arc); }
+  if (hasMerge > 1.5){ ramp = 1.0 - smoothstep(1.0 - rampRw, 1.0, u); }   // END-fade: an under-going part (a parent tucking beneath an over-branch's cap) thins to 0 near its TIP -- symmetric to the branch base ramp
+  else if (hasMerge > 0.5){ float arc = mA0 + (mA1-mA0)*u; th = da*(1.0 - smoothstep(0.0, rw, arc)); ramp = smoothstep(0.0, rampRw, arc); }
   float bs, bc; sincos(th, bs, bc);
   vec2 Lp = bez2(sL,c1L,c2L,eL,u), Rp = bez2(sR,c1R,c2R,eR,u);
   if (hasMerge > 0.5){
@@ -907,8 +908,9 @@ function parentPos(ph, p){ const par = ph.parts[p].parent; return (par === undef
 
 // One segment's smooth (bezier-splined) tapered outline in SCREEN space (JJ geometry), plus world half-widths
 // (wStart/wEnd = thickness radii) and the gene-shaped caps. Mirrors the canvas viewer's partPoints.
-function partPointsGL(ph, p, gscale){
+function partPointsGL(ph, p, gscale, baseCap){
   const part = ph.parts[p], parIdx = part.parent, pos = part.position, ppos = parentPos(ph, p);
+  const rootLike = (p === 1) || !!baseCap;   // root mouth, OR an over-branch base (larger limb) that caps instead of welding
   let width = part.width, parentWidth = ph.parts[(parIdx>=0?parIdx:0)].width;
   if (gscale < 1){ width = width*gscale + EGG_SIZE*(1-gscale); parentWidth = parentWidth*gscale + EGG_SIZE*(1-gscale); }
   let psx = part.perpendicular.x, psy = part.perpendicular.y, pex = part.perpendicular.x, pey = part.perpendicular.y;
@@ -916,7 +918,7 @@ function partPointsGL(ph, p, gscale){
   if (p > 1 && !part.branch && parIdx >= 0){ psx += ph.parts[parIdx].perpendicular.x; psy += ph.parts[parIdx].perpendicular.y; const l = Math.hypot(psx,psy)||1; psx/=l; psy/=l; }
   if (part.child !== undefined && part.child >= 0){ pex += ph.parts[part.child].perpendicular.x; pey += ph.parts[part.child].perpendicular.y; const l = Math.hypot(pex,pey)||1; pex/=l; pey/=l; }
   const c1vx=-psy*cvl, c1vy=psx*cvl, c2vx=pey*cvl, c2vy=-pex*cvl;
-  const startW = (p===1?width:parentWidth);
+  const startW = rootLike ? width : parentWidth;   // over-branch base starts at its OWN width (solid capped limb on top), not welded to the parent
   const sPX=psx*startW, sPY=psy*startW, ePX=pex*width, ePY=pey*width;
   const T=(x,y)=>toScreen(x,y);
   const terminal = !(part.child !== undefined && part.child >= 0);
@@ -925,7 +927,7 @@ function partPointsGL(ph, p, gscale){
   const root = (p === 1);
   // ONLY the mouth (root) gets a rounded start-dome. Branch limbs instead MERGE into the trunk (thickness ramps up
   // from 0 at their base in emitStrip) -> no visible edge, a smooth fade. Sequential parts share their start edge.
-  const capLenR = root ? startW * (4/3) : 0;                                  // start-dome bulge (world), along -axis
+  const capLenR = rootLike ? startW * (4/3) : 0;                              // start-dome bulge (world): root mouth OR the over-branch base cap (Karl: cap on the larger limb)
   return {
     sL:T(ppos.x-sPX, ppos.y-sPY), c1L:T(ppos.x-sPX+c1vx, ppos.y-sPY+c1vy),
     c2L:T(pos.x-ePX+c2vx, pos.y-ePY+c2vy), eL:T(pos.x-ePX, pos.y-ePY),
@@ -967,11 +969,11 @@ function pushDome(baseA, baseB, axX, axY, capLenScreen, radWorld, t, vBase, vTip
 // GPU strip: pack ONE instance record (36 floats = 9 vec4) instead of tessellating the ribbon. Same inputs as emitStrip;
 // merge params (or zeros + hasMerge=0) baked in; rw/rampRw clamped >0 so the shader's smoothsteps never hit UB.
 let stripInst = new Float32Array(36 * 2048), sio = 0;   // grows as needed; sio/36 = parts
-function pushStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge){
+function pushStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge, endFade=0){
   if (sio + 36 > stripInst.length){ const nb=new Float32Array(stripInst.length*2); nb.set(stripInst); stripInst=nb; }
-  const hm = merge ? 1 : 0;
+  const hm = merge ? 1 : (endFade > 0 ? 2 : 0);   // 0 none, 1 branch-base ramp (merge), 2 tip end-fade (u-fraction in rampRw)
   const px = merge?merge.px:0, py = merge?merge.py:0, da = merge?merge.da:0;
-  const rw = merge?Math.max(merge.rw,1e-3):1, rampRw = merge?Math.max(merge.rampRw,1e-3):1, mA0 = merge?merge.a0:0, mA1 = merge?merge.a1:0;
+  const rw = merge?Math.max(merge.rw,1e-3):1, rampRw = merge?Math.max(merge.rampRw,1e-3):(endFade>0?Math.max(endFade,1e-3):1), mA0 = merge?merge.a0:0, mA1 = merge?merge.a1:0;
   const s=stripInst; let i=sio;
   s[i++]=pt.sL[0];s[i++]=pt.sL[1];s[i++]=pt.sR[0];s[i++]=pt.sR[1];
   s[i++]=pt.c1L[0];s[i++]=pt.c1L[1];s[i++]=pt.c2L[0];s[i++]=pt.c2L[1];
@@ -1031,9 +1033,9 @@ function emitCapHairs(A, B, ax, ay, capLenScreen, radWorld, red, grow, fade, vAr
 
 // tessellate ONE segment (part p) of a creature at the current buffer cursor. Segments of the same CHAIN are emitted
 // into the same depth slab so they still fuse seamlessly (no joint disc needed -- sequential parts share their edge).
-function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
+function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1, baseCap=false, suppressTip=false, endFade=0){
   const part = ph.parts[p];
-  const pt = partPointsGL(ph, p, g);
+  const pt = partPointsGL(ph, p, g, baseCap);
   // LOD (lod: 1 = full, ->0 for tiny on-screen creatures): the body (strip+dome) is now GPU-tessellated at FIXED resolution
   // (idle GPU -> no triangle-count LOD), but lod still drives the VISUAL fades below: hairLOD (anti-halo) + domeLOD (bulge).
   // hairs FADE OUT smoothly as the creature shrinks (no hard on/off pop). At the small end they'd just be a faint white
@@ -1058,7 +1060,7 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
   const tEnd = [ part.red, part.green, part.blue ];
   const pp = (part.parent >= 1) ? ph.parts[part.parent] : part;
   const tStart = [ pp.red, pp.green, pp.blue ];
-  pushStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge);   // GPU strip: bezier + branch bend + taper expanded in BODY_INST_VS
+  pushStrip(pt, tStart, tEnd, v0, v1, fade, blur, merge, endFade);   // GPU strip: bezier + branch bend + taper (+ tip end-fade) expanded in BODY_INST_VS
   // The strip's END is rotated by the branch BEND (in the VS), but the tip dome attaches to the RAW eL/eR/axis. On a SHORT
   // limb the bend has not eased to 0 by the tip, so apply the SAME end-bend (th at u=1, same pivot) to the dome base edge +
   // bulge axis here on the CPU -> the dome's base ring welds to the strip's end edge. Mouth dome (capLenR) = trunk root only.
@@ -1070,7 +1072,7 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
     const rot=(Pp)=>{ const dx=Pp[0]-merge.px, dy=Pp[1]-merge.py; return [merge.px+dx*c-dy*s, merge.py+dx*s+dy*c]; };
     deL=rot(pt.eL); deR=rot(pt.eR); dnx=pt.nx*c-pt.ny*s; dny=pt.nx*s+pt.ny*c;
   }
-  if (pt.terminal && domeLOD > 0.02)   pushDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur); // tip
+  if (pt.terminal && !suppressTip && domeLOD > 0.02)   pushDome(deL, deR,  dnx,  dny, capLenT*S*domeLOD, pt.wEnd*fade*rampEnd, tEnd,   v1, v1 + capLenT*domeLOD, blur); // tip (suppressed when an over-branch's base cap replaces it here)
   if (pt.capLenR > 0 && domeLOD > 0.02) pushDome(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S*domeLOD, pt.wStart*fade, tStart, v0, v0 - capLenR*domeLOD, blur); // mouth
 
   // hairs along both side edges: roots welded to the body (follow the swim), tips beat in a metachronal wave along v,
@@ -1104,7 +1106,7 @@ function tessSegment(sb, ph, p, g, S, v0, v1, fade, merge, lod=1){
     // hairs on the CAPS (heads): radiate from every rounded end -- the tip, and the mouth/branch shoulder. The tip cap
     // hairs must root on the SAME bent + thickness-ramped cap the dome draws (deL/deR/dnx/dny, wEnd*rampEnd), or they float
     // off a short/bent limb (the dome moved + thinned but the hairs stayed on the old full-width, un-bent edge).
-    if (pt.terminal)    emitCapHairs(deL, deR,  dnx,  dny, capLenT*S, pt.wEnd*rampEnd, red, grow, fade*hairLOD, v1, vx, vy, S);
+    if (pt.terminal && !suppressTip)  emitCapHairs(deL, deR,  dnx,  dny, capLenT*S, pt.wEnd*rampEnd, red, grow, fade*hairLOD, v1, vx, vy, S);
     if (pt.capLenR > 0) emitCapHairs(pt.sL, pt.sR, -pt.nx, -pt.ny, capLenR*S, pt.wStart, red, grow, fade*hairLOD, v0, vx, vy, S);
   }
 }
@@ -1117,12 +1119,12 @@ function tessFood(f){
 // buildSegs scratch: reused across creatures/frames to avoid per-frame GC churn (was ~7ms at pop 1000). chain/arc grow as
 // needed; the rank/chainLen Maps are cleared+refilled; seg records + their merge sub-objects come from a pool reset per view.
 let _bsChain = new Int32Array(64), _bsArc = new Float64Array(64);
-const _bsRank = new Map(), _bsChainLen = new Map();
+const _bsRank = new Map(), _bsChainLen = new Map(), _bsSuppress = new Set();   // per-chain depth + arc-length + tip-cap-suppressed parents (pooled, cleared per call)
 let _segPool = [], _segCur = 0;
 function segReset(){ _segCur = 0; }   // call once per renderView before its buildSegs loop
 function segAlloc(){
   let s = _segPool[_segCur++];
-  if (!s) s = _segPool[_segCur-1] = { sb:null, ph:null, p:0, g:0, S:0, fade:0, slab:0, v0:0, v1:0, merge:null, lod:0,
+  if (!s) s = _segPool[_segCur-1] = { sb:null, ph:null, p:0, g:0, S:0, fade:0, slab:0, v0:0, v1:0, merge:null, lod:0, baseCap:false, suppressTip:false, endFade:0,
                                       _m:{ a0:0, a1:0, rw:0, rampRw:0, px:0, py:0, da:0 } };
   return s;
 }
@@ -1135,8 +1137,9 @@ function buildSegs(id, sb, ph, g, fade, S, segs, lodOverride){
   // identical shape sharing one pattern. Same offset for all its parts (welding + intra-creature continuity preserved); it
   // also desyncs the hair beat per creature, which looks better. Content-addressed by id so it's stable frame to frame.
   const vOff = (((id * 2654435761) >>> 0) / 4294967296) * 600;
-  // per-chain layering, BUT the TRUNK is forced to the front and every branch one layer BEHIND it -> the trunk's gel masks
-  // the branch bases from the front (hides the merge transition). Branch limbs still layer over the body.
+  // per-chain layering: each chain gets a depth slab; a branch is ordered relative to its parent by which is WIDER where
+  // they meet (see below). The smaller one merges UNDER (its ramp hidden by the larger's gel in front); the larger sits
+  // OVER with a rounded base cap.
   if (_bsChain.length < ph.numParts){ _bsChain = new Int32Array(ph.numParts*2); _bsArc = new Float64Array(ph.numParts*2); }
   const chain = _bsChain, arc = _bsArc; chain[0] = 0; arc[0] = 0;   // reused scratch; [0] is read via parent=0, must be 0
 
@@ -1146,35 +1149,51 @@ function buildSegs(id, sb, ph, g, fade, S, segs, lodOverride){
   // T=75 calibrated so this matches the old rs/60 aggressiveness on average. Capture forces full detail via lodOverride.
   const lod = (lodOverride !== undefined) ? lodOverride : Math.max(0, Math.min(1, reach * S / 75));
   const trunkChain = chain[1];
-  const rankOf = _bsRank; rankOf.clear(); rankOf.set(trunkChain, 0); let nextRank = 1;
-  for (let p=1;p<ph.numParts;p++){ const c=chain[p]; if (!rankOf.has(c)) rankOf.set(c, nextRank++); }
   const chainLen = _bsChainLen; chainLen.clear();   // total arc-length of each chain -> how much room a limb has to fade its thickness in
   for (let p=1;p<ph.numParts;p++){ const c=chain[p]; chainLen.set(c, (chainLen.get(c)||0) + ph.parts[p].length); }
-  const trunkSlab = Math.floor(base * (K_SLABS - 1));   // whole-integer slab offsets: trunk in front, each branch >=1 behind
+  // DEPTH by SIZE, decided AT THE JUNCTION (Karl): a branch chain sits ONE slab in FRONT of what it attaches to when it's
+  // WIDER right where they meet (branch base width vs the parent part's width), else one slab BEHIND. Depth accumulates
+  // down the tree (parent depth +/-1) -> a cycle-free total order, and the cap follows the SAME decision (over -> capped).
+  const depthOf = _bsRank; depthOf.clear(); depthOf.set(trunkChain, 0);
+  const suppressTip = _bsSuppress; suppressTip.clear();   // parent parts whose own tip cap an over-branch's base cap replaces at the junction
+  for (let p=1;p<ph.numParts;p++){
+    if (chain[p] !== p || p === trunkChain) continue;   // branch BASE parts only (a branch base has chain[p]===p)
+    const par = ph.parts[p].parent, over = ph.parts[p].width > ph.parts[par].width;
+    depthOf.set(p, (depthOf.get(chain[par]) ?? 0) + (over ? -1 : 1));
+    if (over) suppressTip.add(par);   // the over-branch caps its base ON the parent's tip -> drop the parent's now-redundant tip cap
+  }
+  const trunkSlab = Math.floor(base * (K_SLABS - 1));
   for (let p=1;p<ph.numParts;p++){
     if (ph.parts[p].length <= 0) continue;
     const cid = chain[p];
-    const slab = Math.min(K_SLABS-1, trunkSlab + rankOf.get(cid));
+    const slab = Math.max(0, Math.min(K_SLABS-1, trunkSlab + (depthOf.get(cid) ?? 0)));
     const s = segAlloc();   // pooled record (no per-part object alloc)
-    s.sb=sb; s.ph=ph; s.p=p; s.g=g; s.S=S; s.fade=fade; s.slab=slab; s.v0=arc[p]+vOff; s.v1=arc[p]+vOff+ph.parts[p].length; s.lod=lod; s.merge=null;
+    s.sb=sb; s.ph=ph; s.p=p; s.g=g; s.S=S; s.fade=fade; s.slab=slab; s.v0=arc[p]+vOff; s.v1=arc[p]+vOff+ph.parts[p].length; s.lod=lod; s.merge=null; s.baseCap=false; s.suppressTip=suppressTip.has(p);
+    // symmetric fade (Karl): a TERMINAL parent tucking under an over-branch's cap thins its tip to 0 (mirrors the branch base ramp) instead of a flat cut. u-fraction ~ width*3/length near the tip.
+    s.endFade = (s.suppressTip && !(ph.parts[p].child >= 0)) ? Math.min(0.85, ph.parts[p].width * 3 / (ph.parts[p].length || 1)) : 0;
     if (cid !== trunkChain){
-      const baseArc = arc[cid], bw = ph.parts[cid].width;              // branch base part
-      const tp = ph.parts[ph.parts[cid].parent], tl = Math.hypot(tp.axis.x, tp.axis.y) || 1;   // trunk it attaches to
-      const tx = tp.axis.x/tl, ty = tp.axis.y/tl;
-      const bp = ph.parts[cid], bl = Math.hypot(bp.axis.x, bp.axis.y) || 1;                      // branch base direction
-      const bnx = bp.axis.x/bl, bny = bp.axis.y/bl;
-      let phi = Math.atan2(bny, bnx) - Math.atan2(ty, tx); phi = Math.atan2(Math.sin(phi), Math.cos(phi));
-      if (phi > Math.PI/2) phi -= Math.PI; else if (phi < -Math.PI/2) phi += Math.PI;
-      const da = -phi * Math.cos(phi);                                 // bend toward tangent, ->0 at perpendicular (no snap)
-      const pv = parentPos(ph, cid), ps = toScreen(pv.x, pv.y);
-      const a0 = arc[p] - baseArc;
-      // rw = bend-fillet span (long, keeps the smooth Y). rampRw = the thickness fade-in span. Keep it GENTLE (bw*4) so the
-      // base thickness gradient stays UNDER the rim threshold -> no junction rim line, and the cyto/grain rim (which rides on
-      // the same thickness gradient) is untouched. BUT cap rampRw at the chain's OWN length so a SHORT limb still reaches full
-      // thickness (no faded ghost) rather than ramping past its end. Long limbs (longer than bw*4) get the gentle ramp for
-      // free; only genuinely short limbs pay a steeper ramp, and they're small. (Length-aware, per Karl.)
-      const rampRw = Math.min(bw*4, Math.max(chainLen.get(cid), 1e-3));
-      const m = s._m; m.a0=a0; m.a1=a0+ph.parts[p].length; m.rw=bw*4; m.rampRw=rampRw; m.px=ps[0]; m.py=ps[1]; m.da=da; s.merge=m;
+      const par = ph.parts[cid].parent;
+      const over = ph.parts[cid].width > ph.parts[par].width;   // LARGER where they meet -> render OVER
+      if (over){
+        // LARGER -> renders OVER: a solid limb with a rounded END CAP at its base (no under-merge/ramp); the base part is
+        // treated root-like (own width + mouth-style dome). Karl: "the end cap should be placed on the larger one."
+        if (p === cid) s.baseCap = true;
+      } else {
+        // SMALLER -> renders UNDER: merge into the parent (thickness ramps in + bend toward tangent), hidden by the parent's
+        // gel in front (as before). rampRw kept gentle (bw*4) so no junction rim, but capped at the chain's own length.
+        const baseArc = arc[cid], bw = ph.parts[cid].width;
+        const tp = ph.parts[ph.parts[cid].parent], tl = Math.hypot(tp.axis.x, tp.axis.y) || 1;
+        const tx = tp.axis.x/tl, ty = tp.axis.y/tl;
+        const bp = ph.parts[cid], bl = Math.hypot(bp.axis.x, bp.axis.y) || 1;
+        const bnx = bp.axis.x/bl, bny = bp.axis.y/bl;
+        let phi = Math.atan2(bny, bnx) - Math.atan2(ty, tx); phi = Math.atan2(Math.sin(phi), Math.cos(phi));
+        if (phi > Math.PI/2) phi -= Math.PI; else if (phi < -Math.PI/2) phi += Math.PI;
+        const da = -phi * Math.cos(phi);                                 // bend toward tangent, ->0 at perpendicular (no snap)
+        const pv = parentPos(ph, cid), ps = toScreen(pv.x, pv.y);
+        const a0 = arc[p] - baseArc;
+        const rampRw = Math.min(bw*4, Math.max(chainLen.get(cid), 1e-3));
+        const m = s._m; m.a0=a0; m.a1=a0+ph.parts[p].length; m.rw=bw*4; m.rampRw=rampRw; m.px=ps[0]; m.py=ps[1]; m.da=da; s.merge=m;
+      }
     }
     segs.push(s);
   }
@@ -1580,7 +1599,7 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
     let si = 0;
     for (let k=0;k<K_SLABS;k++){
       hairInstStart[k] = hio/8; domeInstStart[k] = dio/16; stripInstStart[k] = sio/36;
-      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod); si++; }  // strips -> stripInst, domes -> domeInst, hairs -> hairInst
+      while (si<segs.length && segs[si].slab===k){ const s=segs[si]; tessSegment(s.sb, s.ph, s.p, s.g, s.S, s.v0, s.v1, s.fade, s.merge, s.lod, s.baseCap, s.suppressTip, s.endFade); si++; }  // strips -> stripInst, domes -> domeInst, hairs -> hairInst
       hairInstCount[k] = (hio/8) - hairInstStart[k]; domeInstCount[k] = (dio/16) - domeInstStart[k]; stripInstCount[k] = (sio/36) - stripInstStart[k];
       // plain (no cyto/grain) stuff for this slab: floating detritus at this depth, + food in the deepest slab
       junkStart[k] = o/9;
