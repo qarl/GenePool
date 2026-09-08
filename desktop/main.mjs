@@ -87,7 +87,7 @@ function selectSeed(seed){
           resolve({ ok: true, seed, frontier: s.reader.frontier(), runConfig: s.reader.runConfig() }); }
         catch (e){ resolve({ ok: false, error: String(e) }); }
       } else if (m.type === 'progress'){
-        if (win && !win.isDestroyed()) win.webContents.send('scrub:frontier', m.tick);
+        if (win && !win.isDestroyed()) win.webContents.send('scrub:frontier', { seed: s.seed, tick: m.tick });   // tag with the seed so the renderer drops a killed run's late frontier
       } else if (m.type === 'done'){
         if (win && !win.isDestroyed()) win.webContents.send('scrub:done', m);
       } else if (m.type === 'error' && !s.ready){ resolve({ ok: false, error: m.message }); }
@@ -136,6 +136,26 @@ ipcMain.handle('pool:load', async () => {
     filters: [{ name: 'GenePool pool', extensions: ['json'] }] });
   if (r.canceled || !r.filePaths?.[0]) return { ok: false };
   return { ok: true, data: JSON.parse(await readFile(r.filePaths[0], 'utf8')), path: r.filePaths[0] };
+});
+// K-panel visual constants -> a real file in userData (survives relaunch; localStorage does NOT, since the window's
+// loopback origin has an ephemeral port that changes each launch).
+const paramsPath = () => join(app.getPath('userData'), 'micrograph-params.json');
+ipcMain.handle('params:save', async (_e, obj) => {
+  try { await writeFile(paramsPath(), JSON.stringify(obj, null, 2)); return { ok: true, path: paramsPath() }; }
+  catch (e) { return { ok: false, error: String(e) }; }
+});
+ipcMain.handle('params:load', async () => {
+  try { return JSON.parse(await readFile(paramsPath(), 'utf8')); } catch { return null; }
+});
+// Save a recorded viewer video (WebM bytes from the renderer's MediaRecorder) to a date/time-named file in ~/Movies/GenePool.
+ipcMain.handle('video:save', async (_e, bytes) => {
+  try {
+    const dir = join(app.getPath('videos'), 'GenePool'); mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace('T', '_').replace(/:/g, '-').replace(/\..+$/, '');   // 2026-09-07_15-30-12
+    const path = join(dir, `genepool-${ts}.webm`);
+    await writeFile(path, Buffer.from(bytes));
+    return { ok: true, path };
+  } catch (e) { return { ok: false, error: String(e) }; }
 });
 ipcMain.handle('pool:recordStart', async (_e, { seed, config, snapshot }) => {
   const r = await dialog.showSaveDialog(win, { title: 'Record run to SQLite', defaultPath: 'run.db',

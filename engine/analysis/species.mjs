@@ -160,6 +160,7 @@ export function createSpeciesAnalyzer() {
 
     return {
         recompute, foldDeath, statsRow,
+        speciesIdOf: (sb) => assigned.get(sb),   // sb -> its lineage/species-row id (fixed at birth); undefined for 1-part bots
         get tracked() { return tracked; },
         get speciesList() { return speciesList; },
         get speciesById() { return speciesById; },

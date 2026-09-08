@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('pool', {
   record:         (events)   => ipcRenderer.send('pool:record', events),       // fire-and-forget event batch
   recordSnapshot: (snapshot) => ipcRenderer.invoke('pool:recordSnapshot', snapshot),
   recordStop:     ()         => ipcRenderer.invoke('pool:recordStop'),         // -> {ok, path, events}
+  saveParams:     (obj)      => ipcRenderer.invoke('params:save', obj),        // K-panel: persist to a userData file (localStorage is lost across launches -- ephemeral port -> new origin)
+  loadParams:     ()         => ipcRenderer.invoke('params:load'),             // -> saved params object | null
+  saveVideo:      (bytes)    => ipcRenderer.invoke('video:save', bytes),       // WebM bytes -> a date/time-named file in ~/Movies/GenePool -> {ok, path}
   // scrub/playback: pick a seed (main starts/continues its run generator), then read the run back for playback.
   scrub: {
     select:    (seed)  => ipcRenderer.invoke('scrub:select', seed),            // -> {ok, seed, frontier, runConfig}
@@ -16,7 +19,7 @@ contextBridge.exposeInMainWorld('pool', {
     keyframe:  (t)     => ipcRenderer.invoke('scrub:keyframe', t),            // -> {tick, snapshot} nearest <= t
     stats:     (t)     => ipcRenderer.invoke('scrub:stats', t),              // -> {tick, stats} nearest <= t
     popSeries: (opts)  => ipcRenderer.invoke('scrub:popSeries', opts),        // -> [{tick,pop,food}] downsampled
-    onFrontier:(cb)    => ipcRenderer.on('scrub:frontier', (_e, tick) => cb(tick)),
+    onFrontier:(cb)    => ipcRenderer.on('scrub:frontier', (_e, msg) => cb(msg)),   // msg = { seed, tick }
     onDone:    (cb)    => ipcRenderer.on('scrub:done', (_e, m) => cb(m)),
   },
 });

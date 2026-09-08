@@ -6,7 +6,8 @@
 <style>
   @font-face { font-family: 'OCR A'; src: url('fonts/OCRA.ttf') format('truetype'); font-display: swap; }   /* self-hosted, GPL/free */
   :root { color-scheme: dark; }
-  body { margin: 0; background: #0b0e13; color: #cfd6e0; font: 13px/1.5 system-ui, sans-serif; }
+  body { margin: 0; background: #0b0e13; color: #cfd6e0; font: 13px/1.5 "OCR A", ui-monospace, "SF Mono", Menlo, monospace; }
+  button, input, select, textarea, h1 { font-family: inherit; }   /* whole app uses OCR A ("our new font"), self-hosted above */
   header { padding: 8px 14px; background: #11161f; border-bottom: 1px solid #1e2733; }
   .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
   .row + .row { margin-top: 8px; }
@@ -14,6 +15,13 @@
   label { display: inline-flex; gap: 6px; align-items: center; user-select: none; font-size: 12px; }
   button { background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
   button:hover { background: #24344a; }
+  /* video record button: a red circle icon; pulses while recording */
+  .vidrec { display: inline-flex; align-items: center; justify-content: center; }   /* sized with the speed buttons (see #scrubbar rule) */
+  .vidrec::before { content: ''; width: 12px; height: 12px; border-radius: 50%; background: #e03b3b; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+  .vidrec[hidden] { display: none; }   /* author display:inline-flex beats UA [hidden] -> override so it stays hidden in the browser */
+  .vidrec.recording::before { animation: recpulse 1s ease-in-out infinite; }
+  @keyframes recpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+  body.desktop #seedLabel { display: none; }   /* desktop: the bottom-bar SEED/FILE toggle owns seed selection */
   input[type=number] { width: 66px; background: #0b0e13; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 3px 6px; }
   .hud { margin-left: auto; font-variant-numeric: tabular-nums; color: #8fa0b5; }
   .hud b { color: #cfd6e0; font-weight: 600; }
@@ -27,20 +35,29 @@
   #species { width: 256px; height: 768px; overflow-y: auto; scrollbar-gutter: stable; line-height: normal;
     background: #0b0e13; border-radius: 12px; padding: 0 0 4px; box-sizing: border-box; }   /* scrollable list of ALL species; no top pad -> first card sits flush with the canvas top */
   #species .srow:first-child { margin-top: 0; }   /* first entry's top aligns perfectly with the top of the main view */
-  /* NO padding: card + mini fill the row (same width); margin gives the gap+inset. So collapsed & expanded are the
-     same width, and the info sits at the SAME (8,8) inset in both -> it lines up when you expand/collapse. */
-  #species .srow { position: relative; margin: 6px 8px; cursor: pointer; }
-  #species .srow .info { color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }
-  /* COLLAPSED = a little viewer card, FULL row width (= the expanded mini): the SAME backlit field vignette the live
-     micrograph draws -- warm-white centre rgb(172,173,165) (= vec3(.99,1,.95)*uField) darkening radially to the edges. */
-  #species .srow:not(.exp) .info { display: block; padding: 8px; border-radius: 12px;
-    background: radial-gradient(circle at 50% 50%, rgb(174,176,167) 0%, rgb(163,165,156) 61%, rgb(141,143,134) 100%); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
-  #species .srow:not(.exp):hover .info { box-shadow: 0 1px 8px rgba(0,0,0,.6); }
+  /* The row is a SINGLE grid cell holding both the info and the mini, STACKED. Collapsed: the mini is clipped to 0 and
+     the card (the row's field-vignette bg) shows, sized by the info. Expanded: the mini reveals to the square and the
+     info overlays its top-left at the SAME (8,8) inset -> it lines up as it opens/closes. The card bg is the SAME backlit
+     field vignette the live micrograph draws -- warm-white centre rgb(174,176,167) darkening radially to the edges. */
+  /* The row IS the live mini "display". It GROWS: the mini fills the row and its height animates from a small collapsed
+     box to a full square (100cqw); object-fit:fill squashes the square render into the current rect, so the backlit
+     vignette always fills + re-centres in the visible rectangle -- it reads as the display growing. --srow-bg (the same
+     field vignette, gain/gamma-toned) shows behind until the mini has rendered. Info overlays the top-left in both states. */
+  #species .srow { position: relative; margin: 6px 8px; cursor: pointer; container-type: inline-size; border-radius: 12px; overflow: hidden;
+    background: var(--srow-bg, radial-gradient(ellipse at 50% 50%, rgb(174,176,167) 0%, rgb(163,165,156) 61%, rgb(141,143,134) 100%)); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+  #species .srow:hover { box-shadow: 0 1px 8px rgba(0,0,0,.6); }
+  #species .srow > .info { position: absolute; top: 8px; left: 8px; z-index: 1; box-sizing: border-box;
+    color: #000; font-family: "OCR A", ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.15; }
   #species .srow .info .plate { margin-top: 0; }
-  /* EXPANDED: mini fills the row; info overlays its top-left at the SAME (8,8) inset as the collapsed card */
-  #species .srow.exp .info { position: absolute; top: 8px; left: 8px; z-index: 1; }
-  #species .srow .miniwrap { width: 100%; aspect-ratio: 1 / 1; }
-  #species .srow canvas.mini { display: block; width: 100%; height: 100%; border-radius: 12px; }
+  #species .srow > .miniwrap { height: 66px; overflow: hidden; transition: height 340ms cubic-bezier(0.6, 0, 0.9, 0.1); }
+  #species .srow.exp > .miniwrap { height: 100cqw; }   /* the "screen" grows to a square (= row width); the --srow-bg vignette shows the whole time */
+  #species .srow .miniclip { height: 100cqw; }         /* the square render area, top-anchored + clipped by the growing miniwrap (NOT scaled) */
+  #species .srow canvas.mini { display: block; width: 100%; height: 100%; border-radius: 12px;
+    opacity: 0; transition: opacity 340ms cubic-bezier(0.6, 0, 0.9, 0.1); }   /* swimmer + effects FADE IN as the viewer comes online; collapsed = vignette only */
+  #species .srow.exp canvas.mini { opacity: 1; }
+  /* a NEW species row fades in as the rows below slide down (FLIP) to make room */
+  #species .srow.entering { animation: rowIn 340ms cubic-bezier(.6,0,.9,.1); }
+  @keyframes rowIn { from { opacity: 0; } to { opacity: 1; } }
   /* species-tile count labels: HTML overlay over the right column (NOT drawn into the canvas, so goldens stay text-free) */
   /* science-lab label: black, no shadow, technical monospace (IBM Plex Mono) -> reads like specimen data */
   .tileLabel { position: absolute; left: 12px; text-align: left; pointer-events: none; line-height: 1.25;
@@ -61,20 +78,26 @@
     background-repeat: no-repeat; background-position: center; background-size: 18px 20px; }
   #labMain { top: 12px; left: 12px; }   /* total population, top-LEFT of the main view (anchored to #canvasBox) */
   /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
-  #fpsHud { position: absolute; top: 12px; right: 12px; z-index: 5; pointer-events: none; font: 11px ui-monospace, "SF Mono", Menlo, monospace;
+  #fpsHud { position: absolute; top: 12px; right: 12px; z-index: 5; pointer-events: none; font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace;
     color: #7fd0a0; background: #0b0e13cc; padding: 2px 7px; border-radius: 5px; font-variant-numeric: tabular-nums; }
   /* scrub/playback bottom bar (desktop only) */
   #scrubbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: flex; align-items: center; gap: 14px;
     padding: 8px 16px; background: #0d1117f2; border-top: 1px solid #1e2733; backdrop-filter: blur(4px);
-    font: 12px system-ui, -apple-system, sans-serif; color: #9fb0c3; }
+    font: 12px "OCR A", ui-monospace, "SF Mono", Menlo, monospace; color: #9fb0c3; }
   #scrubbar label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   #scrubbar #sbSlider { flex: 1; min-width: 120px; }
   #scrubbar button { min-width: 36px; cursor: pointer; }
+  #scrubbar #sbSource { display: inline-flex; align-items: center; gap: 6px; }
+  #scrubbar #sbModeToggle { min-width: 52px; font-weight: 600; letter-spacing: 0.06em; }   /* the SEED/FILE toggle */
+  #scrubbar #sbFileBtns { display: inline-flex; gap: 4px; }
+  #scrubbar #sbFileBtns[hidden] { display: none; }   /* author display:inline-flex beats the UA [hidden] rule -> override so SEED mode hides LOAD/SAVE */
   #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 172px; text-align: right; color: #c7d3e0; }
-  #scrubbar #sbSpeeds { display: inline-flex; gap: 4px; }
-  /* all 4 the SAME size as a single-triangle button (fixed width); the 2-4x buttons overlap their triangles */
-  #scrubbar .sbSpeed { box-sizing: border-box; width: 46px; padding: 4px 0; display: inline-flex; align-items: center;
-    justify-content: center; }
+  #scrubbar #sbSpeeds { display: inline-flex; align-items: center; gap: 4px; }
+  /* record + play + all FF buttons: ONE identical size, glyphs flex-centred (line-height:1 removes the line-box slack that
+     was throwing the play triangle off vertically). */
+  #scrubbar .sbSpeed, #scrubbar .vidrec { box-sizing: border-box; width: 44px; height: 30px; min-width: 44px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; }   /* NOT OCR-A: it lacks the ▶ glyph, and mixing its line metrics with the fallback glyph threw the triangle off vertically */
   /* 2-4x: negative letter-spacing overlaps the glyphs, but a browser keeps the trailing letter-space after the LAST
      glyph too, so the cluster centres 0.17em right of true centre. A padding-right of one full letter-space shifts the
      centring box back left by exactly that -- and since the trailing space is always ONE letter-space regardless of
@@ -92,6 +115,19 @@
   body.desktop #cv { width: 100%; height: 100%; border-radius: 12px; box-shadow: none; }
   body.desktop #species { height: auto; align-self: stretch; }   /* list keeps its 256px width; fills the height */
   body.desktop #scrubbar { position: static; }                    /* in normal flow at the bottom (not overlaying the fill) */
+  /* live constants editor (K): a tall thin fixed column on the LEFT. Scroll region + pinned buttons. */
+  #kpanel { position: fixed; top: 8px; left: 8px; bottom: 8px; width: 214px; z-index: 60; display: flex; flex-direction: column;
+    background: #0d1117f2; border: 1px solid #1e2733; border-radius: 10px; backdrop-filter: blur(4px);
+    font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace; color: #9fb0c3; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
+  #kpanel[hidden] { display: none; }   /* author display:flex beats the UA [hidden] rule -> MUST override explicitly */
+  #kpanelRows { flex: 1; overflow-y: auto; scrollbar-gutter: stable; padding: 8px 8px 4px; }
+  #kpanel .krow { display: grid; grid-template-columns: 56px 1fr 46px; align-items: center; gap: 5px; margin-bottom: 3px; }
+  #kpanel .klabel { color: #8fa0b5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #kpanel .krow input[type=range] { width: 100%; min-width: 0; margin: 0; }
+  #kpanel .krow input[type=number] { width: 46px; background: #0b0e13; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 5px; padding: 2px 3px; font: 10px "OCR A", ui-monospace, Menlo, monospace; }
+  #kpanelBtns { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #1e2733; }
+  #kpanelBtns button { flex: 1; background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 6px 4px; cursor: pointer; font-size: 11px; }
+  #kpanelBtns button:hover { background: #24344a; }
 </style>
 </head>
 <body>
@@ -100,11 +136,10 @@
     <h1>GenePool · micrograph <span style="color:#5c6b80">· WebGL2</span></h1>
     <button id="play">Pause</button>
     <button id="reset">Reset</button>
-    <label>Seed <input id="seedIn" type="number" min="0" step="1" value="1"></label>
+    <label id="seedLabel">Seed <input id="seedIn" type="number" min="0" step="1" value="1"></label>   <!-- browser only; desktop uses the bottom-bar SEED/FILE toggle -->
+
     <label>Speed <input id="speed" type="range" min="1" max="60" value="3"> <span id="speedv">3×</span></label>
-    <!-- desktop-only: real file save/load + SQLite snapshot recording (shown only in the Electron app) -->
-    <span id="desktopCtl" hidden><button id="save">Save</button> <button id="load">Load</button>
-      <button id="record">● Record</button> <span id="recinfo" class="hud"></span></span>
+
   </div>
   <div class="row"><span id="err"></span> <span style="color:#5c6b80">scroll = zoom · drag = pan</span></div>
 </header>
@@ -116,8 +151,14 @@
   <div id="species"></div>
 </div></div>
 <footer id="scrubbar" hidden>
-  <label>Seed <input id="sbSeed" type="number" min="0" step="1" value="1"></label>
+  <!-- SEED/FILE toggle: click the label to switch. SEED shows the seed input; FILE shows LOAD + SAVE (state file). -->
+  <span id="sbSource">
+    <button id="sbModeToggle" title="switch between Seed and File">SEED</button>
+    <input id="sbSeed" type="number" min="0" step="1" value="1">
+    <span id="sbFileBtns" hidden><button id="sbLoad">LOAD</button> <button id="sbSave">SAVE</button></span>
+  </span>
   <span id="sbSpeeds">
+    <button id="vidRec" class="vidrec" title="record a video of the viewer (click to start, click to stop)"></button>
     <button class="sbSpeed" data-n="0" title="play 1×">▶</button>
     <button class="sbSpeed" data-n="1" title="fast 2×">▶▶</button>
     <button class="sbSpeed" data-n="2" title="faster 4×">▶▶▶</button>
@@ -126,6 +167,14 @@
   <input id="sbSlider" type="range" min="0" max="0" value="0" step="1">
   <span id="sbTime">00:00 / 00:00</span>
 </footer>
+<!-- live visual-constants editor; toggle with the K key ("kConstants"). Rows are built from SPEC in JS. -->
+<aside id="kpanel" hidden>
+  <div id="kpanelRows"></div>
+  <div id="kpanelBtns">
+    <button id="kReset" title="revert to your last saved set">Reset to defaults</button>
+    <button id="kSave" title="make the current look your default (persists)">Save to defaults</button>
+  </div>
+</aside>
 
 <script type="module">
 import { World } from './engine/world.js';
@@ -188,10 +237,23 @@ const P = {
   wallThick: 11,    // world-boundary wall thickness (screen px at zoom 1; scales with zoom)
   wallDark: 0.2,    // darkening of the region OUTSIDE the wall (0 = none .. 1 = black)
   hairFade: 0.1,    // LOD hair fade-out band width (larger = hairs fade over a wider zoom range = gentler)
+  // --- final tone (POST_FS, applies to the main view AND the species minis) + license-plate brightness (DOM) ---
+  gain: 1.0,        // output brightness multiply (1 = identity)
+  gamma: 1.0,       // output gamma (1 = identity; >1 lifts midtones)
+  plateBg: 0.74,    // species license-plate cell background brightness (oklch L, 0..1)
+  plateInk: 0.0,    // species license-plate LETTER brightness (0 = black .. 1 = white)
 };
+// Factory snapshot for the K-panel Reset baseline. MUST be taken here, BEFORE any localStorage merge (else Reset +
+// the golden capture would key off a saved set instead of the baked look). See docs/PLAN-kconstants-panel.md.
+const DEFAULTS = { ...P };
 
 let seed = 1, world = null, running = true, ticksPerFrame = 3;
 let cam = { x: P.pool/2, y: P.pool/2, zoom: 6 };
+// --- swimmer selection + camera animation (see docs/PLAN-swimmer-selection.md) ---
+let selectedSb = null;            // the selected/tracked swimbot (a live World object; nulled on death/deselect/world-rebuild)
+let selectionOpenedId = null;     // species-row id that selection auto-opened (provenance, so deselect closes only that one)
+// camAnim.phase: 'idle' | 'zoom' (fixed-duration zoom-to) | 'track' (damped follow). tracking = keep following after zoom-to.
+let camAnim = { phase: 'idle', tracking: false, t: 0, dur: 0.8, fromX: 0, fromY: 0, fromLZ: 0 };   // dur = zoom-to seconds (gentle, not whiplashy)
 function fitZoom(){ return Math.min(W, H) / P.pool; }
 function sc(){ return fitZoom() * cam.zoom; }
 let SC_REF = (VIEW_MAIN / P.pool) * 6;   // reference scale (main view @ default zoom) -> rim brightness normalized to it; reset in build()
@@ -502,10 +564,12 @@ uniform sampler2D uScene, uBloom; uniform float uStrength;
 uniform ivec2 uOrigin;     // composite: this view fills a REGION of the canvas -> map window fragcoord back to view texels
 uniform vec2 uViewSize;    // view size (px) for the rounded-corner mask
 uniform float uRound;      // corner radius (px); same for every view so all four match
+uniform float uGain, uGamma;   // final tone (both main + minis): brightness gain then gamma, BEFORE the corner mask
 out vec4 frag;
 void main(){
   ivec2 ip = ivec2(gl_FragCoord.xy) - uOrigin;
   vec3 c = texelFetch(uScene, ip, 0).rgb + texelFetch(uBloom, ip, 0).rgb * uStrength;
+  if (uGain != 1.0 || uGamma != 1.0) c = pow(max(c * uGain, 0.0), vec3(1.0 / uGamma));   // identity at (1,1) -> goldens byte-identical
   if (uRound > 0.0){                                       // rounded-box SDF -> mask corners to the (black) canvas
     vec2 hs = uViewSize * 0.5;
     vec2 q = abs((vec2(ip) + 0.5) - hs) - hs + vec2(uRound);
@@ -745,7 +809,7 @@ function initGL(){
   // bloom: scene target + ping-pong blur buffers + bright/blur/composite programs
   brightProg = makeProgram(COMP_VS, BRIGHT_FS); for (const n of ['uScene','uThresh']) uBr[n]=gl.getUniformLocation(brightProg,n);
   blurProg   = makeProgram(COMP_VS, BLUR_FS);   for (const n of ['uTex','uDir'])       uBl[n]=gl.getUniformLocation(blurProg,n);
-  postProg   = makeProgram(COMP_VS, POST_FS);   for (const n of ['uScene','uBloom','uStrength','uOrigin','uViewSize','uRound']) uPo[n]=gl.getUniformLocation(postProg,n);
+  postProg   = makeProgram(COMP_VS, POST_FS);   for (const n of ['uScene','uBloom','uStrength','uOrigin','uViewSize','uRound','uGain','uGamma']) uPo[n]=gl.getUniformLocation(postProg,n);
   // scene + bloom targets live per-view inside makeFBOSet (mainSet/smallSet, created above).
 
   // world-boundary box (flat-colour quads)
@@ -761,6 +825,7 @@ function initGL(){
 // ================================================================== engine wiring (identical to the canvas viewer)
 let curConfig = null, recording = false, recBuf = [];   // desktop (Electron) SQLite recording: current config + event buffer
 function build(){
+  deselect();   // world is being rebuilt -> the selected bot ref is about to be discarded (also nulls selection for golden capture)
   errEl.textContent = '';
   if (recording) stopRecording();   // a fresh pool ends the current recording (don't mix runs in one DB)
   // the world (config + junk-zeroed founders + food) is built by the SHARED seeder so live and scrub match exactly;
@@ -797,6 +862,7 @@ async function startRecording(){
 function loadWorld(saved){
   if (recording) stopRecording();
   let w; try { w = World.restore(saved.config, saved.data); } catch(e){ errEl.textContent = 'Load failed: ' + e.message; return; }
+  deselect();   // replacing the world -> discard the stale selection
   world = w; curConfig = saved.config; if (saved.seed != null) seed = saved.seed;
   known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;
   frameCount = 0; speciesModel = createSpeciesAnalyzer();
@@ -806,12 +872,35 @@ function loadWorld(saved){
   document.getElementById('seedIn').value = seed;
 }
 if (window.pool && window.pool.isDesktop){
-  document.getElementById('desktopCtl').hidden = false;
-  document.getElementById('save').onclick = async () => { if (!world) return;
-    const r = await window.pool.save({ v:1, seed, config: curConfig, data: world.serialize() });
-    const el = document.getElementById('recinfo'); if (el && r && r.ok) el.textContent = 'saved ' + r.path.split('/').pop(); };
-  document.getElementById('load').onclick = async () => { const r = await window.pool.load(); if (r && r.ok) loadWorld(r.data); };
-  document.getElementById('record').onclick = () => { recording ? stopRecording() : startRecording(); };
+  setupVideoRecorder();   // red-circle button lives in the bottom bar (the header is hidden in desktop); records a VIDEO of the main viewer
+}
+// Record a WebM video of the MAIN canvas via MediaRecorder + captureStream; on stop, hand the bytes to the desktop app,
+// which writes a date/time-named file. Click to start (button pulses), click to stop. Desktop only (needs a file write).
+function setupVideoRecorder(){
+  const btn = document.getElementById('vidRec'); if (!btn) return;
+  let rec = null, chunks = [];
+  btn.onclick = () => {
+    if (rec){ if (rec.state !== 'inactive') rec.stop(); return; }   // second click -> stop
+    // record the COMPOSITING canvas (WebGL frame + info overlay), sized to the live canvas, filled each frame by render()
+    if (!recCanvas){ recCanvas = document.createElement('canvas'); recCtx = recCanvas.getContext('2d'); }
+    recCanvas.width = cv.width; recCanvas.height = cv.height;
+    recCompositeFrame();                       // seed one frame so the stream starts with content
+    recActive = true;
+    let stream; try { stream = recCanvas.captureStream(30); } catch (e){ recActive = false; return; }
+    const mime = (window.MediaRecorder && MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) ? 'video/webm;codecs=vp9' : 'video/webm';
+    try { rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16_000_000 }); }
+    catch (e){ rec = null; recActive = false; return; }
+    chunks = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      recActive = false; btn.classList.remove('recording');
+      const blob = new Blob(chunks, { type: 'video/webm' }); chunks = []; rec = null;
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      await window.pool?.saveVideo?.(bytes);   // desktop writes ~/Movies/GenePool/genepool-<timestamp>.webm
+    };
+    rec.start();
+    btn.classList.add('recording');
+  };
 }
 
 function parentPos(ph, p){ const par = ph.parts[p].parent; return (par === undefined || par === null || par < 0) ? ph.parts[0].position : ph.parts[par].position; }
@@ -1104,6 +1193,7 @@ let frameCount = 0;
 let speciesModel = createSpeciesAnalyzer();
 let rowMap = new Map();            // id -> the collapsed <div.srow> in #species (persists across misses; dropped on retirement)
 let expanded = new Set();          // ids currently expanded into a live mini-viewer
+let miniShowing = new Set();       // ids whose mini is rendered live = expanded PLUS rows mid close-animation (keep moving while they roll up)
 let miniCursor = 0; const MINI_BUDGET = 6;   // <=6 live minis rendered per frame; extras refresh round-robin (thumbnails)
 const DIV_MAX = 60;                              // reference mean-per-gene std that reads 100 (founding ~73 pins at 100; punchy)
 const divPct = std => Math.round(Math.min(100, Math.max(0, 100 * std / DIV_MAX)));   // mean per-gene std -> 0..100
@@ -1121,12 +1211,14 @@ const speciesPanel = document.getElementById('species');
 const CELL_W = 18, CELL_H = 20, GLYPH_SS = 4;         // CELL_* must match .cell width/height; SS = supersample for crispness
 const CELL_FONT_PX = 13, CELL_FONT_STACK = '"OCR A", ui-monospace, "SF Mono", Menlo, monospace';
 let SIG_GLYPHS_READY = false;                         // false until the bitmap stylesheet is installed
+const SIG_GLYPH_IMG = {};                             // ch -> Image of the centred glyph bitmap (for the video overlay's 2D draw)
 function measurePlateGlyphs(){
   const W = CELL_W * GLYPH_SS, H = CELL_H * GLYPH_SS;
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const cx = cv.getContext('2d', { willReadFrequently: true });   // we getImageData every glyph -> hint avoids a warning + is faster
   cx.font = `600 ${CELL_FONT_PX * GLYPH_SS}px ${CELL_FONT_STACK}`;
-  cx.textAlign = 'left'; cx.textBaseline = 'alphabetic'; cx.fillStyle = '#000';
+  const gv = Math.round(Math.max(0, Math.min(1, P.plateInk)) * 255);   // plate LETTER brightness (0=black..1=white)
+  cx.textAlign = 'left'; cx.textBaseline = 'alphabetic'; cx.fillStyle = `rgb(${gv},${gv},${gv})`;
   let css = '';
   for (const ch of SIG_ALPHA){
     cx.clearRect(0, 0, W, H);
@@ -1139,15 +1231,138 @@ function measurePlateGlyphs(){
       const sx = W/2 - (minx+maxx)/2, sy = H/2 - (miny+maxy)/2;   // shift ink centre to canvas centre (sub-pixel)
       cx.clearRect(0, 0, W, H); cx.fillText(ch, W*0.25 + sx, H*0.7 + sy);
     }
-    css += `.cell .g[data-c="${ch}"]{background-image:url(${cv.toDataURL()})}\n`;   // NOT .tileLabel-scoped (reused in .srow)
+    const url = cv.toDataURL();
+    css += `.cell .g[data-c="${ch}"]{background-image:url(${url})}\n`;   // NOT .tileLabel-scoped (reused in .srow)
+    (SIG_GLYPH_IMG[ch] ||= new Image()).src = url;                        // same bitmaps as <img> for the video-overlay 2D draw
   }
-  const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s);
+  // REPLACE a single reusable <style> (never append a new one) so re-rastering on a plate-ink change can't accumulate.
+  if (!measurePlateGlyphs._style){ measurePlateGlyphs._style = document.createElement('style'); document.head.appendChild(measurePlateGlyphs._style); }
+  measurePlateGlyphs._style.textContent = css;
   SIG_GLYPHS_READY = true;
 }
 // rasterise once the real font is loaded (else it bakes the fallback font); plates recompute every frame, so the next
 // frame picks up the bitmaps. Fall back to plain text if font loading is unavailable.
 if (document.fonts && document.fonts.load) document.fonts.load(`600 ${CELL_FONT_PX}px "OCR A"`).then(measurePlateGlyphs, measurePlateGlyphs);
 else measurePlateGlyphs();
+
+// ============================================================ live constants editor ("K" = kConstants)
+// One [name][slider][number] row per editable key in P. Sliders/uniforms are read per frame, so editing P is live.
+// Two DOM-only params need explicit re-apply: plateBg (a CSS var) + plateInk (re-rasterised glyphs). Persist to
+// localStorage; Reset reverts to the last-SAVED baseline (Model B, Karl). pool/n/food are excluded (they change the sim).
+const K_LS = 'micrographParams';
+const SPEC = [
+  { k:'field',       label:'Field',    min:0.4,  max:1,   step:0.02 },
+  { k:'density',     label:'Density',  min:0,    max:2,   step:0.05 },
+  { k:'opacity',     label:'Opacity',  min:0,    max:0.5, step:0.01 },
+  { k:'lighten',     label:'Lighten',  min:0,    max:1,   step:0.05 },
+  { k:'desat',       label:'Desat',    min:0,    max:1,   step:0.05 },
+  { k:'rim',         label:'Rim',      min:0,    max:3,   step:0.05 },
+  { k:'subsurface',  label:'Subsurf',  min:0,    max:2,   step:0.05 },
+  { k:'cyto',        label:'Cyto',     min:0,    max:2,   step:0.05 },
+  { k:'cells',       label:'Cells',    min:0.1,  max:2,   step:0.05 },
+  { k:'cytoDrift',   label:'CytoFlow', min:0,    max:0.2, step:0.005 },
+  { k:'grain',       label:'Grain',    min:0,    max:2,   step:0.05 },
+  { k:'grainScale',  label:'G.Scale',  min:0.5,  max:6,   step:0.1  },
+  { k:'junk',        label:'Junk',     min:0,    max:1,   step:0.02 },
+  { k:'junkOpacity', label:'J.Opac',   min:0,    max:2,   step:0.05 },
+  { k:'junkSoft',    label:'J.Soft',   min:0.3,  max:8,   step:0.05 },
+  { k:'hair',        label:'H.Bright', min:0,    max:2,   step:0.05 },
+  { k:'hairLen',     label:'H.Len',    min:1,    max:20,  step:0.5  },
+  { k:'hairSpace',   label:'H.Space',  min:1,    max:8,   step:0.25 },
+  { k:'hairWid',     label:'H.Wid',    min:0.05, max:1.5, step:0.05 },
+  { k:'hairSway',    label:'H.Sway',   min:0,    max:2,   step:0.05 },
+  { k:'hairBeat',    label:'H.Beat',   min:0,    max:0.3, step:0.005 },
+  { k:'hairWave',    label:'H.Wave',   min:0,    max:0.5, step:0.01 },
+  { k:'hairDrag',    label:'H.Drag',   min:0,    max:1,   step:0.02 },
+  { k:'hairLenJit',  label:'H.LenJit', min:0,    max:1,   step:0.02 },
+  { k:'hairAngJit',  label:'H.AngJit', min:0,    max:1,   step:0.02 },
+  { k:'hairGrow',    label:'H.Grow',   min:0,    max:0.9, step:0.02 },
+  { k:'bloom',       label:'Bloom',    min:0,    max:2,   step:0.05 },
+  { k:'bloomThresh', label:'B.Thresh', min:0,    max:1.5, step:0.05 },
+  { k:'deathBlur',   label:'D.Blur',   min:0,    max:6,   step:0.1  },
+  { k:'deathFadeFloor', label:'D.Fade',min:0,    max:1,   step:0.02 },
+  { k:'wallThick',   label:'Wall',     min:0,    max:40,  step:1    },
+  { k:'wallDark',    label:'Wall Dk',  min:0,    max:1,   step:0.02 },
+  { k:'hairFade',    label:'H.Fade',   min:0,    max:1,   step:0.02 },
+  { k:'gain',        label:'Gain',     min:0,    max:2,   step:0.02 },
+  { k:'gamma',       label:'Gamma',    min:0.4,  max:2.5, step:0.02 },
+  { k:'plateBg',     label:'Plate BG', min:0,    max:1,   step:0.02 },
+  { k:'plateInk',    label:'Plate Ink',min:0,    max:1,   step:0.02 },
+];
+const K_KEYS = SPEC.map(s => s.k);
+let _plateRasterQueued = false;
+function schedulePlateRaster(){   // coalesce re-raster to one per frame (a plateInk drag fires many input events)
+  if (_plateRasterQueued) return; _plateRasterQueued = true;
+  requestAnimationFrame(() => { _plateRasterQueued = false; if (SIG_GLYPHS_READY) measurePlateGlyphs(); });
+}
+// COLLAPSED species tiles are a CSS gradient (the shader never touches them), so gain/gamma must be applied to that
+// gradient in JS to match a live/expanded tile. Same tone map as POST_FS: pow(clamp(c*gain),1/gamma). Identity at (1,1).
+const CARD_STOPS = [[174,176,167,0],[163,165,156,61],[141,143,134,100]];   // base field-vignette card: rgb + gradient %
+function toneCh(c){ return Math.round(Math.pow(Math.min(1, Math.max(0, (c/255)*P.gain)), 1/Math.max(1e-4,P.gamma)) * 255); }
+function applyCardTone(){
+  const stops = CARD_STOPS.map(([r,g,b,p]) => `rgb(${toneCh(r)},${toneCh(g)},${toneCh(b)}) ${p}%`).join(', ');
+  document.documentElement.style.setProperty('--srow-bg', `radial-gradient(ellipse at 50% 50%, ${stops})`);   // ellipse: matches the uv-vignette proportions at the box's aspect (same effect distances, smaller screen)
+}
+function applyPlateStyles(){   // re-apply the DOM-side params (used on load + Reset; live edits call the pieces directly)
+  document.documentElement.style.setProperty('--plate-l', String(P.plateBg));
+  applyCardTone();
+  if (SIG_GLYPHS_READY) measurePlateGlyphs();
+}
+function applyParam(k, v){
+  P[k] = v;
+  if (k === 'plateBg') document.documentElement.style.setProperty('--plate-l', String(v));
+  else if (k === 'plateInk') schedulePlateRaster();
+  else if (k === 'gain' || k === 'gamma') applyCardTone();   // tone the collapsed cards too
+  // every other key is read per-frame in the render path -> no extra wiring needed
+}
+const kCtl = new Map();   // k -> {range, num}
+const kRows = document.getElementById('kpanelRows');
+function buildKPanel(){
+  if (!kRows) return;
+  kRows.replaceChildren(); kCtl.clear();
+  for (const sp of SPEC){
+    const row = document.createElement('div'); row.className = 'krow';
+    const lab = document.createElement('span'); lab.className = 'klabel'; lab.textContent = sp.label; lab.title = sp.k;
+    const range = document.createElement('input'); range.type='range'; range.min=sp.min; range.max=sp.max; range.step=sp.step; range.value=P[sp.k];
+    const num = document.createElement('input'); num.type='number'; num.min=sp.min; num.max=sp.max; num.step=sp.step; num.value=P[sp.k];
+    const set = (v, from) => {
+      if (!Number.isFinite(v)) return;
+      v = Math.max(sp.min, Math.min(sp.max, v));
+      if (from !== 'range') range.value = v;
+      if (from !== 'num')   num.value = v;
+      applyParam(sp.k, v);
+    };
+    range.oninput = () => set(+range.value, 'range');
+    num.oninput   = () => set(+num.value, 'num');
+    row.append(lab, range, num); kRows.appendChild(row);
+    kCtl.set(sp.k, { range, num });
+  }
+}
+function refreshControls(){ for (const sp of SPEC){ const c = kCtl.get(sp.k); if (c){ c.range.value = P[sp.k]; c.num.value = P[sp.k]; } } }
+function kSubset(obj){ const o = {}; for (const k of K_KEYS) if (typeof obj[k] === 'number') o[k] = obj[k]; return o; }
+function kReadLocal(){ try { const j = localStorage.getItem(K_LS); return j ? JSON.parse(j) : null; } catch { return null; } }
+let kBaseline = { ...DEFAULTS };   // Model B baseline; replaced by the saved set once loaded (async on desktop)
+function kReset(){ Object.assign(P, kBaseline); refreshControls(); applyPlateStyles(); }   // revert unsaved edits to the baseline
+function kSave(){
+  const s = kSubset(P); kBaseline = { ...s };
+  // Persist to a REAL FILE via the desktop app (userData/micrograph-params.json) -- the window's loopback origin uses an
+  // ephemeral port, so localStorage is wiped every launch. In a plain browser (stable origin) localStorage is the store.
+  window.pool?.saveParams?.(s);
+  try { localStorage.setItem(K_LS, JSON.stringify(s)); } catch {}
+  const b = document.getElementById('kSave'); if (b){ b.textContent = 'Saved ✓'; setTimeout(() => b.textContent = 'Save to defaults', 1200); }
+}
+document.getElementById('kReset')?.addEventListener('click', kReset);
+document.getElementById('kSave')?.addEventListener('click', kSave);
+buildKPanel();
+applyPlateStyles();
+// Load the saved set: prefer the desktop file (survives relaunch), else localStorage. Async (IPC) -> apply when it lands.
+(async () => {
+  let saved = null;
+  try { saved = await window.pool?.loadParams?.(); } catch {}
+  if (!saved) saved = kReadLocal();
+  if (saved){ const s = kSubset(saved); kBaseline = { ...s }; Object.assign(P, s); refreshControls(); applyPlateStyles(); }
+})();
+
 // render the signature as a colour barcode. Colour is a LINEAR (non-wrapping) ramp red(-1) -> green(0=mean) -> blue(+1)
 // in OKLCh -- NOT the hue WHEEL (a ring: red would wrap back through magenta). We sweep hue monotonically red(29)->
 // green(146)->blue(264) and stop, dropping the magenta arc. Value comes from the symbol's signed step ('0'=mean).
@@ -1159,7 +1374,7 @@ function plateHTML(sig){
     const v = signed / 17;                                    // [-1,1]
     const hue = (29 + (v + 1) * 117.5).toFixed(1);            // red(29) -> green(146) -> blue(264), linear, no magenta
     const g = SIG_GLYPHS_READY ? `<span class="g" data-c="${ch}"></span>` : ch;   // centred bitmap once ready, else text
-    cells += `<span class="cell" style="background:oklch(0.74 0.15 ${hue})">${g}</span>`;
+    cells += `<span class="cell" style="background:oklch(var(--plate-l,0.74) 0.15 ${hue})">${g}</span>`;   // --plate-l = P.plateBg (live)
   }
   return `<span class="plate">${cells}</span>`;
 }
@@ -1170,9 +1385,6 @@ const crowHTML = (count, life) => `<span class="crow"><span class="n">${count}</
 // diversity bar, INVERTED: 100 diversity -> 0 width, 0 diversity -> full plate width (converged species read as a long bar)
 const dbarWidth = std => (100 - (std==null ? 100 : divPct(std))) / 100 * PLATE_W;
 const dbarHTML = std => `<div class="dbar"><div class="dfill" style="width:${dbarWidth(std).toFixed(1)}px"></div></div>`;
-// offscreen-gating: a scrolled-out mini must NOT render+blit for pixels nobody sees. IO flips el._miniVisible.
-const miniObserver = speciesPanel ? new IntersectionObserver(
-  es => { for (const e of es) e.target._srow._miniVisible = e.isIntersecting; }, { root: speciesPanel }) : null;
 function makeRow(id){
   // Build the row's structure ONCE and update only changed bits (plate on sig-change, bar width, count, circles) in place.
   // Rebuilding innerHTML every frame would destroy the element mid-click (deaths/counts churn while running) -> can't expand.
@@ -1186,24 +1398,60 @@ function makeRow(id){
   const circs = document.createElement('span'); circs.className = 'circs';
   crow.appendChild(n); crow.appendChild(circs);
   info.appendChild(plateHost); info.appendChild(dbar); info.appendChild(crow);                 // ORDER: plate, bar, count+circles
-  const wrap = document.createElement('div'); wrap.className = 'miniwrap'; wrap.hidden = true; wrap._srow = el;
+  const wrap = document.createElement('div'); wrap.className = 'miniwrap';   // no `hidden`: the grid-row reveal animates open/closed (display:none would kill the transition)
+  const clip = document.createElement('div'); clip.className = 'miniclip';                   // clips the square to the animating row height
   const mini = document.createElement('canvas'); mini.className = 'mini'; mini.width = VIEW_SMALL; mini.height = VIEW_SMALL;
-  wrap.appendChild(mini); el.appendChild(info); el.appendChild(wrap);
+  clip.appendChild(mini); wrap.appendChild(clip); el.appendChild(info); el.appendChild(wrap);
   el._info = info; el._plateHost = plateHost; el._dfill = dfill; el._n = n; el._circs = circs;
-  el._wrap = wrap; el._mini = mini; el._miniCtx = mini.getContext('2d'); el._miniVisible = true; el._sig = ''; el._tier = -1;
-  if (miniObserver) miniObserver.observe(wrap);
+  el._wrap = wrap; el._mini = mini; el._miniCtx = mini.getContext('2d'); el._sig = ''; el._tier = -1;
   return el;
 }
 // Toggle a row's live mini-viewer on POINTERDOWN (not click): the list re-sorts every frame while running, so a `click`
 // (which needs press+release on compatible targets) can miss when the row moves -- pointerdown fires instantly at press,
-// immune to the wobble. Reflect both directions immediately (responsive). Multi-expand: independent toggles.
+// immune to the wobble. ONE open at a time (Karl): opening a row closes whichever was open. Adding/removing `.exp` drives
+// the CSS grid-row reveal animation; a closed row keeps its last mini frame and just rolls up.
+// The SINGLE owner of expand state (accordion: one open at a time). `expanded` is authoritative; the per-frame toggle in
+// updateSpeciesUI syncs `.exp` to it. All openers (accordion click + selection) route through here so every path animates.
+function scheduleMiniHide(id){ setTimeout(() => { if (!expanded.has(id)) miniShowing.delete(id); }, FLIP_MS + 60); }   // keep rendering through the close roll-up
+function setRowExpanded(id, open){
+  if (open){
+    if (!expanded.has(id)){ for (const oid of expanded){ rowMap.get(oid)?.classList.remove('exp'); scheduleMiniHide(oid); } expanded.clear(); expanded.add(id); }
+    miniShowing.add(id);   // render its live mini from the first reveal frame (swimmer keeps moving as it opens)
+    const el = rowMap.get(id); if (el){ el.classList.add('exp'); el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }   // if off-screen, glide it into view
+    if (selectionOpenedId != null && selectionOpenedId !== id) selectionOpenedId = null;   // accordion evicted the selection row -> drop stale provenance
+  } else {
+    expanded.delete(id); rowMap.get(id)?.classList.remove('exp');
+    scheduleMiniHide(id);   // keep the mini live+moving while it rolls up, then stop
+    if (selectionOpenedId === id) selectionOpenedId = null;
+  }
+}
 if (speciesPanel){
   speciesPanel.addEventListener('pointerdown', e => {
     const row = e.target.closest('.srow'); if (!row) return;
-    const id = +row.dataset.id; const el = rowMap.get(id);
-    if (expanded.has(id)){ expanded.delete(id); if (el){ el.classList.remove('exp'); el._wrap.hidden = true; } }
-    else { expanded.add(id); if (el){ el.classList.add('exp'); el._wrap.hidden = false; el._miniVisible = true; } }
+    const id = +row.dataset.id;
+    if (e.target.closest('.miniwrap')){   // clicked the live mini -> select the bot it shows (track it in the main view); do NOT toggle
+      const r = speciesModel.speciesById.get(id);
+      const shown = (selectedSb && speciesModel.speciesIdOf(selectedSb) === id) ? selectedSb : (r && r.t && r.t.rep);
+      if (shown && shown.getAlive && shown.getAlive() && shown._phenotype && shown._phenotype.numParts > 1) select(shown);
+      return;
+    }
+    setRowExpanded(id, !expanded.has(id));   // clicked the card -> toggle
   });
+}
+let lastOrder = [], lastFlipT = 0; const FLIP_MS = 340;
+// FLIP the species rows to `order`: measure First tops (reflow 1), reorder the DOM, measure Last tops (reflow 2), then
+// invert+play a translateY on rows that MOVED (all reads precede all writes -> 2 reflows total). New rows (no prior
+// position) are placed without animation. Rate-limited by the caller so near-tie churn can't thrash layout.
+function flipReorder(order){
+  const prev = new Map();
+  for (const el of speciesPanel.children) prev.set(+el.dataset.id, el.getBoundingClientRect().top);   // First (reflow 1)
+  for (let i = 0; i < order.length; i++){ const el = rowMap.get(order[i]); if (el && speciesPanel.children[i] !== el) speciesPanel.insertBefore(el, speciesPanel.children[i] || null); }
+  const lasts = order.map(id => { const el = rowMap.get(id); return (el && prev.has(id)) ? el.getBoundingClientRect().top : null; });   // Last (reflow 2)
+  const anim = [];
+  order.forEach((id, i) => { if (lasts[i] == null) return; const el = rowMap.get(id); const dy = Math.round(prev.get(id) - lasts[i]);
+    if (dy){ el.style.transition = 'none'; el.style.transform = `translateY(${dy}px)`; el.style.willChange = 'transform'; anim.push(el); } });
+  if (anim.length) requestAnimationFrame(() => { for (const el of anim){ el.style.transition = `transform ${FLIP_MS}ms cubic-bezier(.6,0,.9,.1)`; el.style.transform = ''; }
+    setTimeout(() => { for (const el of anim){ el.style.willChange = ''; el.style.transition = ''; } }, FLIP_MS + 40); });
 }
 function updateSpeciesUI(){
   // whole-population: plate, then the diversity bar, then count + lifespan circles. Top-left of the main view.
@@ -1214,32 +1462,44 @@ function updateSpeciesUI(){
   // for seed-rematch never appears as a "0" row.
   const live = [...speciesModel.tracked.entries()].filter(([, t]) => t.count > 0);   // [id, t]
   const lifeKey = t => t.lifeEMA ?? speciesModel.popLifeEMA ?? (MAX_LIFESPAN/2);   // no-death-yet -> pop avg (else half the cap)
-  live.sort((a, b) => b[1].count*lifeKey(b[1]) - a[1].count*lifeKey(a[1]));   // sort by population x avg-lifespan (wobbly)
+  // Sort by population x avg-lifespan, but with HYSTERESIS: near-tied rows (key within 6%) keep their PREVIOUS order, so
+  // the wobbly tail doesn't churn (which would FLIP-animate + force a layout reflow every frame). See the review panel.
+  const rankPrev = new Map(lastOrder.map((id, i) => [id, i]));
+  const keyOf = t => t.count * lifeKey(t);
+  live.sort((a, b) => { const ka = keyOf(a[1]), kb = keyOf(b[1]);
+    if (Math.abs(ka - kb) > 0.06 * Math.max(ka, kb, 1)) return kb - ka;
+    return (rankPrev.get(a[0]) ?? 1e9) - (rankPrev.get(b[0]) ?? 1e9); });
   const want = new Set();
   for (const [id] of live) want.add(id);
-  for (const [id, el] of rowMap) if (!want.has(id)){ if (el._wrap) miniObserver.unobserve(el._wrap); el.remove(); rowMap.delete(id); expanded.delete(id); }   // retired lineages
+  for (const [id, el] of rowMap) if (!want.has(id)){ el.remove(); rowMap.delete(id); miniShowing.delete(id); if (expanded.has(id)) setRowExpanded(id, false); }   // retired
   for (const [id, t] of live){                          // create rows / refresh plate only when the signature changed
     let el = rowMap.get(id);
-    if (!el){ el = makeRow(id); rowMap.set(id, el); }
-    const exp = expanded.has(id);
-    el.classList.toggle('exp', exp);                     // collapsed = info card; expanded = mini + info overlay
-    el._wrap.hidden = !exp;
+    if (!el){ el = makeRow(id); rowMap.set(id, el); el._deferExp = true;   // brand-new: leave collapsed THIS frame so 0fr paints -> it animates open next frame (S2)
+      el.classList.add('entering'); setTimeout(() => el.classList.remove('entering'), 380); }   // fade the new row into the list (rows below FLIP down to make room)
+    if (el._deferExp){ el._deferExp = false; }
+    else el.classList.toggle('exp', expanded.has(id));   // sync .exp to the authoritative `expanded` (the grid-row reveal animates it)
     if (el._sig !== t.sig){ el._plateHost.innerHTML = plateHTML(t.sig); el._sig = t.sig; }   // plate: only on signature change
     el._dfill.style.width = dbarWidth(t.divEMA).toFixed(1) + 'px';   // diversity bar (cheap style update, no DOM churn)
     el._n.textContent = t.count;
     const tier = lifeTier(t.lifeEMA);
     if (el._tier !== tier){ el._circs.innerHTML = lifeCircles(t.lifeEMA); el._tier = tier; }
   }
-  for (let i = 0; i < live.length; i++){                // minimal-move reorder to the sorted order (no-op when unchanged)
-    const el = rowMap.get(live[i][0]);
-    if (speciesPanel.children[i] !== el) speciesPanel.insertBefore(el, speciesPanel.children[i] || null);
-  }
+  // Reorder to the sorted order. New/retired rows change membership -> reorder now (place them); a pure reorder is
+  // rate-limited to one FLIP per animation so it stays smooth. FLIP animates the rows that moved.
+  const targetOrder = live.map(([id]) => id);
+  const domOrder = [...speciesPanel.children].map(el => +el.dataset.id);
+  const membershipChanged = targetOrder.length !== domOrder.length;   // a new/retired row -> reorder now (place it)
+  const orderChanged = membershipChanged || targetOrder.some((id, i) => domOrder[i] !== id);
+  if (orderChanged && (membershipChanged || performance.now() - lastFlipT >= FLIP_MS)){
+    flipReorder(targetOrder); lastFlipT = performance.now(); lastOrder = targetOrder;
+  } else if (!lastOrder.length) lastOrder = targetOrder;   // seed the order on first populate (no first-paint slide)
 }
 
 // ================================================================== render
 // Per-FRAME state, advanced ONCE per frame regardless of how many views render (main + species tiles). Hoisted out of
 // renderView so detritus drift + death-fade bookkeeping don't advance 4x. See docs/PLAN-species-viewers.md.
 function advanceFrame(){
+  if (selectedSb && !selectedSb.getAlive()) deselect();   // selected bot died in a live world (not a rebuild) -> release camera + close its mini
   const clock = world ? world.getClock() : 0;
   hairTime = clock;
   // drift the floating detritus by ELAPSED SIM TICKS (dt) -> freezes on pause, scales with speed. modulo-wrap handles
@@ -1443,6 +1703,7 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
   gl.uniform1f(uPo.uStrength, P.bloom);   // 0 => bloom (possibly stale) contributes nothing
   gl.uniform2i(uPo.uOrigin, regionX, regionY);
   gl.uniform2f(uPo.uViewSize, W, H); gl.uniform1f(uPo.uRound, roundPx);   // rounded corners (same radius on every view)
+  gl.uniform1f(uPo.uGain, P.gain); gl.uniform1f(uPo.uGamma, P.gamma);     // final tone (main + minis)
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
 
@@ -1489,6 +1750,40 @@ function renderView(viewCam, vw, vh, set, regionX, regionY, drawWall = true, rou
 
 // The whole frame: advance per-frame state once, clear the canvas, then render the main view into the left 768^2.
 // (Species tiles render into the right 256-wide column next — step 3.)
+// ---- video recording: composite the WebGL canvas + the upper-left info overlay (a DOM layer captureStream can't see)
+// onto an offscreen canvas, and record THAT. Redraw the info in 2D each frame (drawImage of cv is valid synchronously
+// right after render(), before the compositor clears the GL buffer -- same reason readPixels works there). ----
+let recActive = false, recCanvas = null, recCtx = null;
+function drawInfoOverlay(ctx){   // mirrors #labMain: population plate + diversity bar + count + lifespan circles, at (12,12)
+  if (!world || !speciesModel) return;
+  const L = 12, CW = 18, CH = 20, y = 12;
+  const sig = speciesModel.popSig || '';
+  for (let i = 0; i < sig.length; i++){
+    const ch = sig[i], idx = SIG_ALPHA.indexOf(ch), signed = idx <= 17 ? idx : idx - 36, v = signed / 17;
+    ctx.fillStyle = `oklch(${P.plateBg} 0.15 ${(29 + (v + 1) * 117.5).toFixed(1)})`;
+    ctx.fillRect(L + i * CW, y, CW, CH);
+    const img = SIG_GLYPH_IMG[ch];
+    if (img && img.complete && img.naturalWidth) ctx.drawImage(img, L + i * CW, y, CW, CH);
+  }
+  const barY = y + CH + 4, barH = 7;
+  ctx.fillStyle = 'rgba(128,128,128,0.22)'; ctx.fillRect(L, barY, 5 * CW, barH);
+  ctx.fillStyle = '#000'; ctx.fillRect(L, barY, Math.max(0, dbarWidth(speciesModel.popDivEMA)), barH);
+  const rowY = barY + barH + 5;
+  ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
+  ctx.font = '600 19px "OCR A", ui-monospace, "SF Mono", Menlo, monospace';
+  const count = String(world.getLivingSwimbotCount());
+  ctx.fillText(count, L, rowY);
+  let cx = L + ctx.measureText(count).width + 9;
+  for (let k = 0, tier = lifeTier(speciesModel.popLifeEMA); k < tier; k++, cx += 12){
+    ctx.beginPath(); ctx.fillStyle = '#35c46a'; ctx.arc(cx + 4.5, rowY + 10, 4.5, 0, Math.PI * 2); ctx.fill();
+  }
+}
+function recCompositeFrame(){
+  if (!recCtx) return;
+  recCtx.drawImage(cv, 0, 0, recCanvas.width, recCanvas.height);   // the WebGL frame (valid synchronously post-render)
+  drawInfoOverlay(recCtx);                                          // the overlay the canvas doesn't contain
+}
+
 function render(){
   if (!gl) return;
   hairsEmitted = 0;   // count strands drawn this frame (FPS HUD + __bench perf metric)
@@ -1502,34 +1797,39 @@ function render(){
   // stall) into its DOM canvas -- BEFORE main, so main's full-768 render overpaints the corner. Offscreen-gated + a
   // per-frame budget (round-robin) so many open viewers can't blow the frame; a species in a miss (absent from
   // speciesById but still tracked) freezes its last mini frame.
-  if (expanded.size){
-    const vis = [];
-    for (const id of expanded){ const el = rowMap.get(id); if (el && el._miniVisible) vis.push(id); }
+  if (miniShowing.size){   // ONLY open + mid-animation rows render (collapsed rows are vignette-only via --srow-bg -> cheap); the mini fades in over it
+    const selSpecies = (selectedSb && selectedSb.getAlive()) ? speciesModel.speciesIdOf(selectedSb) : null;   // resolve ONCE
+    const vis = [...miniShowing].filter(id => rowMap.has(id));
     const n = Math.min(vis.length, MINI_BUDGET);
     for (let k = 0; k < n; k++){
       const id = vis[(miniCursor + k) % vis.length];
-      const r = speciesModel.speciesById.get(id); if (!r || !r.t) continue;        // miss -> freeze last frame
-      const rep = r.t.rep; if (!rep || !rep.getAlive()) continue;     // stable specimen (re-established in computeSpecies)
-      const c = rep.getPosition();
-      renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, 0, 0, false, 0, rep);
+      const r = speciesModel.speciesById.get(id); if (!r || !r.t) continue;        // miss -> keep last frame
+      const showBot = (id === selSpecies) ? selectedSb : r.t.rep;                   // show the SELECTED individual, else the species rep
+      if (!showBot || !showBot.getAlive()) continue;
+      const c = showBot.getPosition();
+      renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, 0, 0, false, 0, showBot);
       const el = rowMap.get(id);
       if (el && el._miniCtx) el._miniCtx.drawImage(cv, 0, CANVAS_H - VIEW_SMALL, VIEW_SMALL, VIEW_SMALL, 0, 0, VIEW_SMALL, VIEW_SMALL);
     }
     if (vis.length) miniCursor = (miniCursor + n) % vis.length;
   }
   renderView(cam, mainW, mainH, mainSet, 0, 0, true, mainRound);   // main micrograph LAST (fills the window on desktop); overpaints the scratch corner
+  if (recActive) recCompositeFrame();   // video record: copy this frame + the info overlay onto the recording canvas
 }
 
 let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (running only gates ticks, not render)
 // debug FPS/hair HUD: smoothed real frame-rate from rAF deltas (DOM overlay, canvas-golden-safe). In the desktop app it
 // also logs to the console every ~2s so I can read the REAL-GPU frame-rate from main's forwarded log (not just Karl's eyes).
 const fpsHud = document.getElementById('fpsHud');
-// F toggles the HUD (hidden by default). Ignore F typed into a field so seed/number inputs are unaffected.
+// F toggles the FPS HUD, K toggles the constants panel (both hidden by default). Ignore keys typed into a field so
+// seed/number inputs are unaffected, and ignore modifier combos.
 addEventListener('keydown', e => {
-  if (e.key !== 'f' && e.key !== 'F' || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-  if (fpsHud) fpsHud.hidden = !fpsHud.hidden;
+  const key = e.key.toLowerCase();
+  if (key === 'f'){ if (fpsHud) fpsHud.hidden = !fpsHud.hidden; }
+  else if (key === 'k'){ const kp = document.getElementById('kpanel'); if (kp) kp.hidden = !kp.hidden; }
 });
 let _fpsPrev = 0, _fpsEMA = 0, _fpsLogT = 0;
 function tickFPS(){
@@ -1545,6 +1845,7 @@ function loop(){
   if (loopStopped) return;
   if (running && world){ for (let i=0;i<ticksPerFrame;i++) world.tick(); }
   if (recording && recBuf.length && window.pool){ window.pool.record(recBuf); recBuf = []; }   // flush this frame's events to the recorder
+  updateCamera(1/60);   // animate zoom-to / follow the selected swimmer (no-op when nothing selected); before render
   render();
   tickFPS();
   requestAnimationFrame(loop);
@@ -1555,22 +1856,106 @@ document.getElementById('play').onclick = (e)=>{ running=!running; e.target.text
 document.getElementById('reset').onclick = ()=>{ seed++; build(); };
 document.getElementById('seedIn').onchange = (e)=>{ const v=parseInt(e.target.value,10); seed=Number.isFinite(v)&&v>=0?v:0; build(); };
 const speed=document.getElementById('speed'); speed.oninput=()=>{ ticksPerFrame=+speed.value; document.getElementById('speedv').textContent=ticksPerFrame+'×'; };
+// -- selection + camera helpers --
+const easeInOut = p => p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2;   // easeInOutQuad: soft both ends (not a snap)
+function wrapNear(v, ref, span){ let d = ((v - ref) % span + span*1.5) % span - span/2; return ref + d; }   // nearest torus copy of v to ref
+function cursorToBacking(e){ const r = cv.getBoundingClientRect(); return [ (e.clientX-r.left)/r.width*W, (e.clientY-r.top)/r.height*H ]; }
+function screenToWorld(px, py){ const s = sc(); return [ cam.x + (px-W/2)/s, cam.y + (py-H/2)/s ]; }
+function botRadius(sb){ const ph = sb._phenotype, c = sb.getPosition(); let wr = 0;
+  if (ph && ph.parts) for (let q=1;q<ph.numParts;q++){ const dx=ph.parts[q].position.x-c.x, dy=ph.parts[q].position.y-c.y, d=dx*dx+dy*dy; if (d>wr) wr=d; }
+  return Math.sqrt(wr); }
+function fitZoomFor(sb){ const worldR = Math.max(20, botRadius(sb)+20);   // frame the bot to ~28% of the min view dimension
+  return Math.max(0.5, Math.min(60, (Math.min(W,H)*0.28 / worldR) / fitZoom())); }
+// pick the living swimbot whose body-disc contains the world point; nearest centre wins (once per click, not per frame)
+function pickSwimbot(wx, wy){
+  let best = null, bestD = Infinity;
+  for (const [, sb] of known){
+    if (!sb.getAlive()) continue; const ph = sb._phenotype; if (!ph || ph.numParts <= 1) continue;
+    const c = sb.getPosition(), dx = wrapNear(wx, c.x, P.pool)-c.x, dy = wrapNear(wy, c.y, P.pool)-c.y, d = dx*dx+dy*dy;
+    const rr = (botRadius(sb)+18); if (d <= rr*rr && d < bestD){ bestD = d; best = sb; }
+  }
+  return best;
+}
+function select(sb){
+  if (!sb || !sb.getAlive()) return;
+  selectedSb = sb;
+  camAnim.fromX = cam.x; camAnim.fromY = cam.y; camAnim.fromLZ = Math.log(cam.zoom);   // begin the fixed-duration zoom-to
+  camAnim.t = 0; camAnim.phase = 'zoom'; camAnim.tracking = true;
+  const sid = speciesModel.speciesIdOf(sb);   // open its species mini (if it has one -- 1-part bots have none)
+  if (sid != null){ setRowExpanded(sid, true); selectionOpenedId = sid; }   // setRowExpanded smooth-scrolls it into view
+  else selectionOpenedId = null;
+}
+function deselect(){
+  if (selectedSb == null && selectionOpenedId == null){ camAnim.phase='idle'; camAnim.tracking=false; return; }
+  if (selectionOpenedId != null && expanded.has(selectionOpenedId)) setRowExpanded(selectionOpenedId, false);   // close only the selection-opened mini
+  selectionOpenedId = null; selectedSb = null; camAnim.phase = 'idle'; camAnim.tracking = false;
+}
+function updateCamera(dt){
+  if (camAnim.phase === 'idle') return;
+  if (!selectedSb || !selectedSb.getAlive()){ camAnim.phase = 'idle'; camAnim.tracking = false; return; }   // safety (death also handled at the fold)
+  dt = Math.min(dt, 0.1);   // clamp so a tab-stall doesn't jump-cut the camera
+  const c = selectedSb.getPosition();
+  if (camAnim.phase === 'zoom'){
+    camAnim.t += dt; const e = easeInOut(Math.min(1, camAnim.t / camAnim.dur));
+    const tx = wrapNear(c.x, camAnim.fromX, P.pool), ty = wrapNear(c.y, camAnim.fromY, P.pool), tlz = Math.log(fitZoomFor(selectedSb));
+    cam.x = camAnim.fromX + (tx-camAnim.fromX)*e; cam.y = camAnim.fromY + (ty-camAnim.fromY)*e; cam.zoom = Math.exp(camAnim.fromLZ + (tlz-camAnim.fromLZ)*e);
+    cam.x = ((cam.x % P.pool)+P.pool)%P.pool; cam.y = ((cam.y % P.pool)+P.pool)%P.pool;
+    if (camAnim.t >= camAnim.dur) camAnim.phase = camAnim.tracking ? 'track' : 'idle';
+  } else {   // 'track': critically-damped follow; zoom held (wheel adjusts it directly). Offset-snap across the torus seam.
+    if (c.x - cam.x > P.pool/2) cam.x += P.pool; else if (cam.x - c.x > P.pool/2) cam.x -= P.pool;
+    if (c.y - cam.y > P.pool/2) cam.y += P.pool; else if (cam.y - c.y > P.pool/2) cam.y -= P.pool;
+    const A = 1 - Math.exp(-8 * dt);   // ~0.12s time constant, frame-rate-independent
+    cam.x += (c.x-cam.x)*A; cam.y += (c.y-cam.y)*A;
+    cam.x = ((cam.x % P.pool)+P.pool)%P.pool; cam.y = ((cam.y % P.pool)+P.pool)%P.pool;
+  }
+}
+window.__stepCamera = (n, dt) => { for (let i=0;i<(n|0);i++) updateCamera(dt||1/60); return { x: cam.x, y: cam.y, zoom: cam.zoom, phase: camAnim.phase }; };   // deterministic test hook
+// INERT selection test hooks (like __golden): find an on-screen clickable bot + read selection state.
+window.__selTest = {
+  aliveBotScreen(){ for (const [, sb] of known){ if (sb.getAlive() && sb._phenotype && sb._phenotype.numParts > 1){ const c = sb.getPosition(), [x,y] = toScreen(c.x, c.y); if (x>14 && x<W-14 && y>14 && y<H-14) return { x, y, W, H }; } } return null; },
+  sel(){ return { has: !!selectedSb, sid: selectedSb != null ? (speciesModel.speciesIdOf(selectedSb) ?? null) : null, phase: camAnim.phase }; },
+};
+
 cv.addEventListener('wheel', (e)=>{
   e.preventDefault();
-  // zoom around the CURSOR: keep the world point under the mouse pinned on screen as the scale changes.
-  const rect = cv.getBoundingClientRect();
-  const px = (e.clientX-rect.left)/rect.width*W, py = (e.clientY-rect.top)/rect.height*H;   // cursor in backing-buffer px (robust to CSS/DPR scale)
-  const s0 = sc();
-  const wx = cam.x + (px-W/2)/s0, wy = cam.y + (py-H/2)/s0;   // world point under the cursor, before zoom
   const f = Math.exp(-e.deltaY*0.0015);
+  if (camAnim.tracking){   // tracking: zoom stays centred on the bot; keep following (Karl). Re-frame only.
+    cam.zoom = Math.max(0.5, Math.min(60, cam.zoom*f));
+    if (camAnim.phase === 'zoom') camAnim.phase = 'track';   // a manual zoom ends the auto zoom-to but keeps the follow
+    return;
+  }
+  // zoom around the CURSOR: keep the world point under the mouse pinned on screen as the scale changes.
+  const [px, py] = cursorToBacking(e); const s0 = sc();
+  const wx = cam.x + (px-W/2)/s0, wy = cam.y + (py-H/2)/s0;   // world point under the cursor, before zoom
   cam.zoom = Math.max(0.5, Math.min(60, cam.zoom*f));
   const s1 = sc();
   cam.x = wx - (px-W/2)/s1; cam.y = wy - (py-H/2)/s1;         // re-centre so that same world point stays under the cursor
 }, {passive:false});
-let dragging=false, lastX=0, lastY=0;
-cv.addEventListener('mousedown', (e)=>{ dragging=true; lastX=e.clientX; lastY=e.clientY; cv.classList.add('drag'); });
-window.addEventListener('mouseup', ()=>{ dragging=false; cv.classList.remove('drag'); });
-window.addEventListener('mousemove', (e)=>{ if(!dragging) return; const s=sc(); cam.x -= (e.clientX-lastX)/s; cam.y -= (e.clientY-lastY)/s; lastX=e.clientX; lastY=e.clientY; });
+let dragging=false, lastX=0, lastY=0, downX=0, downY=0, clickMoved=false;
+cv.addEventListener('mousedown', (e)=>{ dragging=true; clickMoved=false; downX=lastX=e.clientX; downY=lastY=e.clientY; cv.classList.add('drag'); });
+window.addEventListener('mouseup', (e)=>{
+  const wasDragging = dragging; dragging=false; cv.classList.remove('drag');
+  if (!wasDragging || clickMoved || e.target !== cv) return;   // a real click on the canvas (not a pan, not a UI element)
+  const [px, py] = cursorToBacking(e); const [wx, wy] = screenToWorld(px, py);
+  const hit = pickSwimbot(wx, wy);
+  if (hit) select(hit); else deselect();
+});
+window.addEventListener('mousemove', (e)=>{
+  if (!dragging) return;
+  if (!clickMoved && Math.hypot(e.clientX-downX, e.clientY-downY) > 6) clickMoved = true;   // >6px = a pan, not a click
+  if (!clickMoved) return;
+  if (camAnim.tracking) { camAnim.phase = 'idle'; camAnim.tracking = false; }   // a manual pan frees the camera (selection kept)
+  const s=sc(); cam.x -= (e.clientX-lastX)/s; cam.y -= (e.clientY-lastY)/s; lastX=e.clientX; lastY=e.clientY;
+});
+addEventListener('keydown', (e)=>{ if (e.key === 'Escape' && (selectedSb || selectionOpenedId)) deselect(); });   // Esc = deselect
+// hover a swimmer -> pointer cursor (so it's discoverable that swimmers are clickable). Throttled; skipped while panning.
+let _hoverT = 0;
+cv.addEventListener('mousemove', (e)=>{
+  if (dragging || !world) return;
+  const now = performance.now(); if (now - _hoverT < 60) return; _hoverT = now;
+  const [px, py] = cursorToBacking(e); const [wx, wy] = screenToWorld(px, py);
+  cv.style.cursor = pickSwimbot(wx, wy) ? 'pointer' : '';   // '' -> CSS cursor:grab
+});
 
 
 // ---- deterministic golden-capture hook (INERT unless called; see docs/PLAN-visual-goldens.md) ----
@@ -1583,6 +1968,8 @@ window.addEventListener('mousemove', (e)=>{ if(!dragging) return; const s=sc(); 
 window.__golden = function(s, ticks, frames, camOv, opts){
   opts = opts || {};
   loopStopped = true; running = false;
+  Object.assign(P, DEFAULTS);   // capture at the BAKED look, never a dev's saved K-panel params (goldens must be deterministic)
+  if (typeof applyPlateStyles === 'function') applyPlateStyles();   // reset --plate-l + re-raster glyphs to defaults too
   seed = (s>>>0); cam.zoom = 6; build();
   gl.disable(gl.DITHER);
   const applyCam = () => {
@@ -1695,7 +2082,7 @@ function fmtTime(t, units = timeUnits(t)) {
   if (units >= 2) return `${h}:${_p2(m)}:${_p2(s)}`;
   return `${_p2(m)}:${_p2(s)}`;
 }
-function resetOverlays(clock = 0){ known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }
+function resetOverlays(clock = 0){ deselect(); known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }   // deselect: scrub/snap rebuilds world (stale ref)
 
 function startPlayback(){
   document.body.classList.add('desktop');            // fill-the-window layout (browser keeps the fixed 768 layout -> goldens unchanged)
@@ -1705,7 +2092,7 @@ function startPlayback(){
 
   const $seed = document.getElementById('sbSeed'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
   const speedBtns = [...document.querySelectorAll('#sbSpeeds .sbSpeed')];
-  let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null;
+  let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null, curSeed = -1;
 
   function updateBar(){
     if (!dragging){ $slider.max = Math.max(0, frontier); $slider.value = head; }
@@ -1726,15 +2113,19 @@ function startPlayback(){
   }
   async function selectSeed(sd){
     playing = false;
+    curSeed = sd >>> 0;   // set BEFORE the await so a killed run's in-flight frontier (tagged with the old seed) is dropped
     const r = await window.pool.scrub.select(sd >>> 0);
     if (!r || !r.ok){ document.getElementById('err').textContent = 'run failed: ' + ((r && r.error) || '?'); return; }
     document.getElementById('err').textContent = '';
     cfg = r.runConfig.config; frontier = r.frontier; head = 0;
+    updateBar();   // reset the slider RANGE to the new run's length now (don't wait on snapTo's keyframe, which may be momentarily null)
     seedJunk(mulberry32((sd >>> 0) ^ 0x5eed1234));   // detritus pool (cosmetic; build() normally does this)
     await snapTo(0);
   }
 
-  window.pool.scrub.onFrontier(t => { frontier = Math.max(frontier, t); if (!dragging) updateBar(); });
+  // frontier grows monotonically WITHIN a run; a seed switch resets it (in selectSeed). Drop updates tagged with any
+  // other seed so a just-killed generator's late progress can't Math.max the range back up to the old run's length.
+  window.pool.scrub.onFrontier(msg => { if (!msg || (msg.seed >>> 0) !== curSeed) return; frontier = Math.max(frontier, msg.tick); if (!dragging) updateBar(); });
   // 4 fast-forward buttons: each plays at 2^N x real-time (1x, 2x, 4x, 8x); clicking the ACTIVE speed pauses.
   for (const b of speedBtns) b.onclick = () => {
     const tpf = 1 << (+b.dataset.n);
@@ -1748,6 +2139,23 @@ function startPlayback(){
   $slider.oninput = () => { dragging = true; head = +$slider.value; const u = timeUnits(frontier); $time.textContent = `${fmtTime(head, u)} / ${fmtTime(frontier, u)}`; snapTo(head); };
   $slider.onchange = () => { dragging = false; snapTo(+$slider.value); };
 
+  // SEED/FILE toggle (Karl): the "SEED" label is a button. Click -> "FILE" and the seed input becomes LOAD + SAVE;
+  // click again -> back to "SEED". LOAD/SAVE prompt for a state file (World serialize/restore, via the desktop dialog).
+  const $modeToggle = document.getElementById('sbModeToggle'), $fileBtns = document.getElementById('sbFileBtns');
+  let sourceFile = false;
+  function setSourceMode(file){ sourceFile = file; $modeToggle.textContent = file ? 'FILE' : 'SEED'; $seed.hidden = file; $fileBtns.hidden = !file; }
+  $modeToggle.onclick = () => setSourceMode(!sourceFile);
+  setSourceMode(false);
+  document.getElementById('sbSave').onclick = async () => {
+    if (!world || !window.pool?.save) return;
+    await window.pool.save({ v: 1, seed: curSeed >>> 0, config: cfg || curConfig, data: world.serialize() });
+  };
+  document.getElementById('sbLoad').onclick = async () => {
+    if (!window.pool?.load) return;
+    const r = await window.pool.load();
+    if (r && r.ok){ playing = false; loadWorld(r.data); render(); updateBar(); }   // pause playback so the loaded world stays put
+  };
+
   function playbackLoop(){
     if (loopStopped) return;
     if (playing && world && !dragging && head < frontier){
@@ -1755,6 +2163,7 @@ function startPlayback(){
       for (let i = 0; i < step; i++) world.tick();
       head += step;
     }
+    updateCamera(1/60);   // animate zoom-to / follow the selected swimmer (runs even when paused; no-op when nothing selected)
     render(); updateBar(); tickFPS();
     requestAnimationFrame(playbackLoop);
   }
