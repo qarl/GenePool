@@ -51,11 +51,19 @@ export function generateRun(path, seed, opts = {}) {
     }
     if (o.onReady) o.onReady({ path, frontier: startTick });   // db has a keyframe + WAL -> reader may open (S3 handshake)
 
-    for (let t = startTick + 1; t <= o.ticks; t++) {           // o.ticks may be Infinity -> run until killed
+    // EXTINCTION = terminal: once every swimbot is dead there are no parents, so no births can ever occur -- the pool
+    // stays dead. Stop generating rather than tick a frozen dead world forever (Karl). A resumed extinct run (restored
+    // world already at 0 living) skips the loop outright. This is a natural end state, NOT a throttle of a live run.
+    let living = world.getLivingSwimbotCount();
+    for (let t = startTick + 1; t <= o.ticks && living > 0; t++) {   // o.ticks may be Infinity -> run until killed or extinct
         world.tick();
-        if (t % o.keyframeInterval === 0) { writer.writeKeyframe(t, world.serialize()); keyframes++; if (o.onProgress) o.onProgress(t, t); }
+        living = world.getLivingSwimbotCount();
+        if (t % o.keyframeInterval === 0 || living === 0) {          // keyframe on the interval, plus a FINAL one at extinction
+            writer.writeKeyframe(t, world.serialize()); keyframes++;
+            if (o.onProgress) o.onProgress(t, t);
+        }
     }
-    writer.finish();   // (not reached for Infinity; the process is killed, and each keyframe commit is already durable)
+    writer.finish();   // reached on extinction / finite ticks (for Infinity+never-extinct, the process is killed instead; each keyframe commit is already durable)
     writer.close();
     return { path, seed: seed >>> 0, ticks: o.ticks, keyframes, resumed, resumedTick: resumed ? startTick : null, finalPop: world.getLivingSwimbotCount() };
 }
