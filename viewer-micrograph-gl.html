@@ -275,6 +275,8 @@ const P = {
   gamma: 1.0,       // output gamma (1 = identity; >1 lifts midtones)
   plateBg: 0.74,    // species license-plate cell background brightness (oklch L, 0..1)
   plateInk: 0.0,    // species license-plate LETTER brightness (0 = black .. 1 = white)
+  camSmooth: 0.125, // tracking-camera follow time constant, seconds (higher = smoother/steadier on a jittery swimmer,
+                    // more lag on real travel; lower = snappier). A = 1-exp(-dt/camSmooth); 0.125 == the old -8*dt.
 };
 // Factory snapshot for the K-panel Reset baseline. MUST be taken here, BEFORE any localStorage merge (else Reset +
 // the golden capture would key off a saved set instead of the baked look). See docs/PLAN-kconstants-panel.md.
@@ -1342,6 +1344,7 @@ const SPEC = [
   { k:'gamma',       label:'Gamma',    min:0.4,  max:2.5, step:0.02 },
   { k:'plateBg',     label:'Plate BG', min:0,    max:1,   step:0.02 },
   { k:'plateInk',    label:'Plate Ink',min:0,    max:1,   step:0.02 },
+  { k:'camSmooth',   label:'CamSmooth',min:0.05, max:1,   step:0.005 },  // tracking-camera steadiness (sec); higher = smoother
 ];
 const K_KEYS = SPEC.map(s => s.k);
 let _plateRasterQueued = false;
@@ -1959,7 +1962,7 @@ function updateCamera(dt){
   } else {   // 'track': critically-damped follow; zoom held (wheel adjusts it directly). Offset-snap across the torus seam.
     if (c.x - cam.x > P.pool/2) cam.x += P.pool; else if (cam.x - c.x > P.pool/2) cam.x -= P.pool;
     if (c.y - cam.y > P.pool/2) cam.y += P.pool; else if (cam.y - c.y > P.pool/2) cam.y -= P.pool;
-    const A = 1 - Math.exp(-8 * dt);   // ~0.12s time constant, frame-rate-independent
+    const A = 1 - Math.exp(-dt / Math.max(1e-3, P.camSmooth));   // exp follow, frame-rate-independent; P.camSmooth = time constant (K-panel)
     cam.x += (c.x-cam.x)*A; cam.y += (c.y-cam.y)*A;
     cam.x = ((cam.x % P.pool)+P.pool)%P.pool; cam.y = ((cam.y % P.pool)+P.pool)%P.pool;
   }
