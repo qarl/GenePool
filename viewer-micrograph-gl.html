@@ -1885,6 +1885,7 @@ let loopStopped = false;   // golden capture stops the rAF loop ENTIRELY (runnin
 const fpsHud = document.getElementById('fpsHud');
 // F toggles the FPS HUD, K toggles the constants panel (both hidden by default). Ignore keys typed into a field so
 // seed/number inputs are unaffected, and ignore modifier combos.
+let togglePlay = () => {};   // set per mode: desktop toggles `playing` (startPlayback), browser toggles `running` (below)
 addEventListener('keydown', e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target;
@@ -1893,6 +1894,7 @@ addEventListener('keydown', e => {
   if (key === 'f'){ if (fpsHud) fpsHud.hidden = !fpsHud.hidden; }
   else if (key === 'k'){ const kp = document.getElementById('kpanel'); if (kp) kp.hidden = !kp.hidden; }
   else if (key === 'g'){ toggleGraph(); }
+  else if (key === ' '){ e.preventDefault(); togglePlay(); }   // space = play/pause (preventDefault: no page-scroll / focused-button click)
 });
 let _fpsPrev = 0, _fpsEMA = 0, _fpsLogT = 0;
 function tickFPS(){
@@ -1915,7 +1917,10 @@ function loop(){
 }
 
 // ================================================================== controls
-document.getElementById('play').onclick = (e)=>{ running=!running; e.target.textContent = running?'Pause':'Play'; };
+const _playBtn = document.getElementById('play');
+function togglePlayBrowser(){ running = !running; _playBtn.textContent = running ? 'Pause' : 'Play'; }
+_playBtn.onclick = togglePlayBrowser;
+togglePlay = togglePlayBrowser;   // browser: space toggles `running` (desktop overrides this in startPlayback)
 document.getElementById('reset').onclick = ()=>{ seed++; build(); };
 document.getElementById('seedIn').onchange = (e)=>{ const v=parseInt(e.target.value,10); seed=Number.isFinite(v)&&v>=0?v:0; build(); };
 const speed=document.getElementById('speed'); speed.oninput=()=>{ ticksPerFrame=+speed.value; document.getElementById('speedv').textContent=ticksPerFrame+'×'; };
@@ -2324,6 +2329,7 @@ function startPlayback(){
     else { ticksPerFrame = tpf; playing = true; }
     updateBar();
   };
+  togglePlay = () => { playing = !playing; updateBar(); };   // space = play/pause at the current speed (desktop)
   // seed +/- : step to the previous/next seed (and load/generate its run)
   $seed.onchange = () => { const v = parseInt($seed.value, 10); if (Number.isFinite(v) && v >= 0) selectSeed(v); };   // native number-input arrows fire this
   // scrubbing does NOT pause: keep `playing` as-is while dragging (loop holds via !dragging), so releasing resumes -> "takes off" (Karl)
