@@ -5,7 +5,11 @@
 <title>GenePool — micrograph (GL)</title>
 <style>
   @font-face { font-family: 'OCR A'; src: url('fonts/OCRA.ttf') format('truetype'); font-display: swap; }   /* self-hosted, GPL/free */
-  :root { color-scheme: dark; }
+  /* Rajdhani (OFL) = the app CHROME font (bottom bar + K/graph panels). The VIEWERS keep OCR A (specimen data). */
+  @font-face { font-family: 'Rajdhani'; font-weight: 400; src: url('fonts/Rajdhani-Regular.woff2') format('woff2'); font-display: swap; }
+  @font-face { font-family: 'Rajdhani'; font-weight: 500; src: url('fonts/Rajdhani-Medium.woff2') format('woff2'); font-display: swap; }
+  @font-face { font-family: 'Rajdhani'; font-weight: 600; src: url('fonts/Rajdhani-SemiBold.woff2') format('woff2'); font-display: swap; }
+  :root { color-scheme: dark; --ui-font: 'Rajdhani', 'Segoe UI', system-ui, sans-serif; }   /* chrome font stack */
   body { margin: 0; background: #0b0e13; color: #cfd6e0; font: 13px/1.5 "OCR A", ui-monospace, "SF Mono", Menlo, monospace; }
   button, input, select, textarea, h1 { font-family: inherit; }   /* whole app uses OCR A ("our new font"), self-hosted above */
   header { padding: 8px 14px; background: #11161f; border-bottom: 1px solid #1e2733; }
@@ -83,7 +87,7 @@
   /* scrub/playback bottom bar (desktop only) */
   #scrubbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: flex; align-items: center; gap: 14px;
     padding: 8px 16px; background: #0d1117f2; border-top: 1px solid #1e2733; backdrop-filter: blur(4px);
-    font: 12px "OCR A", ui-monospace, "SF Mono", Menlo, monospace; color: #9fb0c3; }
+    font: 500 13px var(--ui-font); color: #9fb0c3; }
   #scrubbar label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   #scrubbar #sbSlider { flex: 1; min-width: 120px; }
   #scrubbar button { min-width: 36px; cursor: pointer; }
@@ -118,20 +122,20 @@
   /* live constants editor (K): a tall thin fixed column on the LEFT. Scroll region + pinned buttons. */
   #kpanel { position: fixed; top: 8px; left: 8px; bottom: 8px; width: 214px; z-index: 60; display: flex; flex-direction: column;
     background: #0d1117f2; border: 1px solid #1e2733; border-radius: 10px; backdrop-filter: blur(4px);
-    font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace; color: #9fb0c3; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
+    font: 500 12px var(--ui-font); color: #9fb0c3; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
   #kpanel[hidden] { display: none; }   /* author display:flex beats the UA [hidden] rule -> MUST override explicitly */
   #kpanelRows { flex: 1; overflow-y: auto; scrollbar-gutter: stable; padding: 8px 8px 4px; }
   #kpanel .krow { display: grid; grid-template-columns: 56px 1fr 46px; align-items: center; gap: 5px; margin-bottom: 3px; }
   #kpanel .klabel { color: #8fa0b5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #kpanel .krow input[type=range] { width: 100%; min-width: 0; margin: 0; }
-  #kpanel .krow input[type=number] { width: 46px; background: #0b0e13; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 5px; padding: 2px 3px; font: 10px "OCR A", ui-monospace, Menlo, monospace; }
+  #kpanel .krow input[type=number] { width: 46px; background: #0b0e13; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 5px; padding: 2px 3px; font: 500 11px var(--ui-font); }
   #kpanelBtns { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #1e2733; }
   #kpanelBtns button { flex: 1; background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 6px 4px; cursor: pointer; font-size: 11px; }
   #kpanelBtns button:hover { background: #24344a; }
   /* whole-timeline history graph (G): a glass panel overlaying the main view, same material as #kpanel. */
   #graph { position: absolute; top: 22px; left: 22px; right: 22px; bottom: 22px; z-index: 40; display: flex; flex-direction: column;
     background: #0d1117f2; border: 1px solid #1e2733; border-radius: 10px; backdrop-filter: blur(4px);
-    font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace; color: #9fb0c3; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
+    font: 500 12px var(--ui-font); color: #9fb0c3; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
   #graph[hidden] { display: none; }   /* author display:flex beats the UA [hidden] rule -> MUST override explicitly */
   #graphHead { display: flex; align-items: center; justify-content: space-between; gap: 12px;
     padding: 9px 14px; border-bottom: 1px solid #1e2733; }
@@ -1292,6 +1296,8 @@ function measurePlateGlyphs(){
 // frame picks up the bitmaps. Fall back to plain text if font loading is unavailable.
 if (document.fonts && document.fonts.load) document.fonts.load(`600 ${CELL_FONT_PX}px "OCR A"`).then(measurePlateGlyphs, measurePlateGlyphs);
 else measurePlateGlyphs();
+// preload the chrome font so the graph's canvas text rasterises in Rajdhani (canvas silently falls back if unloaded)
+if (document.fonts && document.fonts.load){ document.fonts.load('500 11px "Rajdhani"').then(() => { if (graphEl && !graphEl.hidden) drawGraph(); }, () => {}); }
 
 // ============================================================ live constants editor ("K" = kConstants)
 // One [name][slider][number] row per editable key in P. Sliders/uniforms are read per frame, so editing P is live.
@@ -2225,7 +2231,7 @@ function drawGraph(){
   }
 
   // axis labels
-  gctx.font = '10px "OCR A", ui-monospace, "SF Mono", Menlo, monospace';
+  gctx.font = '500 11px "Rajdhani", "Segoe UI", system-ui, sans-serif';   // chrome font (matches the panel); viewers keep OCR A
   gctx.textBaseline = 'middle';
   gctx.fillStyle = G_COL_POP; gctx.textAlign = 'right';                    // population axis (left): max at top, 0 at base
   gctx.fillText(String(popMax), x0 - 6, y0 + 4);

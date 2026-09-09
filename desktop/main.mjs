@@ -15,7 +15,7 @@ import { openRunReader } from '../tools/events/run-db.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');                 // repo root: serves the viewer + engine + fonts to our own renderer
 const MIME = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript', '.json':'application/json',
-  '.ttf':'font/ttf', '.css':'text/css', '.png':'image/png', '.wasm':'application/wasm' };
+  '.ttf':'font/ttf', '.woff2':'font/woff2', '.css':'text/css', '.png':'image/png', '.wasm':'application/wasm' };
 
 // --- internal loopback static server (127.0.0.1, ephemeral port) -> ES modules/fetch work as in the browser ---
 function startStaticServer(){
