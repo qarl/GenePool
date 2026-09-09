@@ -1847,10 +1847,17 @@ function drawInfoOverlay(ctx){   // mirrors #labMain: population plate + diversi
     ctx.beginPath(); ctx.fillStyle = '#35c46a'; ctx.arc(cx + 4.5, rowY + 10, 4.5, 0, Math.PI * 2); ctx.fill();
   }
 }
+function drawSelRing2D(ctx, kx, ky){   // draw the selection ring onto a 2D ctx (kx/ky scale backing px -> the ctx). Returns whether it drew.
+  const g = selRingGeom(); if (!g) return false;   // selection ring is a DOM layer captureStream can't see -> redraw it here
+  ctx.beginPath(); ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5 * kx;
+  ctx.ellipse(g.sx * kx, g.sy * ky, g.r * kx, g.r * ky, 0, 0, Math.PI * 2); ctx.stroke();
+  return true;
+}
 function recCompositeFrame(){
   if (!recCtx) return;
   recCtx.drawImage(cv, 0, 0, recCanvas.width, recCanvas.height);   // the WebGL frame (valid synchronously post-render)
   drawInfoOverlay(recCtx);                                          // the overlay the canvas doesn't contain
+  drawSelRing2D(recCtx, recCanvas.width / (W || 1), recCanvas.height / (H || 1));   // + the selection ring (=1 scale unless resized mid-record)
 }
 
 function render(){
@@ -1954,13 +1961,20 @@ function pickSwimbot(wx, wy){
 }
 const selRing = document.getElementById('selRing');
 let selRingR = 0;   // WORLD radius of the selection ring, FROZEN at select time (so it doesn't pulse with the body's flex/growth)
-function updateSelRing(){   // called each frame AFTER render() (so cam/W/H are the restored main view); tracks the swimmer's position
-  if (!selRing) return;
-  if (!selectedSb || !selectedSb.getAlive() || selRingR <= 0){ if (!selRing.hidden) selRing.hidden = true; return; }
+// ring screen geometry in the current main-view backing px (== CSS px): {sx,sy,r} centre + radius, or null if no ring.
+// Shared by the DOM overlay AND the video composite so the recording matches the live view exactly. Callers must run it
+// with the main-view cam/W/H (after render()).
+function selRingGeom(){
+  if (!selectedSb || !selectedSb.getAlive() || selRingR <= 0) return null;
   const c = selectedSb.getPosition();
   const [sx, sy] = toScreen(wrapNear(c.x, cam.x, P.pool), wrapNear(c.y, cam.y, P.pool));   // nearest torus copy -> no seam jump
-  const d = selRingR * 2 * sc();   // on-screen diameter = frozen world radius x current scale (grows with zoom; line stays 1.5px)
-  selRing.style.left = sx + 'px'; selRing.style.top = sy + 'px'; selRing.style.width = d + 'px'; selRing.style.height = d + 'px';
+  return { sx, sy, r: selRingR * sc() };   // radius = frozen world radius x current scale (grows with zoom; line stays thin)
+}
+function updateSelRing(){   // called each frame AFTER render() (so cam/W/H are the restored main view); tracks the swimmer's position
+  if (!selRing) return;
+  const g = selRingGeom();
+  if (!g){ if (!selRing.hidden) selRing.hidden = true; return; }
+  selRing.style.left = g.sx + 'px'; selRing.style.top = g.sy + 'px'; selRing.style.width = (g.r*2) + 'px'; selRing.style.height = (g.r*2) + 'px';
   if (selRing.hidden) selRing.hidden = false;
 }
 function select(sb){
@@ -2011,6 +2025,15 @@ window.__selTest = {
   aliveBotScreen(){ for (const [, sb] of known){ if (sb.getAlive() && sb._phenotype && sb._phenotype.numParts > 1){ const c = sb.getPosition(), [x,y] = toScreen(c.x, c.y); if (x>14 && x<W-14 && y>14 && y<H-14) return { x, y, W, H }; } } return null; },
   sel(){ return { has: !!selectedSb, sid: selectedSb != null ? (speciesModel.speciesIdOf(selectedSb) ?? null) : null, phase: camAnim.phase }; },
   ring(){ updateSelRing(); return { hidden: selRing.hidden, w: parseFloat(selRing.style.width) || 0, worldR: selRingR }; },   // drive + read the selection ring
+  recFrame(){   // test the recording's ring draw (drawSelRing2D) on a WHITE bg (drawImage(cv) is black post-compositor headless)
+    if (!recCanvas){ recCanvas = document.createElement('canvas'); recCtx = recCanvas.getContext('2d'); }
+    recCanvas.width = cv.width; recCanvas.height = cv.height;
+    recCtx.fillStyle = '#fff'; recCtx.fillRect(0, 0, recCanvas.width, recCanvas.height);
+    const drew = drawSelRing2D(recCtx, 1, 1);
+    const d = recCtx.getImageData(0, 0, recCanvas.width, recCanvas.height).data; let dark = 0;
+    for (let i = 0; i < d.length; i += 4){ if (d[i] < 40 && d[i+1] < 40 && d[i+2] < 40 && d[i+3] > 200) dark++; }
+    return { drew, darkPx: dark };
+  },
 };
 
 cv.addEventListener('wheel', (e)=>{

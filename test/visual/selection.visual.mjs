@@ -48,6 +48,7 @@ test('swimmer selection: click picks + opens species mini + arms camera; Esc + m
     assert.equal(ring.hidden, false, 'the selection ring is shown while a swimmer is selected');
     assert.ok(ring.worldR > 0, 'the selection ring has a frozen world radius');
     assert.ok(ring.w > 0, 'the selection ring has an on-screen diameter');
+    const recSel = await page.evaluate(() => window.__selTest.recFrame());   // ring is composited into the recording frame (cam still at select pos)
 
     // camera tween advances: zoom-to (~0.8s) then hands off to track
     const after = await page.evaluate(() => window.__stepCamera(60, 1/60));
@@ -60,6 +61,10 @@ test('swimmer selection: click picks + opens species mini + arms camera; Esc + m
     expRows = await page.evaluate(() => document.querySelectorAll('#species .srow.exp').length);
     assert.equal(expRows, 0, 'the selection-opened mini closed on deselect');
     assert.equal((await page.evaluate(() => window.__selTest.ring())).hidden, true, 'the selection ring hides on deselect');
+    const recDesel = await page.evaluate(() => window.__selTest.recFrame());   // no selection -> ring not drawn
+    assert.equal(recSel.drew, true, 'the ring is drawn into the recording composite while selected');
+    assert.ok(recSel.darkPx > 50, `the recording ring left visible pixels (${recSel.darkPx})`);
+    assert.equal(recDesel.drew, false, 'no ring drawn into the recording after deselect');
 
     // re-select, then CROSS-VIEWER: clicking the mini canvas re-arms selection (tracks the shown bot)
     await clickCanvas(bot.x, bot.y);
