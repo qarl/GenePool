@@ -2276,7 +2276,8 @@ function startPlayback(){
     if (snapPending != null){ const p = snapPending; snapPending = null; snapTo(p); }
   }
   async function selectSeed(sd){
-    playing = false;
+    const wasPlaying = playing;   // resume playback after the switch if it was already running (Karl)
+    playing = false;              // hold ticks while we swap worlds (don't tick the stale world during the async load)
     curSeed = sd >>> 0;   // set BEFORE the await so a killed run's in-flight frontier (tagged with the old seed) is dropped
     const r = await window.pool.scrub.select(sd >>> 0);
     if (!r || !r.ok){ document.getElementById('err').textContent = 'run failed: ' + ((r && r.error) || '?'); return; }
@@ -2285,6 +2286,8 @@ function startPlayback(){
     updateBar();   // reset the slider RANGE to the new run's length now (don't wait on snapTo's keyframe, which may be momentarily null)
     seedJunk(mulberry32((sd >>> 0) ^ 0x5eed1234));   // detritus pool (cosmetic; build() normally does this)
     await snapTo(0);
+    playing = wasPlaying;         // new pool plays on from tick 0 if we were running before the switch
+    updateBar();
   }
 
   // frontier grows monotonically WITHIN a run; a seed switch resets it (in selectSeed). Drop updates tagged with any
