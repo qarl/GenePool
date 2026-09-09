@@ -15,8 +15,9 @@
 // The WRITER is the generator (a Node utilityProcess); the READER is main, opening the SAME file read-only in WAL
 // (Phase 3/4). Both live here so the schema has exactly one definition.
 
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync, createGunzip } from 'node:zlib';
 import { existsSync } from 'node:fs';
+import { Readable } from 'node:stream';
 import { DatabaseSync } from 'node:sqlite';
 import { createSqliteSink } from './sqlite-sink.mjs';
 
@@ -33,6 +34,33 @@ function ensureSchema(db) {
 
 const encode = (obj) => gzipSync(Buffer.from(JSON.stringify(obj), 'utf8'));
 const decode = (gz) => JSON.parse(gunzipSync(gz).toString('utf8'));
+
+// Cheap population/food from a snapshot WITHOUT fully decoding it: livingSwimbotCount + livingFoodCount are top-level
+// scalars serialized BEFORE the big swimbots/food arrays, so we stream-inflate only the head (first ~16 KB chunk) and
+// regex them out -- ~0.1 ms/snapshot vs a multi-MB gunzip+parse. Used to draw the whole-run curve from keyframes when
+// the fine-grained ticks stream is absent (this app records only keyframes).
+function snapHeadStats(gz) {
+    return new Promise((resolve, reject) => {
+        const gun = createGunzip();
+        let buf = '', done = false;
+        const finish = (v) => { if (done) return; done = true; gun.destroy(); resolve(v); };
+        gun.on('data', (chunk) => {
+            buf += chunk.toString('latin1');
+            const p = /"livingSwimbotCount":(\d+)/.exec(buf), f = /"livingFoodCount":(\d+)/.exec(buf);
+            if (p && f) finish({ pop: +p[1], food: +f[1] });
+            else if (buf.length > 65536) finish({ pop: p ? +p[1] : 0, food: f ? +f[1] : 0 });   // safety cap: fields are near the top
+        });
+        gun.on('end', () => finish({ pop: 0, food: 0 }));   // fully inflated without a match (shouldn't happen) -> zeros
+        gun.on('error', reject);
+        Readable.from([gz]).pipe(gun);
+    });
+}
+const downsample = (rows, maxPoints) => {
+    if (rows.length <= maxPoints) return rows;
+    const step = Math.ceil(rows.length / maxPoints), out = [];
+    for (let i = 0; i < rows.length; i += step) out.push(rows[i]);
+    return out;
+};
 
 // ---- WRITER (the generator) --------------------------------------------------------------------------------------
 // meta: { seed, config, keyframeInterval, statsInterval, engineVersion?, appVersion?, perceptionMode? }
@@ -181,14 +209,28 @@ export function openRunReader(path, { readOnly = true } = {}) {
         const r = qStatLE.get(clamp(t));
         return r ? { tick: r.tick, stats: JSON.parse(r.json) } : null;
     }
-    // downsampled population curve for the slider/graph (bounded rows, never the whole ticks table -- N4)
-    function getPopSeries({ maxPoints = 1000 } = {}) {
+    // downsampled population+food curve for the slider/graph across the WHOLE run (bounded rows -- N4). Prefers the
+    // fine-grained ticks stream; when it is absent (this app records only keyframes) it derives the curve from snapshot
+    // heads instead, cached keyed by (frontier, snapshot count) so a repeated poll while a live run grows is cheap.
+    let _snapSeries = null;   // { hi, count, series } cache of the snapshot-derived curve
+    async function snapshotSeries(hi) {
+        const count = db.prepare('SELECT COUNT(*) c FROM snapshots WHERE tick <= ?').get(hi).c;
+        if (!_snapSeries || _snapSeries.hi !== hi || _snapSeries.count !== count) {
+            // iterate row-by-row (not .all()) -- snapshot blobs are multi-MB, so materializing the whole run at once
+            // would spike to GBs; this holds one blob at a time and inflates only its head.
+            const series = [];
+            for (const r of db.prepare('SELECT tick, gz FROM snapshots WHERE tick <= ? ORDER BY tick').iterate(hi)) {
+                const s = await snapHeadStats(r.gz); series.push({ tick: r.tick, pop: s.pop, food: s.food });
+            }
+            _snapSeries = { hi, count, series };
+        }
+        return _snapSeries.series;
+    }
+    async function getPopSeries({ maxPoints = 1000 } = {}) {
         const hi = frontier();
         const rows = db.prepare('SELECT tick, pop, food FROM ticks WHERE tick <= ? ORDER BY tick').all(hi);
-        if (rows.length <= maxPoints) return rows;
-        const step = Math.ceil(rows.length / maxPoints), out = [];
-        for (let i = 0; i < rows.length; i += step) out.push(rows[i]);
-        return out;
+        const series = rows.length ? rows : await snapshotSeries(hi);
+        return downsample(series, maxPoints);
     }
 
     return { db, frontier, meta, runConfig, getKeyframe, getStats, getPopSeries, close() { db.close(); } };

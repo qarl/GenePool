@@ -93,7 +93,7 @@ test('run-db: gzipped keyframes reconstruct bit-for-bit through the reader; fron
             assert.equal(nSnaps, kfTicks.length, 'one snapshot row per keyframe tick');
 
             // getPopSeries is bounded and ordered
-            const series = r.getPopSeries({ maxPoints: 5 });
+            const series = await r.getPopSeries({ maxPoints: 5 });
             assert.ok(series.length <= 5, 'getPopSeries respects maxPoints');
             assert.ok(series.every((row, i) => i === 0 || row.tick > series[i - 1].tick), 'pop series is tick-ordered');
         } finally { r.close(); }
