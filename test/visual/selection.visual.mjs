@@ -43,6 +43,12 @@ test('swimmer selection: click picks + opens species mini + arms camera; Esc + m
     let expRows = await page.evaluate(() => document.querySelectorAll('#species .srow.exp').length);
     assert.equal(expRows, 1, 'the selected swimmer\'s species mini is open');
 
+    // selection ring: shown, ~10% larger than the swimmer (frozen world radius > 0), positioned by the camera
+    const ring = await page.evaluate(() => window.__selTest.ring());
+    assert.equal(ring.hidden, false, 'the selection ring is shown while a swimmer is selected');
+    assert.ok(ring.worldR > 0, 'the selection ring has a frozen world radius');
+    assert.ok(ring.w > 0, 'the selection ring has an on-screen diameter');
+
     // camera tween advances: zoom-to (~0.8s) then hands off to track
     const after = await page.evaluate(() => window.__stepCamera(60, 1/60));
     assert.equal(after.phase, 'track', 'after ~1s the camera hands off to tracking');
@@ -53,6 +59,7 @@ test('swimmer selection: click picks + opens species mini + arms camera; Esc + m
     assert.equal(s.has, false, 'Esc deselects');
     expRows = await page.evaluate(() => document.querySelectorAll('#species .srow.exp').length);
     assert.equal(expRows, 0, 'the selection-opened mini closed on deselect');
+    assert.equal((await page.evaluate(() => window.__selTest.ring())).hidden, true, 'the selection ring hides on deselect');
 
     // re-select, then CROSS-VIEWER: clicking the mini canvas re-arms selection (tracks the shown bot)
     await clickCanvas(bot.x, bot.y);

@@ -80,6 +80,12 @@
   .cell .g { display: block; width: 18px; height: 20px;   /* glyph is a pre-centred bitmap (see measurePlateGlyphs) */
     background-repeat: no-repeat; background-position: center; background-size: 18px 20px; }
   #labMain { top: 12px; left: 12px; }   /* total population, top-LEFT of the main view (anchored to #canvasBox) */
+  /* selection ring: a thin black circle ~10% larger than the selected swimmer, centred on him. Its WORLD size is frozen at
+     select (updateSelRing sets width/height each frame from the frozen radius x zoom -> the circle scales with zoom but the
+     1.5px line stays thin at every zoom; transform:scale would fatten the line). */
+  #selRing { position: absolute; z-index: 4; pointer-events: none; box-sizing: border-box;
+    border: 1.5px solid #000; border-radius: 50%; transform: translate(-50%, -50%); }
+  #selRing[hidden] { display: none; }
   /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
   #fpsHud { position: absolute; top: 12px; right: 12px; z-index: 5; pointer-events: none; font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace;
     color: #7fd0a0; background: #0b0e13cc; padding: 2px 7px; border-radius: 5px; font-variant-numeric: tabular-nums; }
@@ -167,6 +173,7 @@
 <div id="wrap"><div id="stage">
   <div id="canvasBox"><canvas id="cv" width="768" height="768"></canvas>
     <div class="tileLabel" id="labMain"></div>
+    <div id="selRing" hidden></div>   <!-- thin ring around the selected swimmer (size frozen at select; tracks his position) -->
     <div id="fpsHud" hidden></div>   <!-- hidden by default; press F to toggle (see keydown handler) -->
     <!-- whole-timeline history graph (population + food); overlays the main view, toggle with the G key. -->
     <div id="graph" hidden>
@@ -1912,6 +1919,7 @@ function loop(){
   if (recording && recBuf.length && window.pool){ window.pool.record(recBuf); recBuf = []; }   // flush this frame's events to the recorder
   updateCamera(1/60);   // animate zoom-to / follow the selected swimmer (no-op when nothing selected); before render
   render();
+  updateSelRing();   // position the selection ring over the tracked swimmer (after render: main-view cam/W/H restored)
   tickFPS();
   requestAnimationFrame(loop);
 }
@@ -1944,9 +1952,21 @@ function pickSwimbot(wx, wy){
   }
   return best;
 }
+const selRing = document.getElementById('selRing');
+let selRingR = 0;   // WORLD radius of the selection ring, FROZEN at select time (so it doesn't pulse with the body's flex/growth)
+function updateSelRing(){   // called each frame AFTER render() (so cam/W/H are the restored main view); tracks the swimmer's position
+  if (!selRing) return;
+  if (!selectedSb || !selectedSb.getAlive() || selRingR <= 0){ if (!selRing.hidden) selRing.hidden = true; return; }
+  const c = selectedSb.getPosition();
+  const [sx, sy] = toScreen(wrapNear(c.x, cam.x, P.pool), wrapNear(c.y, cam.y, P.pool));   // nearest torus copy -> no seam jump
+  const d = selRingR * 2 * sc();   // on-screen diameter = frozen world radius x current scale (grows with zoom; line stays 1.5px)
+  selRing.style.left = sx + 'px'; selRing.style.top = sy + 'px'; selRing.style.width = d + 'px'; selRing.style.height = d + 'px';
+  if (selRing.hidden) selRing.hidden = false;
+}
 function select(sb){
   if (!sb || !sb.getAlive()) return;
   selectedSb = sb;
+  selRingR = Math.max(6, botRadius(sb) * 1.10);   // ~10% larger than the swimmer; frozen now (UI size won't change as he flexes/grows)
   camAnim.fromX = cam.x; camAnim.fromY = cam.y; camAnim.fromLZ = Math.log(cam.zoom);   // begin the fixed-duration zoom-to
   camAnim.t = 0; camAnim.phase = 'zoom'; camAnim.tracking = true;
   const sid = speciesModel.speciesIdOf(sb);   // open its species mini (if it has one -- 1-part bots have none)
@@ -1956,7 +1976,7 @@ function select(sb){
 function deselect(){
   if (selectedSb == null && selectionOpenedId == null){ camAnim.phase='idle'; camAnim.tracking=false; return; }
   if (selectionOpenedId != null && expanded.has(selectionOpenedId)) setRowExpanded(selectionOpenedId, false);   // close only the selection-opened mini
-  selectionOpenedId = null; selectedSb = null; camAnim.phase = 'idle'; camAnim.tracking = false;
+  selectionOpenedId = null; selectedSb = null; selRingR = 0; camAnim.phase = 'idle'; camAnim.tracking = false;
 }
 const _mod = v => ((v % P.pool) + P.pool) % P.pool;
 function updateCamera(dt){
@@ -1990,6 +2010,7 @@ window.__stepCamera = (n, dt) => { for (let i=0;i<(n|0);i++) updateCamera(dt||1/
 window.__selTest = {
   aliveBotScreen(){ for (const [, sb] of known){ if (sb.getAlive() && sb._phenotype && sb._phenotype.numParts > 1){ const c = sb.getPosition(), [x,y] = toScreen(c.x, c.y); if (x>14 && x<W-14 && y>14 && y<H-14) return { x, y, W, H }; } } return null; },
   sel(){ return { has: !!selectedSb, sid: selectedSb != null ? (speciesModel.speciesIdOf(selectedSb) ?? null) : null, phase: camAnim.phase }; },
+  ring(){ updateSelRing(); return { hidden: selRing.hidden, w: parseFloat(selRing.style.width) || 0, worldR: selRingR }; },   // drive + read the selection ring
 };
 
 cv.addEventListener('wheel', (e)=>{
@@ -2361,7 +2382,7 @@ function startPlayback(){
       head += step;
     }
     updateCamera(1/60);   // animate zoom-to / follow the selected swimmer (runs even when paused; no-op when nothing selected)
-    render(); updateBar(); tickFPS();
+    render(); updateSelRing(); updateBar(); tickFPS();
     requestAnimationFrame(playbackLoop);
   }
   ticksPerFrame = 1;   // default 1x; playback starts paused until a speed button is pressed
