@@ -128,6 +128,24 @@
   #kpanelBtns { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #1e2733; }
   #kpanelBtns button { flex: 1; background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 6px 4px; cursor: pointer; font-size: 11px; }
   #kpanelBtns button:hover { background: #24344a; }
+  /* whole-timeline history graph (G): a glass panel overlaying the main view, same material as #kpanel. */
+  #graph { position: absolute; top: 22px; left: 22px; right: 22px; bottom: 22px; z-index: 40; display: flex; flex-direction: column;
+    background: #0d1117f2; border: 1px solid #1e2733; border-radius: 10px; backdrop-filter: blur(4px);
+    font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace; color: #9fb0c3; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
+  #graph[hidden] { display: none; }   /* author display:flex beats the UA [hidden] rule -> MUST override explicitly */
+  #graphHead { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 9px 14px; border-bottom: 1px solid #1e2733; }
+  #graphTitle { color: #8fa0b5; letter-spacing: 0.14em; font-size: 11px; }
+  #graphLegend { display: inline-flex; gap: 14px; letter-spacing: 0.06em; }
+  #graphLegend .glg { display: inline-flex; align-items: center; gap: 6px; color: #8fa0b5; }
+  #graphLegend .sw { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+  #graphLegend .sw.pop { background: #7fd0a0; color: #7fd0a0; }
+  #graphLegend .sw.food { background: #d9a441; color: #d9a441; }
+  #graphPlot { position: relative; flex: 1; min-height: 0; }
+  #graphCanvas { display: block; width: 100%; height: 100%; }
+  #graphEmpty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #5c6b80; letter-spacing: 0.08em; }
+  #graphEmpty[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -147,6 +165,17 @@
   <div id="canvasBox"><canvas id="cv" width="768" height="768"></canvas>
     <div class="tileLabel" id="labMain"></div>
     <div id="fpsHud" hidden></div>   <!-- hidden by default; press F to toggle (see keydown handler) -->
+    <!-- whole-timeline history graph (population + food); overlays the main view, toggle with the G key. -->
+    <div id="graph" hidden>
+      <div id="graphHead">
+        <span id="graphTitle">TIMELINE</span>
+        <span id="graphLegend">
+          <span class="glg"><i class="sw pop"></i>POPULATION</span>
+          <span class="glg"><i class="sw food"></i>FOOD</span>
+        </span>
+      </div>
+      <div id="graphPlot"><canvas id="graphCanvas"></canvas><div id="graphEmpty" hidden>no timeline yet</div></div>
+    </div>
   </div>
   <div id="species"></div>
 </div></div>
@@ -1849,6 +1878,7 @@ addEventListener('keydown', e => {
   const key = e.key.toLowerCase();
   if (key === 'f'){ if (fpsHud) fpsHud.hidden = !fpsHud.hidden; }
   else if (key === 'k'){ const kp = document.getElementById('kpanel'); if (kp) kp.hidden = !kp.hidden; }
+  else if (key === 'g'){ toggleGraph(); }
 });
 let _fpsPrev = 0, _fpsEMA = 0, _fpsLogT = 0;
 function tickFPS(){
@@ -2101,6 +2131,117 @@ function fmtTime(t, units = timeUnits(t)) {
   if (units >= 2) return `${h}:${_p2(m)}:${_p2(s)}`;
   return `${_p2(m)}:${_p2(s)}`;
 }
+// current playhead + timeline length, mirrored out of startPlayback's closure so the timeline graph can draw a "now"
+// marker without re-reaching into it (0 in the browser, where there is no run to scrub).
+let scrubHead = 0, scrubFrontier = 0;
+
+// ================================================================== timeline history graph (G)
+// A glass panel over the main view plotting population + food across the WHOLE run. Data is the downsampled
+// ticks series the run reader already exposes (window.pool.scrub.popSeries -> [{tick,pop,food}]); we redraw on a
+// light interval while open so a live-generating run fills in, and on resize (cached data, no refetch).
+const graphEl = document.getElementById('graph');
+const graphCanvas = document.getElementById('graphCanvas');
+const graphEmpty = document.getElementById('graphEmpty');
+const gctx = graphCanvas ? graphCanvas.getContext('2d') : null;
+let graphData = [];            // last fetched [{tick,pop,food}]
+let graphTimer = 0;            // refresh interval id while open
+let _gDrawnHead = -1, _gDrawnFront = -1;   // dirty-check: skip the per-frame redraw when the playhead hasn't moved
+const G_COL_POP = '#7fd0a0', G_COL_FOOD = '#d9a441';
+
+function toggleGraph(){
+  if (!graphEl) return;
+  graphEl.hidden = !graphEl.hidden;
+  if (!graphEl.hidden){ refreshGraph(); graphTimer = graphTimer || setInterval(refreshGraph, 1500); }
+  else if (graphTimer){ clearInterval(graphTimer); graphTimer = 0; }
+}
+async function refreshGraph(){
+  if (!graphEl || graphEl.hidden) return;
+  try { graphData = (window.pool && window.pool.scrub) ? (await window.pool.scrub.popSeries({ maxPoints: 1400 })) || [] : []; }
+  catch { graphData = []; }
+  drawGraph();
+}
+function sizeGraphCanvas(){
+  if (!graphCanvas) return false;
+  const r = graphCanvas.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (graphCanvas.width !== w || graphCanvas.height !== h){ graphCanvas.width = w; graphCanvas.height = h; }
+  return true;
+}
+const gNice = v => { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); const m = v / p; const s = m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10; return s * p; };
+function drawGraph(){
+  if (!gctx || !graphEl || graphEl.hidden) return;
+  const has = graphData && graphData.length > 1;
+  if (graphEmpty) graphEmpty.hidden = has;
+  if (!sizeGraphCanvas()) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const W = graphCanvas.width / dpr, H = graphCanvas.height / dpr;
+  gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  gctx.clearRect(0, 0, W, H);
+  if (!has) return;
+
+  const L = 44, R = 46, T = 16, B = 24;                       // margins (px): room for pop axis (L), food axis (R), time (B)
+  const x0 = L, x1 = W - R, y0 = T, y1 = H - B, pw = Math.max(1, x1 - x0), ph = Math.max(1, y1 - y0);
+  const xMax = Math.max(1, scrubFrontier, graphData[graphData.length - 1].tick);
+  const popMax = gNice(graphData.reduce((m, r) => Math.max(m, r.pop || 0), 0));
+  const foodMax = gNice(graphData.reduce((m, r) => Math.max(m, r.food || 0), 0));
+  const X = t => x0 + (t / xMax) * pw;
+  const Ypop = v => y1 - (v / popMax) * ph;
+  const Yfood = v => y1 - (v / foodMax) * ph;
+
+  // horizontal grid (4 bands)
+  gctx.lineWidth = 1;
+  gctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  for (let i = 0; i <= 4; i++){ const y = Math.round(y0 + (ph * i / 4)) + 0.5; gctx.beginPath(); gctx.moveTo(x0, y); gctx.lineTo(x1, y); gctx.stroke(); }
+
+  // one series: filled area under a crisp line
+  const series = (val, Y, col, fillTop) => {
+    gctx.beginPath();
+    gctx.moveTo(X(graphData[0].tick), Y(val(graphData[0])));
+    for (let i = 1; i < graphData.length; i++) gctx.lineTo(X(graphData[i].tick), Y(val(graphData[i])));
+    // area fill
+    gctx.save();
+    gctx.lineTo(X(graphData[graphData.length - 1].tick), y1);
+    gctx.lineTo(X(graphData[0].tick), y1);
+    gctx.closePath();
+    const g = gctx.createLinearGradient(0, y0, 0, y1);
+    g.addColorStop(0, fillTop); g.addColorStop(1, 'rgba(0,0,0,0)');
+    gctx.fillStyle = g; gctx.fill();
+    gctx.restore();
+    // line on top
+    gctx.beginPath();
+    gctx.moveTo(X(graphData[0].tick), Y(val(graphData[0])));
+    for (let i = 1; i < graphData.length; i++) gctx.lineTo(X(graphData[i].tick), Y(val(graphData[i])));
+    gctx.lineWidth = 1.5; gctx.lineJoin = 'round'; gctx.strokeStyle = col; gctx.stroke();
+  };
+  series(r => r.food || 0, Yfood, G_COL_FOOD, 'rgba(217,164,65,0.20)');   // food behind
+  series(r => r.pop || 0, Ypop, G_COL_POP, 'rgba(127,208,160,0.26)');     // population in front
+
+  // playhead ("now" / scrub position)
+  if (scrubHead > 0 && scrubHead <= xMax){
+    const px = Math.round(X(scrubHead)) + 0.5;
+    gctx.strokeStyle = 'rgba(207,214,224,0.55)'; gctx.lineWidth = 1;
+    gctx.beginPath(); gctx.moveTo(px, y0); gctx.lineTo(px, y1); gctx.stroke();
+  }
+
+  // axis labels
+  gctx.font = '10px "OCR A", ui-monospace, "SF Mono", Menlo, monospace';
+  gctx.textBaseline = 'middle';
+  gctx.fillStyle = G_COL_POP; gctx.textAlign = 'right';                    // population axis (left): max at top, 0 at base
+  gctx.fillText(String(popMax), x0 - 6, y0 + 4);
+  gctx.fillStyle = 'rgba(127,208,160,0.5)'; gctx.fillText('0', x0 - 6, y1);
+  gctx.fillStyle = G_COL_FOOD; gctx.textAlign = 'left';                    // food axis (right): max at top
+  gctx.fillText(String(foodMax), x1 + 6, y0 + 4);
+  gctx.fillStyle = 'rgba(217,164,65,0.5)'; gctx.fillText('0', x1 + 6, y1);
+  // time axis (x): start / mid / end
+  gctx.fillStyle = '#5c6b80'; gctx.textBaseline = 'alphabetic';
+  const u = timeUnits(xMax);
+  gctx.textAlign = 'left';   gctx.fillText(fmtTime(0, u), x0, y1 + 15);
+  gctx.textAlign = 'center'; gctx.fillText(fmtTime(xMax / 2, u), (x0 + x1) / 2, y1 + 15);
+  gctx.textAlign = 'right';  gctx.fillText(fmtTime(xMax, u), x1, y1 + 15);
+}
+if (graphCanvas && 'ResizeObserver' in window){ new ResizeObserver(() => { if (!graphEl.hidden) drawGraph(); }).observe(graphCanvas); }
+
 function resetOverlays(clock = 0){ deselect(); known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }   // deselect: scrub/snap rebuilds world (stale ref)
 
 function startPlayback(){
@@ -2116,6 +2257,10 @@ function startPlayback(){
   function updateBar(){
     if (!dragging){ $slider.max = Math.max(0, frontier); $slider.value = head; }
     { const u = timeUnits(frontier); $time.textContent = `${fmtTime(head, u)} / ${fmtTime(frontier, u)}`; }
+    scrubHead = head; scrubFrontier = frontier;   // mirror the playhead for the timeline graph
+    // updateBar runs EVERY frame (even paused); only redraw the graph when the playhead/length actually moved, else
+    // an open graph would re-stroke two 1400-pt polylines + force a layout flush at 60fps on top of the WebGL render.
+    if (graphEl && !graphEl.hidden && (head !== _gDrawnHead || frontier !== _gDrawnFront)){ _gDrawnHead = head; _gDrawnFront = frontier; drawGraph(); }
     // highlight the active speed while playing (2^N == ticksPerFrame); nothing highlighted when paused
     for (const b of speedBtns) b.classList.toggle('active', playing && ticksPerFrame === (1 << (+b.dataset.n)));
   }
