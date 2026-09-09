@@ -2059,6 +2059,7 @@ window.__golden = function(s, ticks, frames, camOv, opts){
       }
       if (best){ cam.x = best.x; cam.y = best.y; }
     }
+    camT = { x: cam.x, y: cam.y, zoom: cam.zoom };   // keep the smoothing target in sync (defensive: this hook stops the loop, but so does no drift if it ever resumes)
   };
   const T = ticks|0, every = opts.interleave|0;
   if (every > 0){                                 // interleaved tick->render (exercises death-fade)
@@ -2102,7 +2103,7 @@ window.__bench = function(s, ticks, camOv, frames, junkFrac){
   seed = (s>>>0); cam.zoom = 6; build();
   gl.disable(gl.DITHER);
   for (let i=0; i<(ticks|0); i++) world.tick();
-  if (camOv) cam = { x: camOv.x ?? P.pool/2, y: camOv.y ?? P.pool/2, zoom: camOv.zoom ?? 6 };
+  if (camOv){ cam = { x: camOv.x ?? P.pool/2, y: camOv.y ?? P.pool/2, zoom: camOv.zoom ?? 6 }; camT = { x: cam.x, y: cam.y, zoom: cam.zoom }; }   // sync the smoothing target
   const _junk = P.junk; if (junkFrac !== undefined && junkFrac !== null) P.junk = junkFrac;
   const N = Math.max(1, frames|0);
   render(); gl.finish();                                        // warm-up: shader compile / buffer upload / first recluster
