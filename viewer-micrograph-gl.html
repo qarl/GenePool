@@ -5,11 +5,10 @@
 <title>GenePool — micrograph (GL)</title>
 <style>
   @font-face { font-family: 'OCR A'; src: url('fonts/OCRA.ttf') format('truetype'); font-display: swap; }   /* self-hosted, GPL/free */
-  /* Rajdhani (OFL) = the app CHROME font (bottom bar + K/graph panels). The VIEWERS keep OCR A (specimen data). */
-  @font-face { font-family: 'Rajdhani'; font-weight: 400; src: url('fonts/Rajdhani-Regular.woff2') format('woff2'); font-display: swap; }
-  @font-face { font-family: 'Rajdhani'; font-weight: 500; src: url('fonts/Rajdhani-Medium.woff2') format('woff2'); font-display: swap; }
-  @font-face { font-family: 'Rajdhani'; font-weight: 600; src: url('fonts/Rajdhani-SemiBold.woff2') format('woff2'); font-display: swap; }
-  :root { color-scheme: dark; --ui-font: 'Rajdhani', 'Segoe UI', system-ui, sans-serif; }   /* chrome font stack */
+  /* Quicksand (OFL, variable) = the app CHROME font (bottom bar + K/graph panels): rounded/soft, to contrast the boxy
+     OCR A the VIEWERS keep for specimen data. One variable woff2 covers the 300-700 weight axis. */
+  @font-face { font-family: 'Quicksand'; font-weight: 300 700; src: url('fonts/Quicksand.woff2') format('woff2'); font-display: swap; }
+  :root { color-scheme: dark; --ui-font: 'Quicksand', 'Segoe UI', system-ui, sans-serif; }   /* chrome font stack */
   body { margin: 0; background: #0b0e13; color: #cfd6e0; font: 13px/1.5 "OCR A", ui-monospace, "SF Mono", Menlo, monospace; }
   button, input, select, textarea, h1 { font-family: inherit; }   /* whole app uses OCR A ("our new font"), self-hosted above */
   header { padding: 8px 14px; background: #11161f; border-bottom: 1px solid #1e2733; }
@@ -284,6 +283,10 @@ const DEFAULTS = { ...P };
 
 let seed = 1, world = null, running = true, ticksPerFrame = 3;
 let cam = { x: P.pool/2, y: P.pool/2, zoom: 6 };
+// Unified smoothing (Karl "A"): every input writes the TARGET camera; updateCamera eases the real `cam` toward it each
+// frame (exp, time constant P.camSmooth). Drag/wheel/track all flow through the one smoother -> a cohesive, weighty feel
+// with a little "give" on the grab. Hard camera resets (build/loadWorld) must re-sync camT so the ease doesn't fight them.
+let camT = { x: cam.x, y: cam.y, zoom: cam.zoom };
 // --- swimmer selection + camera animation (see docs/PLAN-swimmer-selection.md) ---
 let selectedSb = null;            // the selected/tracked swimbot (a live World object; nulled on death/deselect/world-rebuild)
 let selectionOpenedId = null;     // species-row id that selection auto-opened (provenance, so deselect closes only that one)
@@ -875,6 +878,7 @@ function build(){
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
+  camT = { x: cam.x, y: cam.y, zoom: cam.zoom };   // sync the smoothing target to the hard reset
   document.getElementById('seedIn').value = seed;
 }
 
@@ -905,6 +909,7 @@ function loadWorld(saved){
   rowMap = new Map(); expanded = new Set(); if (speciesPanel) speciesPanel.replaceChildren();
   const rng = mulberry32((seed>>>0) ^ 0x5eed1234); seedJunk(rng);    // detritus re-seeded from seed (deterministic, cosmetic)
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
+  camT = { x: cam.x, y: cam.y, zoom: cam.zoom };   // sync the smoothing target to the hard reset
   document.getElementById('seedIn').value = seed;
 }
 if (window.pool && window.pool.isDesktop){
@@ -1298,8 +1303,8 @@ function measurePlateGlyphs(){
 // frame picks up the bitmaps. Fall back to plain text if font loading is unavailable.
 if (document.fonts && document.fonts.load) document.fonts.load(`600 ${CELL_FONT_PX}px "OCR A"`).then(measurePlateGlyphs, measurePlateGlyphs);
 else measurePlateGlyphs();
-// preload the chrome font so the graph's canvas text rasterises in Rajdhani (canvas silently falls back if unloaded)
-if (document.fonts && document.fonts.load){ document.fonts.load('500 11px "Rajdhani"').then(() => { if (graphEl && !graphEl.hidden) drawGraph(); }, () => {}); }
+// preload the chrome font so the graph's canvas text rasterises in Quicksand (canvas silently falls back if unloaded)
+if (document.fonts && document.fonts.load){ document.fonts.load('500 11px "Quicksand"').then(() => { if (graphEl && !graphEl.hidden) drawGraph(); }, () => {}); }
 
 // ============================================================ live constants editor ("K" = kConstants)
 // One [name][slider][number] row per editable key in P. Sliders/uniforms are read per frame, so editing P is live.
@@ -1948,24 +1953,32 @@ function deselect(){
   if (selectionOpenedId != null && expanded.has(selectionOpenedId)) setRowExpanded(selectionOpenedId, false);   // close only the selection-opened mini
   selectionOpenedId = null; selectedSb = null; camAnim.phase = 'idle'; camAnim.tracking = false;
 }
+const _mod = v => ((v % P.pool) + P.pool) % P.pool;
 function updateCamera(dt){
-  if (camAnim.phase === 'idle') return;
-  if (!selectedSb || !selectedSb.getAlive()){ camAnim.phase = 'idle'; camAnim.tracking = false; return; }   // safety (death also handled at the fold)
   dt = Math.min(dt, 0.1);   // clamp so a tab-stall doesn't jump-cut the camera
-  const c = selectedSb.getPosition();
-  if (camAnim.phase === 'zoom'){
-    camAnim.t += dt; const e = easeInOut(Math.min(1, camAnim.t / camAnim.dur));
-    const tx = wrapNear(c.x, camAnim.fromX, P.pool), ty = wrapNear(c.y, camAnim.fromY, P.pool), tlz = Math.log(fitZoomFor(selectedSb));
-    cam.x = camAnim.fromX + (tx-camAnim.fromX)*e; cam.y = camAnim.fromY + (ty-camAnim.fromY)*e; cam.zoom = Math.exp(camAnim.fromLZ + (tlz-camAnim.fromLZ)*e);
-    cam.x = ((cam.x % P.pool)+P.pool)%P.pool; cam.y = ((cam.y % P.pool)+P.pool)%P.pool;
-    if (camAnim.t >= camAnim.dur) camAnim.phase = camAnim.tracking ? 'track' : 'idle';
-  } else {   // 'track': critically-damped follow; zoom held (wheel adjusts it directly). Offset-snap across the torus seam.
-    if (c.x - cam.x > P.pool/2) cam.x += P.pool; else if (cam.x - c.x > P.pool/2) cam.x -= P.pool;
-    if (c.y - cam.y > P.pool/2) cam.y += P.pool; else if (cam.y - c.y > P.pool/2) cam.y -= P.pool;
-    const A = 1 - Math.exp(-dt / Math.max(1e-3, P.camSmooth));   // exp follow, frame-rate-independent; P.camSmooth = time constant (K-panel)
-    cam.x += (c.x-cam.x)*A; cam.y += (c.y-cam.y)*A;
-    cam.x = ((cam.x % P.pool)+P.pool)%P.pool; cam.y = ((cam.y % P.pool)+P.pool)%P.pool;
+  // (1) advance the TARGET from the active selection animation (drag/wheel set camT directly in their handlers).
+  if (camAnim.phase !== 'idle'){
+    if (!selectedSb || !selectedSb.getAlive()){ camAnim.phase = 'idle'; camAnim.tracking = false; }   // safety (death also handled at the fold)
+    else {
+      const c = selectedSb.getPosition();
+      if (camAnim.phase === 'zoom'){   // scripted fixed-duration eased zoom-to: drive the TARGET (cam eases to it below)
+        camAnim.t += dt; const e = easeInOut(Math.min(1, camAnim.t / camAnim.dur));
+        const tx = wrapNear(c.x, camAnim.fromX, P.pool), ty = wrapNear(c.y, camAnim.fromY, P.pool), tlz = Math.log(fitZoomFor(selectedSb));
+        camT.x = _mod(camAnim.fromX + (tx-camAnim.fromX)*e); camT.y = _mod(camAnim.fromY + (ty-camAnim.fromY)*e);
+        camT.zoom = Math.exp(camAnim.fromLZ + (tlz-camAnim.fromLZ)*e);
+        if (camAnim.t >= camAnim.dur) camAnim.phase = camAnim.tracking ? 'track' : 'idle';
+      } else {   // 'track': target = the swimmer (zoom held; wheel adjusts camT.zoom). Seam handled by the smoother's wrapNear.
+        camT.x = _mod(c.x); camT.y = _mod(c.y);
+      }
+    }
   }
+  // (2) the ONE smoother: ease the real camera toward the target every frame (so drag/wheel are smoothed too, not just
+  // tracking). Exp, frame-rate-independent; P.camSmooth = time constant (K-panel). Offset-snap x/y across the torus seam.
+  const A = 1 - Math.exp(-dt / Math.max(1e-3, P.camSmooth));
+  const tx = wrapNear(camT.x, cam.x, P.pool), ty = wrapNear(camT.y, cam.y, P.pool);
+  cam.x = _mod(cam.x + (tx - cam.x) * A);
+  cam.y = _mod(cam.y + (ty - cam.y) * A);
+  cam.zoom = Math.exp(Math.log(cam.zoom) + (Math.log(camT.zoom) - Math.log(cam.zoom)) * A);
 }
 window.__stepCamera = (n, dt) => { for (let i=0;i<(n|0);i++) updateCamera(dt||1/60); return { x: cam.x, y: cam.y, zoom: cam.zoom, phase: camAnim.phase }; };   // deterministic test hook
 // INERT selection test hooks (like __golden): find an on-screen clickable bot + read selection state.
@@ -1978,16 +1991,17 @@ cv.addEventListener('wheel', (e)=>{
   e.preventDefault();
   const f = Math.exp(-e.deltaY*0.0015);
   if (camAnim.tracking){   // tracking: zoom stays centred on the bot; keep following (Karl). Re-frame only.
-    cam.zoom = Math.max(0.5, Math.min(60, cam.zoom*f));
+    camT.zoom = Math.max(0.5, Math.min(60, camT.zoom*f));
     if (camAnim.phase === 'zoom') camAnim.phase = 'track';   // a manual zoom ends the auto zoom-to but keeps the follow
     return;
   }
-  // zoom around the CURSOR: keep the world point under the mouse pinned on screen as the scale changes.
-  const [px, py] = cursorToBacking(e); const s0 = sc();
-  const wx = cam.x + (px-W/2)/s0, wy = cam.y + (py-H/2)/s0;   // world point under the cursor, before zoom
-  cam.zoom = Math.max(0.5, Math.min(60, cam.zoom*f));
-  const s1 = sc();
-  cam.x = wx - (px-W/2)/s1; cam.y = wy - (py-H/2)/s1;         // re-centre so that same world point stays under the cursor
+  // zoom around the CURSOR: pin the world point under the mouse as the scale changes. All motion flows through the target
+  // (cam eases to it), so the pin is exact on the TARGET and converges on screen with the smoother's "give".
+  const [px, py] = cursorToBacking(e); const s0 = fitZoom()*camT.zoom;
+  const wx = camT.x + (px-W/2)/s0, wy = camT.y + (py-H/2)/s0;   // world point under the cursor, before zoom
+  camT.zoom = Math.max(0.5, Math.min(60, camT.zoom*f));
+  const s1 = fitZoom()*camT.zoom;
+  camT.x = wx - (px-W/2)/s1; camT.y = wy - (py-H/2)/s1;         // re-centre the TARGET so that world point stays under the cursor
 }, {passive:false});
 let dragging=false, lastX=0, lastY=0, downX=0, downY=0, clickMoved=false;
 cv.addEventListener('mousedown', (e)=>{ dragging=true; clickMoved=false; downX=lastX=e.clientX; downY=lastY=e.clientY; cv.classList.add('drag'); });
@@ -2003,7 +2017,7 @@ window.addEventListener('mousemove', (e)=>{
   if (!clickMoved && Math.hypot(e.clientX-downX, e.clientY-downY) > 6) clickMoved = true;   // >6px = a pan, not a click
   if (!clickMoved) return;
   if (camAnim.tracking) { camAnim.phase = 'idle'; camAnim.tracking = false; }   // a manual pan frees the camera (selection kept)
-  const s=sc(); cam.x -= (e.clientX-lastX)/s; cam.y -= (e.clientY-lastY)/s; lastX=e.clientX; lastY=e.clientY;
+  const s=sc(); camT.x -= (e.clientX-lastX)/s; camT.y -= (e.clientY-lastY)/s; lastX=e.clientX; lastY=e.clientY;   // drag the TARGET; cam eases to it (a little "give")
 });
 addEventListener('keydown', (e)=>{ if (e.key === 'Escape' && (selectedSb || selectionOpenedId)) deselect(); });   // Esc = deselect
 // hover a swimmer -> pointer cursor (so it's discoverable that swimmers are clickable). Throttled; skipped while panning.
@@ -2234,7 +2248,7 @@ function drawGraph(){
   }
 
   // axis labels
-  gctx.font = '500 11px "Rajdhani", "Segoe UI", system-ui, sans-serif';   // chrome font (matches the panel); viewers keep OCR A
+  gctx.font = '500 11px "Quicksand", "Segoe UI", system-ui, sans-serif';   // chrome font (matches the panel); viewers keep OCR A
   gctx.textBaseline = 'middle';
   gctx.fillStyle = G_COL_POP; gctx.textAlign = 'right';                    // population axis (left): max at top, 0 at base
   gctx.fillText(String(popMax), x0 - 6, y0 + 4);
