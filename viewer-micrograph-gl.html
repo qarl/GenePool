@@ -83,8 +83,8 @@
   /* selection ring: a thin black circle ~10% larger than the selected swimmer, centred on him. Its WORLD size is frozen at
      select (updateSelRing sets width/height each frame from the frozen radius x zoom -> the circle scales with zoom but the
      1.5px line stays thin at every zoom; transform:scale would fatten the line). */
-  #selRing { position: absolute; z-index: 4; pointer-events: none; box-sizing: border-box;
-    border: 0.75px solid #000; border-radius: 50%; transform: translate(-50%, -50%); }
+  #selClip { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; border-radius: 12px; }   /* clip the ring to the main view (matches #cv's rounded corners) so it never spills onto the species panel */
+  #selRing { position: absolute; box-sizing: border-box; border: 0.75px solid #000; border-radius: 50%; transform: translate(-50%, -50%); }
   #selRing[hidden] { display: none; }
   /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
   #fpsHud { position: absolute; top: 12px; right: 12px; z-index: 5; pointer-events: none; font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace;
@@ -173,7 +173,7 @@
 <div id="wrap"><div id="stage">
   <div id="canvasBox"><canvas id="cv" width="768" height="768"></canvas>
     <div class="tileLabel" id="labMain"></div>
-    <div id="selRing" hidden></div>   <!-- thin ring around the selected swimmer (size frozen at select; tracks his position) -->
+    <div id="selClip"><div id="selRing" hidden></div></div>   <!-- selRing = thin ring around the selected swimmer (frozen size, tracks him); clipped to the main view so it can't spill onto the species panel -->
     <div id="fpsHud" hidden></div>   <!-- hidden by default; press F to toggle (see keydown handler) -->
     <!-- whole-timeline history graph (population + food); overlays the main view, toggle with the G key. -->
     <div id="graph" hidden>
