@@ -84,7 +84,7 @@
      select (updateSelRing sets width/height each frame from the frozen radius x zoom -> the circle scales with zoom but the
      1.5px line stays thin at every zoom; transform:scale would fatten the line). */
   #selRing { position: absolute; z-index: 4; pointer-events: none; box-sizing: border-box;
-    border: 1.5px solid #000; border-radius: 50%; transform: translate(-50%, -50%); }
+    border: 0.75px solid #000; border-radius: 50%; transform: translate(-50%, -50%); }
   #selRing[hidden] { display: none; }
   /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
   #fpsHud { position: absolute; top: 12px; right: 12px; z-index: 5; pointer-events: none; font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace;
@@ -1849,7 +1849,7 @@ function drawInfoOverlay(ctx){   // mirrors #labMain: population plate + diversi
 }
 function drawSelRing2D(ctx, kx, ky){   // draw the selection ring onto a 2D ctx (kx/ky scale backing px -> the ctx). Returns whether it drew.
   const g = selRingGeom(); if (!g) return false;   // selection ring is a DOM layer captureStream can't see -> redraw it here
-  ctx.beginPath(); ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5 * kx;
+  ctx.beginPath(); ctx.strokeStyle = '#000'; ctx.lineWidth = 0.75 * kx;
   ctx.ellipse(g.sx * kx, g.sy * ky, g.r * kx, g.r * ky, 0, 0, Math.PI * 2); ctx.stroke();
   return true;
 }
@@ -1980,7 +1980,7 @@ function updateSelRing(){   // called each frame AFTER render() (so cam/W/H are 
 function select(sb){
   if (!sb || !sb.getAlive()) return;
   selectedSb = sb;
-  selRingR = Math.max(6, botRadius(sb) * 1.10);   // ~10% larger than the swimmer; frozen now (UI size won't change as he flexes/grows)
+  selRingR = Math.max(9, botRadius(sb) * 1.65);   // ~65% larger than the swimmer (was 1.10, +50%); frozen now (UI size won't change as he flexes/grows)
   camAnim.fromX = cam.x; camAnim.fromY = cam.y; camAnim.fromLZ = Math.log(cam.zoom);   // begin the fixed-duration zoom-to
   camAnim.t = 0; camAnim.phase = 'zoom'; camAnim.tracking = true;
   const sid = speciesModel.speciesIdOf(sb);   // open its species mini (if it has one -- 1-part bots have none)
@@ -2031,7 +2031,7 @@ window.__selTest = {
     recCtx.fillStyle = '#fff'; recCtx.fillRect(0, 0, recCanvas.width, recCanvas.height);
     const drew = drawSelRing2D(recCtx, 1, 1);
     const d = recCtx.getImageData(0, 0, recCanvas.width, recCanvas.height).data; let dark = 0;
-    for (let i = 0; i < d.length; i += 4){ if (d[i] < 40 && d[i+1] < 40 && d[i+2] < 40 && d[i+3] > 200) dark++; }
+    for (let i = 0; i < d.length; i += 4){ if (d[i] < 220 && d[i+3] > 200) dark++; }   // non-white on the white bg = the ring line (AA gray counts)
     return { drew, darkPx: dark };
   },
 };
