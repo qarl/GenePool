@@ -1267,6 +1267,7 @@ let rowMap = new Map();            // id -> the collapsed <div.srow> in #species
 let expanded = new Set();          // ids currently expanded into a live mini-viewer
 let miniShowing = new Set();       // ids whose mini is rendered live = expanded PLUS rows mid close-animation (keep moving while they roll up)
 let miniCursor = 0; const MINI_BUDGET = 6;   // <=6 live minis rendered per frame; extras refresh round-robin (thumbnails)
+let speciesAllOpen = false;        // false = accordion (one open at a time); true = ALL species minis open (press A). Render cost stays bounded by MINI_BUDGET.
 const DIV_MAX = 60;                              // reference mean-per-gene std that reads 100 (founding ~73 pins at 100; punchy)
 const divPct = std => Math.round(Math.min(100, Math.max(0, 100 * std / DIV_MAX)));   // mean per-gene std -> 0..100
 // Species clustering, junkOf/junkSim, the PCA signature + the lifespan fold now live in engine/analysis/species.mjs;
@@ -1490,7 +1491,8 @@ function makeRow(id){
 function scheduleMiniHide(id){ setTimeout(() => { if (!expanded.has(id)) miniShowing.delete(id); }, FLIP_MS + 60); }   // keep rendering through the close roll-up
 function setRowExpanded(id, open){
   if (open){
-    if (!expanded.has(id)){ for (const oid of expanded){ rowMap.get(oid)?.classList.remove('exp'); scheduleMiniHide(oid); } expanded.clear(); expanded.add(id); }
+    // accordion: opening one closes the others. In ALL-OPEN mode, skip the close so every species stays open.
+    if (!expanded.has(id)){ if (!speciesAllOpen){ for (const oid of expanded){ rowMap.get(oid)?.classList.remove('exp'); scheduleMiniHide(oid); } expanded.clear(); } expanded.add(id); }
     miniShowing.add(id);   // render its live mini from the first reveal frame (swimmer keeps moving as it opens)
     const el = rowMap.get(id); if (el){ el.classList.add('exp'); el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }   // if off-screen, glide it into view
     if (selectionOpenedId != null && selectionOpenedId !== id) selectionOpenedId = null;   // accordion evicted the selection row -> drop stale provenance
@@ -1499,6 +1501,14 @@ function setRowExpanded(id, open){
     scheduleMiniHide(id);   // keep the mini live+moving while it rolls up, then stop
     if (selectionOpenedId === id) selectionOpenedId = null;
   }
+}
+// Toggle ALL-OPEN <-> accordion (the A key). On: open every current row (they animate open, new species auto-open in
+// updateSpeciesUI). Off: collapse all -> a clean accordion state (click a card to open one). Render cost stays capped
+// by MINI_BUDGET (<=6 live minis/frame) either way.
+function setSpeciesAllOpen(on){
+  speciesAllOpen = on;
+  if (on){ for (const id of rowMap.keys()){ expanded.add(id); miniShowing.add(id); rowMap.get(id)?.classList.add('exp'); } }
+  else { for (const id of [...expanded]) setRowExpanded(id, false); }   // back to accordion: roll them all up
 }
 if (speciesPanel){
   speciesPanel.addEventListener('pointerdown', e => {
@@ -1550,7 +1560,8 @@ function updateSpeciesUI(){
   for (const [id, t] of live){                          // create rows / refresh plate only when the signature changed
     let el = rowMap.get(id);
     if (!el){ el = makeRow(id); rowMap.set(id, el); el._deferExp = true;   // brand-new: leave collapsed THIS frame so 0fr paints -> it animates open next frame (S2)
-      el.classList.add('entering'); setTimeout(() => el.classList.remove('entering'), 380); }   // fade the new row into the list (rows below FLIP down to make room)
+      el.classList.add('entering'); setTimeout(() => el.classList.remove('entering'), 380);   // fade the new row into the list (rows below FLIP down to make room)
+      if (speciesAllOpen){ expanded.add(id); miniShowing.add(id); } }   // all-open mode: a new species opens too (animates via the deferExp dance)
     if (el._deferExp){ el._deferExp = false; }
     else el.classList.toggle('exp', expanded.has(id));   // sync .exp to the authoritative `expanded` (the grid-row reveal animates it)
     if (el._sig !== t.sig){ el._plateHost.innerHTML = plateHTML(t.sig); el._sig = t.sig; }   // plate: only on signature change
@@ -1914,6 +1925,7 @@ addEventListener('keydown', e => {
   if (key === 'f'){ if (fpsHud) fpsHud.hidden = !fpsHud.hidden; }
   else if (key === 'k'){ const kp = document.getElementById('kpanel'); if (kp) kp.hidden = !kp.hidden; }
   else if (key === 'g'){ toggleGraph(); }
+  else if (key === 'a'){ setSpeciesAllOpen(!speciesAllOpen); }   // A = toggle ALL species minis open <-> accordion (one at a time)
   else if (key === ' '){ e.preventDefault(); togglePlay(); }   // space = play/pause (preventDefault: no page-scroll / focused-button click)
 });
 let _fpsPrev = 0, _fpsEMA = 0, _fpsLogT = 0;
@@ -1990,7 +2002,7 @@ function select(sb){
   camAnim.fromX = cam.x; camAnim.fromY = cam.y; camAnim.fromLZ = Math.log(cam.zoom);   // begin the fixed-duration zoom-to
   camAnim.t = 0; camAnim.phase = 'zoom'; camAnim.tracking = true;
   const sid = speciesModel.speciesIdOf(sb);   // open its species mini (if it has one -- 1-part bots have none)
-  if (sid != null){ setRowExpanded(sid, true); selectionOpenedId = sid; }   // setRowExpanded smooth-scrolls it into view
+  if (sid != null){ setRowExpanded(sid, true); selectionOpenedId = speciesAllOpen ? null : sid; }   // scrolls it into view; in all-open mode don't track provenance (deselect must not close a row)
   else selectionOpenedId = null;
 }
 function deselect(){
