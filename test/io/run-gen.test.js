@@ -46,8 +46,12 @@ test('run-gen: generated .db reconstructs bit-for-bit against a fresh continuous
 
             // the run actually evolved (real dynamics crossed): pop is alive
             assert.ok(summary.finalPop > 0, 'run went extinct');
-            // keyframes-only recording: no stats/event rows are written (the file stays bounded under unbounded gen)
-            assert.equal(r.getStats(T), null, 'generator records only keyframes -> no stats rows');
+            // keyframes + a compact per-keyframe STATS row (diversity + life expectancy for the timeline graph); still no
+            // fine-grained event/tick rows (the file stays bounded under unbounded gen).
+            const st = r.getStats(T);
+            assert.ok(st && st.stats && typeof st.stats.div === 'number', 'a stats row (diversity) is written per keyframe');
+            assert.ok('life' in st.stats, 'stats carries life expectancy (may be null until the first death)');
+            assert.equal(r.db.prepare('SELECT COUNT(*) c FROM stats').get().c, summary.keyframes, 'one stats row per keyframe');
             assert.equal(r.db.prepare('SELECT COUNT(*) c FROM ticks').get().c, 0, 'no event/tick rows recorded');
         } finally { r.close(); }
     } finally { rmSync(dir, { recursive: true, force: true }); }

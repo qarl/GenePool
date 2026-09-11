@@ -150,6 +150,8 @@
   #graphLegend .sw { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
   #graphLegend .sw.pop { background: #7fd0a0; color: #7fd0a0; }
   #graphLegend .sw.food { background: #d9a441; color: #d9a441; }
+  #graphLegend .sw.div { background: #6cb8e6; color: #6cb8e6; }
+  #graphLegend .sw.life { background: #cf8fd4; color: #cf8fd4; }
   #graphPlot { position: relative; flex: 1; min-height: 0; }
   #graphCanvas { display: block; width: 100%; height: 100%; }
   #graphEmpty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -182,6 +184,8 @@
         <span id="graphLegend">
           <span class="glg"><i class="sw pop"></i>POPULATION</span>
           <span class="glg"><i class="sw food"></i>FOOD</span>
+          <span class="glg"><i class="sw div"></i>DIVERSITY</span>
+          <span class="glg"><i class="sw life"></i>LIFE</span>
         </span>
       </div>
       <div id="graphPlot"><canvas id="graphCanvas"></canvas><div id="graphEmpty" hidden>no timeline yet</div></div>
@@ -2219,7 +2223,7 @@ const gctx = graphCanvas ? graphCanvas.getContext('2d') : null;
 let graphData = [];            // last fetched [{tick,pop,food}]
 let graphTimer = 0;            // refresh interval id while open
 let _gDrawnHead = -1, _gDrawnFront = -1;   // dirty-check: skip the per-frame redraw when the playhead hasn't moved
-const G_COL_POP = '#7fd0a0', G_COL_FOOD = '#d9a441';
+const G_COL_POP = '#7fd0a0', G_COL_FOOD = '#d9a441', G_COL_DIV = '#6cb8e6', G_COL_LIFE = '#cf8fd4';
 
 function toggleGraph(){
   if (!graphEl) return;
@@ -2289,6 +2293,22 @@ function drawGraph(){
   };
   series(r => r.food || 0, Yfood, G_COL_FOOD, 'rgba(217,164,65,0.20)');   // food behind
   series(r => r.pop || 0, Ypop, G_COL_POP, 'rgba(127,208,160,0.26)');     // population in front
+
+  // diversity + life expectancy: plain lines (no fill, so 4 areas don't muddy). val() returns null to break the line
+  // (older runs with no stats; life is null until the first death). Diversity uses the same divPct 0..100 as the overlay
+  // bar; life auto-scales to its own peak (a small fraction of MAX_LIFESPAN -- auto-scale shows the shape).
+  const line = (val, Y, col) => {
+    gctx.lineWidth = 1.5; gctx.lineJoin = 'round'; gctx.strokeStyle = col; gctx.beginPath();
+    let pen = false;
+    for (let i = 0; i < graphData.length; i++){ const v = val(graphData[i]); if (v == null){ pen = false; continue; }
+      const x = X(graphData[i].tick), y = Y(v); if (!pen){ gctx.moveTo(x, y); pen = true; } else gctx.lineTo(x, y); }
+    gctx.stroke();
+  };
+  const lifeMax = gNice(graphData.reduce((m, r) => (r.life != null ? Math.max(m, r.life) : m), 0)) || 1;
+  const Ydiv = v => y1 - (v / 100) * ph;              // diversity: fixed 0..100 (divPct)
+  const Ylife = v => y1 - (v / lifeMax) * ph;         // life: auto-scaled to its peak
+  line(r => (r.div == null ? null : divPct(r.div)), Ydiv, G_COL_DIV);
+  line(r => (r.life == null ? null : r.life), Ylife, G_COL_LIFE);
 
   // playhead ("now" / scrub position)
   if (scrubHead > 0 && scrubHead <= xMax){

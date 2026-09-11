@@ -17,6 +17,7 @@ import { dirname } from 'node:path';
 import { World } from '../../engine/world.js';
 import { openRunWriter } from '../events/run-db.mjs';
 import { makeStandardWorld, poolConfig, POOL_DEFAULTS } from '../../engine/pool-seed.mjs';
+import { createSpeciesAnalyzer } from '../../engine/analysis/species.mjs';
 
 export const GEN_DEFAULTS = { ticks: 20000, keyframeInterval: 2000, statsInterval: 250, tickThrottle: 100, keyframeBudget: 500, ...POOL_DEFAULTS };
 
@@ -39,6 +40,14 @@ export function generateRun(path, seed, opts = {}) {
         engineVersion: o.engineVersion ?? null, perceptionMode: 'mixed-live',
     }, { resume: !!o.resume });
 
+    // Per-keyframe STATS: whole-pool diversity (popDivEMA) + life expectancy (popLifeEMA, EMA of age-at-death), the same
+    // metrics the viewer's upper-left overlay shows. Diversity is recomputed per keyframe; life is folded per DEATH via a
+    // lightweight world event handler (only 'death' is used). Measured overhead is within noise (tick cost dominates), so
+    // the generator stays flat-out. NOTE: on resume the EMAs restart (fresh analyzer) -> a resumed run's early stats are
+    // null/rebuilding; a fresh run (the wipe-and-regenerate flow) has full-history stats.
+    const analyzer = createSpeciesAnalyzer();
+    const statsRow = () => ({ div: analyzer.popDivEMA, life: analyzer.popLifeEMA });
+
     let world, startTick = 0, keyframes = 0, resumed = false;
     if (writer.resumedFrom) {
         // S4/S5 crash-resume: restore from the last durable keyframe using the RUN'S stored config (S2), continue.
@@ -46,9 +55,11 @@ export function generateRun(path, seed, opts = {}) {
         startTick = writer.resumedFrom.tick;
         resumed = true;
     } else {
-        ({ world } = buildWorld(seed, o));                 // no onEvent attached -> zero per-tick overhead
-        writer.writeKeyframe(0, world.serialize()); keyframes++;   // keyframe-0 = seeded state (D8)
+        ({ world } = buildWorld(seed, o));                 // built without onEvent; the death handler below is attached next
+        analyzer.recompute(world._swimbots.values());
+        writer.writeKeyframe(0, world.serialize(), statsRow()); keyframes++;   // keyframe-0 = seeded state (D8) + its stats
     }
+    world._onEvent = (e) => { if (e && e.type === 'death') analyzer.foldDeath(null, e.age); };   // fold age-at-death into popLifeEMA (pop-level; null sb skips the lineage EMA)
     if (o.onReady) o.onReady({ path, frontier: startTick });   // db has a keyframe + WAL -> reader may open (S3 handshake)
 
     // EXTINCTION = terminal: once every swimbot is dead there are no parents, so no births can ever occur -- the pool
@@ -59,7 +70,8 @@ export function generateRun(path, seed, opts = {}) {
         world.tick();
         living = world.getLivingSwimbotCount();
         if (t % o.keyframeInterval === 0 || living === 0) {          // keyframe on the interval, plus a FINAL one at extinction
-            writer.writeKeyframe(t, world.serialize()); keyframes++;
+            analyzer.recompute(world._swimbots.values());            // refresh diversity for this keyframe (life is folded per death above)
+            writer.writeKeyframe(t, world.serialize(), statsRow()); keyframes++;
             if (o.onProgress) o.onProgress(t, t);
         }
     }

@@ -229,8 +229,14 @@ export function openRunReader(path, { readOnly = true } = {}) {
     async function getPopSeries({ maxPoints = 1000 } = {}) {
         const hi = frontier();
         const rows = db.prepare('SELECT tick, pop, food FROM ticks WHERE tick <= ? ORDER BY tick').all(hi);
-        const series = rows.length ? rows : await snapshotSeries(hi);
-        return downsample(series, maxPoints);
+        const base = rows.length ? rows : await snapshotSeries(hi);
+        const series = downsample(base, maxPoints);
+        // attach per-keyframe stats (diversity + life expectancy) written alongside snapshots -> aligned by tick. Absent
+        // (older runs with an empty stats table) -> div/life null, and the graph just omits those lines. Bounded rows.
+        const statsRows = db.prepare('SELECT tick, json FROM stats WHERE tick <= ? ORDER BY tick').all(hi);
+        const byTick = new Map();
+        for (const s of statsRows) { try { byTick.set(s.tick, JSON.parse(s.json)); } catch { /* skip a torn row */ } }
+        return series.map(r => { const j = byTick.get(r.tick); return { tick: r.tick, pop: r.pop, food: r.food, div: j ? (j.div ?? null) : null, life: j ? (j.life ?? null) : null }; });
     }
 
     return { db, frontier, meta, runConfig, getKeyframe, getStats, getPopSeries, close() { db.close(); } };
