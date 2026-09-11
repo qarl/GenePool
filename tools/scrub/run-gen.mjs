@@ -23,8 +23,8 @@ export const GEN_DEFAULTS = { ticks: 20000, keyframeInterval: 2000, statsInterva
 // Build the seed's world via the SHARED seeder (engine/pool-seed.mjs) so a generated run is IDENTICAL to what the live
 // viewer shows for that seed -- region 3000, 220 junk-zeroed founders, 700 food, the viewer's config. onEvent is
 // attached later so seeding events aren't recorded (keyframe-0 captures the seeded state instead, D8).
-export function buildWorld(seed, { pool, n, food } = {}) {
-    return makeStandardWorld(seed, { pool: pool ?? POOL_DEFAULTS.pool, n: n ?? POOL_DEFAULTS.n, food: food ?? POOL_DEFAULTS.food });
+export function buildWorld(seed, { pool, n, food, settings } = {}) {
+    return makeStandardWorld(seed, { pool: pool ?? POOL_DEFAULTS.pool, n: n ?? POOL_DEFAULTS.n, food: food ?? POOL_DEFAULTS.food, settings: settings ?? {} });
 }
 
 // Generate a run to `path`. Returns a small summary. `onProgress(tick)` / `onReady()` optional (the utilityProcess
@@ -34,7 +34,7 @@ export function buildWorld(seed, { pool, n, food } = {}) {
 export function generateRun(path, seed, opts = {}) {
     const o = { ...GEN_DEFAULTS, ...opts };
     const writer = openRunWriter(path, {
-        seed: seed >>> 0, config: poolConfig(o.pool),
+        seed: seed >>> 0, config: poolConfig(o.pool, o.settings ?? {}),   // per-pool experiment settings baked into the run's stored config
         keyframeInterval: o.keyframeInterval, keyframeBudget: o.keyframeBudget,
         engineVersion: o.engineVersion ?? null, perceptionMode: 'mixed-live',
     }, { resume: !!o.resume });
