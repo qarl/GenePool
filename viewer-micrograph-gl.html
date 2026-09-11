@@ -148,10 +148,12 @@
   #graphLegend { display: inline-flex; gap: 14px; letter-spacing: 0.06em; }
   #graphLegend .glg { display: inline-flex; align-items: center; gap: 6px; color: #8fa0b5; }
   #graphLegend .sw { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
-  #graphLegend .sw.pop { background: #7fd0a0; color: #7fd0a0; }
-  #graphLegend .sw.food { background: #d9a441; color: #d9a441; }
+  #graphLegend .sw.pop { background: #d9a441; color: #d9a441; }
+  #graphLegend .sw.food { background: #7fd0a0; color: #7fd0a0; }
   #graphLegend .sw.div { background: #6cb8e6; color: #6cb8e6; }
   #graphLegend .sw.life { background: #cf8fd4; color: #cf8fd4; }
+  #graphLegend .glg { cursor: pointer; transition: opacity 120ms; }   /* click to pick which metric labels the left axis */
+  #graphLegend .glg:not(.sel) { opacity: 0.45; }                      /* the selected metric stays lit; others dim */
   #graphPlot { position: relative; flex: 1; min-height: 0; }
   #graphCanvas { display: block; width: 100%; height: 100%; }
   #graphEmpty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -182,10 +184,10 @@
       <div id="graphHead">
         <span id="graphTitle">TIMELINE</span>
         <span id="graphLegend">
-          <span class="glg"><i class="sw pop"></i>POPULATION</span>
-          <span class="glg"><i class="sw food"></i>FOOD</span>
-          <span class="glg"><i class="sw div"></i>DIVERSITY</span>
-          <span class="glg"><i class="sw life"></i>LIFE</span>
+          <span class="glg sel" data-m="pop"><i class="sw pop"></i>POPULATION</span>
+          <span class="glg" data-m="food"><i class="sw food"></i>FOOD</span>
+          <span class="glg" data-m="div"><i class="sw div"></i>DIVERSITY</span>
+          <span class="glg" data-m="life"><i class="sw life"></i>LIFESPAN</span>
         </span>
       </div>
       <div id="graphPlot"><canvas id="graphCanvas"></canvas><div id="graphEmpty" hidden>no timeline yet</div></div>
@@ -2223,7 +2225,8 @@ const gctx = graphCanvas ? graphCanvas.getContext('2d') : null;
 let graphData = [];            // last fetched [{tick,pop,food}]
 let graphTimer = 0;            // refresh interval id while open
 let _gDrawnHead = -1, _gDrawnFront = -1;   // dirty-check: skip the per-frame redraw when the playhead hasn't moved
-const G_COL_POP = '#7fd0a0', G_COL_FOOD = '#d9a441', G_COL_DIV = '#6cb8e6', G_COL_LIFE = '#cf8fd4';
+const G_COL_POP = '#d9a441', G_COL_FOOD = '#7fd0a0', G_COL_DIV = '#6cb8e6', G_COL_LIFE = '#cf8fd4';   // food = green (Karl), population = amber
+let graphMetric = 'pop';   // which metric owns the (single) left axis; click a legend entry to switch
 
 function toggleGraph(){
   if (!graphEl) return;
@@ -2257,7 +2260,7 @@ function drawGraph(){
   gctx.clearRect(0, 0, W, H);
   if (!has) return;
 
-  const L = 44, R = 46, T = 16, B = 24;                       // margins (px): room for pop axis (L), food axis (R), time (B)
+  const L = 48, R = 14, T = 16, B = 24;                       // margins (px): one axis on the LEFT (selected metric), time (B)
   const x0 = L, x1 = W - R, y0 = T, y1 = H - B, pw = Math.max(1, x1 - x0), ph = Math.max(1, y1 - y0);
   const xMax = Math.max(1, scrubFrontier, graphData[graphData.length - 1].tick);
   const popMax = gNice(graphData.reduce((m, r) => Math.max(m, r.pop || 0), 0));
@@ -2291,8 +2294,8 @@ function drawGraph(){
     for (let i = 1; i < graphData.length; i++) gctx.lineTo(X(graphData[i].tick), Y(val(graphData[i])));
     gctx.lineWidth = 1.5; gctx.lineJoin = 'round'; gctx.strokeStyle = col; gctx.stroke();
   };
-  series(r => r.food || 0, Yfood, G_COL_FOOD, 'rgba(217,164,65,0.20)');   // food behind
-  series(r => r.pop || 0, Ypop, G_COL_POP, 'rgba(127,208,160,0.26)');     // population in front
+  series(r => r.food || 0, Yfood, G_COL_FOOD, 'rgba(127,208,160,0.26)');   // food = green, behind
+  series(r => r.pop || 0, Ypop, G_COL_POP, 'rgba(217,164,65,0.22)');       // population = amber, in front
 
   // diversity + life expectancy: plain lines (no fill, so 4 areas don't muddy). val() returns null to break the line
   // (older runs with no stats; life is null until the first death). Diversity uses the same divPct 0..100 as the overlay
@@ -2317,15 +2320,18 @@ function drawGraph(){
     gctx.beginPath(); gctx.moveTo(px, y0); gctx.lineTo(px, y1); gctx.stroke();
   }
 
-  // axis labels
+  // ONE left axis, for the SELECTED metric (click a legend entry to switch). Reading at every gridline (0..max), coloured
+  // to the metric so it's clear which line it labels. Diversity is a %, lifespan a duration (mm:ss), pop/food counts.
+  const axisFor = {
+    pop:  { max: popMax,  col: G_COL_POP,  fmt: v => String(Math.round(v)) },
+    food: { max: foodMax, col: G_COL_FOOD, fmt: v => String(Math.round(v)) },
+    div:  { max: 100,     col: G_COL_DIV,  fmt: v => Math.round(v) + '%' },
+    life: { max: lifeMax, col: G_COL_LIFE, fmt: v => fmtTime(v) },
+  };
+  const ax = axisFor[graphMetric] || axisFor.pop;
   gctx.font = '500 11px "Quicksand", "Segoe UI", system-ui, sans-serif';   // chrome font (matches the panel); viewers keep OCR A
-  gctx.textBaseline = 'middle';
-  gctx.fillStyle = G_COL_POP; gctx.textAlign = 'right';                    // population axis (left): max at top, 0 at base
-  gctx.fillText(String(popMax), x0 - 6, y0 + 4);
-  gctx.fillStyle = 'rgba(127,208,160,0.5)'; gctx.fillText('0', x0 - 6, y1);
-  gctx.fillStyle = G_COL_FOOD; gctx.textAlign = 'left';                    // food axis (right): max at top
-  gctx.fillText(String(foodMax), x1 + 6, y0 + 4);
-  gctx.fillStyle = 'rgba(217,164,65,0.5)'; gctx.fillText('0', x1 + 6, y1);
+  gctx.textBaseline = 'middle'; gctx.textAlign = 'right'; gctx.fillStyle = ax.col;
+  for (let i = 0; i <= 4; i++){ const y = y0 + ph * i / 4; gctx.fillText(ax.fmt(ax.max * (4 - i) / 4), x0 - 6, y); }
   // time axis (x): start / mid / end
   gctx.fillStyle = '#5c6b80'; gctx.textBaseline = 'alphabetic';
   const u = timeUnits(xMax);
@@ -2334,6 +2340,14 @@ function drawGraph(){
   gctx.textAlign = 'right';  gctx.fillText(fmtTime(xMax, u), x1, y1 + 15);
 }
 if (graphCanvas && 'ResizeObserver' in window){ new ResizeObserver(() => { if (!graphEl.hidden) drawGraph(); }).observe(graphCanvas); }
+// clickable legend: pick which metric labels the left axis
+for (const el of document.querySelectorAll('#graphLegend .glg')){
+  el.addEventListener('click', () => {
+    graphMetric = el.dataset.m;
+    for (const g of document.querySelectorAll('#graphLegend .glg')) g.classList.toggle('sel', g === el);
+    drawGraph();
+  });
+}
 
 function resetOverlays(clock = 0){ deselect(); known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }   // deselect: scrub/snap rebuilds world (stale ref)
 
