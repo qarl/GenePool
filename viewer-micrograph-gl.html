@@ -2269,10 +2269,12 @@ function drawGraph(){
   const Ypop = v => y1 - (v / popMax) * ph;
   const Yfood = v => y1 - (v / foodMax) * ph;
 
-  // horizontal grid (4 bands)
-  gctx.lineWidth = 1;
-  gctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  // horizontal grid (4 bands), faintly tinted to the SELECTED metric (matches the axis numbers)
+  const G_COL_BY = { pop: G_COL_POP, food: G_COL_FOOD, div: G_COL_DIV, life: G_COL_LIFE };
+  const selCol = G_COL_BY[graphMetric] || G_COL_POP;
+  gctx.save(); gctx.lineWidth = 1; gctx.globalAlpha = 0.11; gctx.strokeStyle = selCol;
   for (let i = 0; i <= 4; i++){ const y = Math.round(y0 + (ph * i / 4)) + 0.5; gctx.beginPath(); gctx.moveTo(x0, y); gctx.lineTo(x1, y); gctx.stroke(); }
+  gctx.restore();
 
   // one series: filled area under a crisp line
   const series = (val, Y, col, fillTop) => {
