@@ -1275,6 +1275,13 @@ const divPct = std => Math.round(Math.min(100, Math.max(0, 100 * std / DIV_MAX))
 // whole-population label (HTML overlay, top-right of the main view). Per-species right column = DOM #species list (P1).
 const labMain = document.getElementById('labMain');
 const speciesPanel = document.getElementById('species');
+// Viewport culling for the minis: only rows currently in the species column render their live mini. Off-screen minis
+// (scrolled out -- common in all-open mode) cost NOTHING, and the per-frame budget goes to the visible ones so they run
+// at full rate regardless of species count. rootMargin pre-renders rows just about to scroll in (no pop-in). Each row's
+// _onScreen defaults true (render until the observer says otherwise, so a brand-new visible mini isn't blank for a frame).
+const _rowIO = ('IntersectionObserver' in window && speciesPanel)
+  ? new IntersectionObserver(entries => { for (const e of entries) e.target._onScreen = e.isIntersecting; }, { root: speciesPanel, rootMargin: '200px 0px' })
+  : null;
 // Ink-centering: a glyph's INK is not centred in its metric box (OCR-A sits low and off-centre), and CSS centres the
 // box, not the ink -- and the measureText metrics that would let us correct it are unreliable across engines. So at
 // launch we RASTERISE each glyph with the ACTUAL loaded font, pixel-scan its true ink bbox, and re-draw it dead-centre
@@ -1480,6 +1487,7 @@ function makeRow(id){
   clip.appendChild(mini); wrap.appendChild(clip); el.appendChild(info); el.appendChild(wrap);
   el._info = info; el._plateHost = plateHost; el._dfill = dfill; el._n = n; el._circs = circs;
   el._wrap = wrap; el._mini = mini; el._miniCtx = mini.getContext('2d'); el._sig = ''; el._tier = -1;
+  el._onScreen = true; if (_rowIO) _rowIO.observe(el);   // viewport culling (only visible rows render their mini)
   return el;
 }
 // Toggle a row's live mini-viewer on POINTERDOWN (not click): the list re-sorts every frame while running, so a `click`
@@ -1556,7 +1564,7 @@ function updateSpeciesUI(){
     return (rankPrev.get(a[0]) ?? 1e9) - (rankPrev.get(b[0]) ?? 1e9); });
   const want = new Set();
   for (const [id] of live) want.add(id);
-  for (const [id, el] of rowMap) if (!want.has(id)){ el.remove(); rowMap.delete(id); miniShowing.delete(id); if (expanded.has(id)) setRowExpanded(id, false); }   // retired
+  for (const [id, el] of rowMap) if (!want.has(id)){ if (_rowIO) _rowIO.unobserve(el); el.remove(); rowMap.delete(id); miniShowing.delete(id); if (expanded.has(id)) setRowExpanded(id, false); }   // retired
   for (const [id, t] of live){                          // create rows / refresh plate only when the signature changed
     let el = rowMap.get(id);
     if (!el){ el = makeRow(id); rowMap.set(id, el); el._deferExp = true;   // brand-new: leave collapsed THIS frame so 0fr paints -> it animates open next frame (S2)
@@ -1892,7 +1900,7 @@ function render(){
   // speciesById but still tracked) freezes its last mini frame.
   if (miniShowing.size){   // ONLY open + mid-animation rows render (collapsed rows are vignette-only via --srow-bg -> cheap); the mini fades in over it
     const selSpecies = (selectedSb && selectedSb.getAlive()) ? speciesModel.speciesIdOf(selectedSb) : null;   // resolve ONCE
-    const vis = [...miniShowing].filter(id => rowMap.has(id));
+    const vis = [...miniShowing].filter(id => { const el = rowMap.get(id); return el && el._onScreen; });   // skip minis scrolled out of the species column
     const n = Math.min(vis.length, MINI_BUDGET);
     for (let k = 0; k < n; k++){
       const id = vis[(miniCursor + k) % vis.length];
@@ -2367,6 +2375,7 @@ function resetOverlays(clock = 0){ deselect(); known.clear(); fades.clear(); dea
 
 function startPlayback(){
   document.body.classList.add('desktop');            // fill-the-window layout (browser keeps the fixed 768 layout -> goldens unchanged)
+  speciesAllOpen = true;   // desktop starts with ALL species minis open (press A for the accordion). Browser/tests keep the accordion default -> unchanged.
   document.querySelector('header').hidden = true;    // drop the top-of-screen UI entirely (Karl); everything lives in the bottom bar
   document.getElementById('scrubbar').hidden = false;
   // (main view keeps VIEW_ROUND rounded corners, matching the canvas border-radius below)
