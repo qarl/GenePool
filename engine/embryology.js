@@ -85,7 +85,11 @@ export class Embryology {
         const branchAngleRange = MAX_BRANCH_ANGLE - MIN_BRANCH_ANGLE;
         const branchNumberRange = MAX_BRANCH_NUMBER - MIN_BRANCH_NUMBER;
         const branchShiftRange = MAX_BRANCH_SHIFT - MIN_BRANCH_SHIFT;
-        const branchCategoryRange = MAX_BRANCH_CATEGORY - MIN_BRANCH_CATEGORY;
+        // fixBranchCategoryGene (opt-in, per-pool): JJ's decode uses range NUM_CATEGORIES-1, so floor(range*ng) with
+        // ng in [0,1) yields 0..NUM_CATEGORIES-2 -- the LAST category (3) is never selected and its whole ~27-gene block
+        // is dead (~1/4 of the shape genome ignored). true widens the range to the full NUM_CATEGORIES so floor reaches
+        // category 3. Default false -> byte-identical JJ decode. (Only branchCategory carries this fix.)
+        const branchCategoryRange = (config.fixBranchCategoryGene === true ? NUM_CATEGORIES : MAX_BRANCH_CATEGORY) - MIN_BRANCH_CATEGORY;
         const branchReflectRange = MAX_BRANCH_REFLECT - MIN_BRANCH_REFLECT;
         const cutOffRange = MAX_CUT_OFF - MIN_CUT_OFF;
         const splinedRange = MAX_SPLINED - MIN_SPLINED;
@@ -131,7 +135,8 @@ export class Embryology {
             g++; cv.endCapSpline = MIN_END_CAP_SPLINE + endCapSplineRange * ng[g];
 
             // discrete "1 of N" decodes -- preserved EXACTLY as JJ (the off-by-one is intentional; a fix
-            // would change how bodies grow, i.e. evolution). See the note in JJ's Embryology.js.
+            // would change how bodies grow, i.e. evolution). See the note in JJ's Embryology.js. EXCEPTION:
+            // branchCategory's off-by-one is opt-in-fixable via config.fixBranchCategoryGene (see branchCategoryRange).
             cv.sequenceCount = Math.floor(ZERO + cv.sequenceCount);
             cv.branchPeriod = Math.floor(ZERO + cv.branchPeriod);
             cv.branchNumber = Math.floor(ONE + cv.branchNumber);

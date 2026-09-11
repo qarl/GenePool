@@ -115,6 +115,11 @@ export function resolveWorldConfig(config = {}) {
         maxPopulation: config.maxPopulation ?? Infinity,
         maxFood: config.maxFood ?? Infinity,
         maxFoodBitsPerType: config.maxFoodBitsPerType ?? MAX_FOODBITS_PER_TYPE,
+
+        // --- opt-in genome-decode corrections (default false = byte-identical JJ decode) ---
+        // fixBranchCategoryGene: JJ's branchCategory selector has an off-by-one so the 4th body category is never
+        // chosen -- ~1/4 of the shape genome is inert. true makes all NUM_CATEGORIES reachable (see embryology.js).
+        fixBranchCategoryGene: config.fixBranchCategoryGene ?? false,
     };
     for (const field of SCHEDULABLE_FIELDS) validateScheduleForm(field, resolved[field]); // §10: fail malformed schedules at config time
 
@@ -145,6 +150,9 @@ export function resolveWorldConfig(config = {}) {
     }
     if (!Number.isInteger(resolved.numFoodTypes) || resolved.numFoodTypes < 1) {
         throw new Error(`config: numFoodTypes must be an integer >= 1 (got ${resolved.numFoodTypes})`);
+    }
+    if (typeof resolved.fixBranchCategoryGene !== 'boolean') {
+        throw new Error(`config: fixBranchCategoryGene must be a boolean (got ${resolved.fixBranchCategoryGene})`);
     }
     // SCHEDULABLE numeric fields (scalar OR every schedule step): reject NaN. foodSpread additionally must be a FINITE
     // spawn radius >= 0 -- Infinity/NaN there yields NaN food positions that corrupt the grid (the others only degrade
