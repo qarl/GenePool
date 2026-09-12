@@ -124,7 +124,7 @@
     letter-spacing: -0.34em; padding-right: 0.34em; }
   /* single ▶ (1×): no overlap; nudge right to optically centre the left-heavy right-pointing glyph */
   #scrubbar .sbSpeed[data-n="0"] { padding-left: 2px; }
-  #scrubbar .sbSpeed.active { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
+  #scrubbar .sbSpeed.active, #scrubbar .vidrec.recording { background: #2e7d5b; border-color: #3aa06f; color: #fff; }   /* active/recording = green, matching the speed buttons */
   /* desktop app: the main micrograph FILLS the window (the browser keeps the fixed 768^2 layout -> goldens unchanged) */
   body.desktop { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   body.desktop #wrap { flex: 1; min-height: 0; padding: 8px; }
@@ -1894,7 +1894,7 @@ function drawInfoOverlay(ctx){   // mirrors #labMain: population plate + diversi
 function drawReticle(ctx, cx, cy, rx, ry, ref){
   ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(0.5, (P.selLineWidth ?? 0.01) * ref);   // thickness = fraction of the ring radius (scales with zoom)
   ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
-  const h = (P.selTickLen ?? 0.1) * ref / 2;   // half tick length; ticks straddle the ring at N/E/S/W (gun-sight)
+  const h = ((P.selLineWidth ?? 0.01) / 2 + (P.selTickLen ?? 0.1)) * ref;   // half length = half stroke + poke -> ticks cross the ring + poke out both sides, centred on it
   ctx.beginPath();
   ctx.moveTo(cx, cy - ry - h); ctx.lineTo(cx, cy - ry + h);   // N
   ctx.moveTo(cx, cy + ry - h); ctx.lineTo(cx, cy + ry + h);   // S
@@ -2037,7 +2037,9 @@ function updateSelRing(){   // called each frame AFTER render() (so cam/W/H are 
   const g = selRingGeom();
   if (!g){ if (!selRing.hidden) selRing.hidden = true; return; }
   selRing.style.left = g.sx + 'px'; selRing.style.top = g.sy + 'px'; selRing.style.width = (g.r*2) + 'px'; selRing.style.height = (g.r*2) + 'px';
-  selRing.style.setProperty('--sel-tick', (P.selTickLen * g.r) + 'px');   // tick length = fraction of the on-screen ring radius (scales with zoom)
+  // tick TOTAL length = the stroke width + a poke-out (P.selTickLen) beyond each edge, so it always crosses the ring and
+  // sticks out both sides no matter how thick the line is; the tick element is centred on the stroke centreline below.
+  selRing.style.setProperty('--sel-tick', ((P.selLineWidth + 2 * P.selTickLen) * g.r) + 'px');
   selRing.style.setProperty('--sel-lw', Math.max(0.5, P.selLineWidth * g.r) + 'px');   // line thickness = fraction of the ring radius (scales with zoom; >=0.5px so it never vanishes)
   if (selRing.hidden) selRing.hidden = false;
 }
