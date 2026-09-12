@@ -86,6 +86,13 @@
   #selClip { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; border-radius: 12px; }   /* clip the ring to the main view (matches #cv's rounded corners) so it never spills onto the species panel */
   #selRing { position: absolute; box-sizing: border-box; border: 0.75px solid #000; border-radius: 50%; transform: translate(-50%, -50%); }
   #selRing[hidden] { display: none; }
+  /* 4 compass tick marks straddling the ring (N/E/S/W) -> a gun-sight reticle. Fixed pixel size (like the ring line), so
+     they stay crisp ticks at every zoom; percentage-anchored to the ring edge so they follow it as it resizes. */
+  #selRing .tk { position: absolute; background: #000; }
+  #selRing .tk.n, #selRing .tk.s { left: 50%; width: 0.75px; height: 7px; transform: translate(-50%, -50%); }
+  #selRing .tk.e, #selRing .tk.w { top: 50%; height: 0.75px; width: 7px; transform: translate(-50%, -50%); }
+  #selRing .tk.n { top: 0; }  #selRing .tk.s { top: 100%; }
+  #selRing .tk.e { left: 100%; }  #selRing .tk.w { left: 0; }
   /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
   #fpsHud { position: absolute; top: 12px; right: 12px; z-index: 5; pointer-events: none; font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace;
     color: #7fd0a0; background: #0b0e13cc; padding: 2px 7px; border-radius: 5px; font-variant-numeric: tabular-nums; }
@@ -177,7 +184,7 @@
 <div id="wrap"><div id="stage">
   <div id="canvasBox"><canvas id="cv" width="768" height="768"></canvas>
     <div class="tileLabel" id="labMain"></div>
-    <div id="selClip"><div id="selRing" hidden></div></div>   <!-- selRing = thin ring around the selected swimmer (frozen size, tracks him); clipped to the main view so it can't spill onto the species panel -->
+    <div id="selClip"><div id="selRing" hidden><i class="tk n"></i><i class="tk e"></i><i class="tk s"></i><i class="tk w"></i></div></div>   <!-- selRing = thin ring around the selected swimmer (frozen size, tracks him) + 4 compass tick marks (gun-sight); clipped to the main view -->
     <div id="fpsHud" hidden></div>   <!-- hidden by default; press F to toggle (see keydown handler) -->
     <!-- whole-timeline history graph (population + food); overlays the main view, toggle with the G key. -->
     <div id="graph" hidden>
@@ -1874,8 +1881,17 @@ function drawInfoOverlay(ctx){   // mirrors #labMain: population plate + diversi
 }
 function drawSelRing2D(ctx, kx, ky){   // draw the selection ring onto a 2D ctx (kx/ky scale backing px -> the ctx). Returns whether it drew.
   const g = selRingGeom(); if (!g) return false;   // selection ring is a DOM layer captureStream can't see -> redraw it here
-  ctx.beginPath(); ctx.strokeStyle = '#000'; ctx.lineWidth = 0.75 * kx;
-  ctx.ellipse(g.sx * kx, g.sy * ky, g.r * kx, g.r * ky, 0, 0, Math.PI * 2); ctx.stroke();
+  const cx = g.sx * kx, cy = g.sy * ky, rx = g.r * kx, ry = g.r * ky;
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 0.75 * kx;
+  ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+  // 4 compass ticks straddling the ring (gun-sight), 7px fixed length centred on N/E/S/W (matches the DOM ticks)
+  const h = 3.5 * kx;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - ry - h); ctx.lineTo(cx, cy - ry + h);   // N
+  ctx.moveTo(cx, cy + ry - h); ctx.lineTo(cx, cy + ry + h);   // S
+  ctx.moveTo(cx - rx - h, cy); ctx.lineTo(cx - rx + h, cy);   // W
+  ctx.moveTo(cx + rx - h, cy); ctx.lineTo(cx + rx + h, cy);   // E
+  ctx.stroke();
   return true;
 }
 function recCompositeFrame(){
