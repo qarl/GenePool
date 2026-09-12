@@ -91,8 +91,10 @@
   #selRing .tk { position: absolute; background: #000; }
   #selRing .tk.n, #selRing .tk.s { left: 50%; width: var(--sel-lw, 0.75px); height: var(--sel-tick, 7px); transform: translate(-50%, -50%); }
   #selRing .tk.e, #selRing .tk.w { top: 50%; height: var(--sel-lw, 0.75px); width: var(--sel-tick, 7px); transform: translate(-50%, -50%); }
-  #selRing .tk.n { top: 0; }  #selRing .tk.s { top: 100%; }
-  #selRing .tk.e { left: 100%; }  #selRing .tk.w { left: 0; }
+  /* the border grows inward (box-sizing:border-box) so its stroke centre is lw/2 inside the div edge -> offset ticks
+     inward by lw/2 so they stay centred on the ring stroke as the line thickens (SelLine) */
+  #selRing .tk.n { top: calc(var(--sel-lw, 0.75px) / 2); }  #selRing .tk.s { top: calc(100% - var(--sel-lw, 0.75px) / 2); }
+  #selRing .tk.e { left: calc(100% - var(--sel-lw, 0.75px) / 2); }  #selRing .tk.w { left: calc(var(--sel-lw, 0.75px) / 2); }
   /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
   #fpsHud { position: absolute; top: 12px; right: 12px; z-index: 5; pointer-events: none; font: 11px "OCR A", ui-monospace, "SF Mono", Menlo, monospace;
     color: #7fd0a0; background: #0b0e13cc; padding: 2px 7px; border-radius: 5px; font-variant-numeric: tabular-nums; }
