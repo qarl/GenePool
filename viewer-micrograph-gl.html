@@ -89,8 +89,8 @@
   /* 4 compass tick marks straddling the ring (N/E/S/W) -> a gun-sight reticle. Fixed pixel size (like the ring line), so
      they stay crisp ticks at every zoom; percentage-anchored to the ring edge so they follow it as it resizes. */
   #selRing .tk { position: absolute; background: #000; }
-  #selRing .tk.n, #selRing .tk.s { left: 50%; width: 0.75px; height: 7px; transform: translate(-50%, -50%); }
-  #selRing .tk.e, #selRing .tk.w { top: 50%; height: 0.75px; width: 7px; transform: translate(-50%, -50%); }
+  #selRing .tk.n, #selRing .tk.s { left: 50%; width: 0.75px; height: var(--sel-tick, 7px); transform: translate(-50%, -50%); }
+  #selRing .tk.e, #selRing .tk.w { top: 50%; height: 0.75px; width: var(--sel-tick, 7px); transform: translate(-50%, -50%); }
   #selRing .tk.n { top: 0; }  #selRing .tk.s { top: 100%; }
   #selRing .tk.e { left: 100%; }  #selRing .tk.w { left: 0; }
   /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
@@ -296,6 +296,7 @@ const P = {
   plateInk: 0.0,    // species license-plate LETTER brightness (0 = black .. 1 = white)
   camSmooth: 0.125, // tracking-camera follow time constant, seconds (higher = smoother/steadier on a jittery swimmer,
                     // more lag on real travel; lower = snappier). A = 1-exp(-dt/camSmooth); 0.125 == the old -8*dt.
+  selTickLen: 0.1,  // selection-ring compass tick length as a FRACTION of the ring radius (so it scales with zoom + swimmer size; 0 = no ticks)
 };
 // Factory snapshot for the K-panel Reset baseline. MUST be taken here, BEFORE any localStorage merge (else Reset +
 // the golden capture would key off a saved set instead of the baked look). See docs/PLAN-kconstants-panel.md.
@@ -1378,6 +1379,7 @@ const SPEC = [
   { k:'plateBg',     label:'Plate BG', min:0,    max:1,   step:0.02 },
   { k:'plateInk',    label:'Plate Ink',min:0,    max:1,   step:0.02 },
   { k:'camSmooth',   label:'CamSmooth',min:0.05, max:1,   step:0.005 },  // tracking-camera steadiness (sec); higher = smoother
+  { k:'selTickLen',  label:'SelTick',  min:0,    max:0.5, step:0.01 },   // selection-ring tick length (fraction of ring radius)
 ];
 const K_KEYS = SPEC.map(s => s.k);
 let _plateRasterQueued = false;
@@ -1884,8 +1886,9 @@ function drawSelRing2D(ctx, kx, ky){   // draw the selection ring onto a 2D ctx 
   const cx = g.sx * kx, cy = g.sy * ky, rx = g.r * kx, ry = g.r * ky;
   ctx.strokeStyle = '#000'; ctx.lineWidth = 0.75 * kx;
   ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
-  // 4 compass ticks straddling the ring (gun-sight), 7px fixed length centred on N/E/S/W (matches the DOM ticks)
-  const h = 3.5 * kx;
+  // 4 compass ticks straddling the ring (gun-sight), centred on N/E/S/W; length = fraction of the ring radius so it
+  // scales with zoom + swimmer size (matches the DOM ticks). h = half-length in canvas px.
+  const h = (P.selTickLen ?? 0.1) * rx / 2;
   ctx.beginPath();
   ctx.moveTo(cx, cy - ry - h); ctx.lineTo(cx, cy - ry + h);   // N
   ctx.moveTo(cx, cy + ry - h); ctx.lineTo(cx, cy + ry + h);   // S
@@ -2017,6 +2020,7 @@ function updateSelRing(){   // called each frame AFTER render() (so cam/W/H are 
   const g = selRingGeom();
   if (!g){ if (!selRing.hidden) selRing.hidden = true; return; }
   selRing.style.left = g.sx + 'px'; selRing.style.top = g.sy + 'px'; selRing.style.width = (g.r*2) + 'px'; selRing.style.height = (g.r*2) + 'px';
+  selRing.style.setProperty('--sel-tick', (P.selTickLen * g.r) + 'px');   // tick length = fraction of the on-screen ring radius (scales with zoom)
   if (selRing.hidden) selRing.hidden = false;
 }
 function select(sb){
@@ -2105,9 +2109,8 @@ window.addEventListener('mouseup', (e)=>{
 });
 window.addEventListener('mousemove', (e)=>{
   if (!dragging) return;
-  if (!clickMoved && Math.hypot(e.clientX-downX, e.clientY-downY) > 6) clickMoved = true;   // >6px = a pan, not a click
+  if (!clickMoved && Math.hypot(e.clientX-downX, e.clientY-downY) > 6){ clickMoved = true; if (selectedSb || selectionOpenedId) deselect(); }   // >6px = a pan -> deselect (drop the tracked swimmer + ring; also frees the camera)
   if (!clickMoved) return;
-  if (camAnim.tracking) { camAnim.phase = 'idle'; camAnim.tracking = false; }   // a manual pan frees the camera (selection kept)
   const s=sc(); camT.x -= (e.clientX-lastX)/s; camT.y -= (e.clientY-lastY)/s; lastX=e.clientX; lastY=e.clientY;   // drag the TARGET; cam eases to it (a little "give")
 });
 addEventListener('keydown', (e)=>{ if (e.key === 'Escape' && (selectedSb || selectionOpenedId)) deselect(); });   // Esc = deselect
@@ -2399,6 +2402,7 @@ function startPlayback(){
   const $seed = document.getElementById('sbSeed'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
   const speedBtns = [...document.querySelectorAll('#sbSpeeds .sbSpeed')];
   let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null, curSeed = -1;
+  const seedHeads = new Map();   // per-seed playhead memory: leaving a seed saves its timecode, returning restores it (Karl)
 
   function updateBar(){
     if (!dragging){ $slider.max = Math.max(0, frontier); $slider.value = head; }
@@ -2424,14 +2428,16 @@ function startPlayback(){
   async function selectSeed(sd){
     const wasPlaying = playing;   // resume playback after the switch if it was already running (Karl)
     playing = false;              // hold ticks while we swap worlds (don't tick the stale world during the async load)
+    if (curSeed >= 0) seedHeads.set(curSeed, head);   // remember where we left the seed we're leaving
     curSeed = sd >>> 0;   // set BEFORE the await so a killed run's in-flight frontier (tagged with the old seed) is dropped
     const r = await window.pool.scrub.select(sd >>> 0);
     if (!r || !r.ok){ document.getElementById('err').textContent = 'run failed: ' + ((r && r.error) || '?'); return; }
     document.getElementById('err').textContent = '';
-    cfg = r.runConfig.config; frontier = r.frontier; head = 0;
+    cfg = r.runConfig.config; frontier = r.frontier;
+    head = Math.min(seedHeads.get(sd >>> 0) ?? 0, Math.max(0, frontier));   // return to where we left this seed (clamped to its current length)
     updateBar();   // reset the slider RANGE to the new run's length now (don't wait on snapTo's keyframe, which may be momentarily null)
     seedJunk(mulberry32((sd >>> 0) ^ 0x5eed1234));   // detritus pool (cosmetic; build() normally does this)
-    await snapTo(0);
+    await snapTo(head);
     playing = wasPlaying;         // new pool plays on from tick 0 if we were running before the switch
     updateBar();
   }
