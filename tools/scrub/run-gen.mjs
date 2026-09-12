@@ -100,6 +100,8 @@ if (isMain) {
     if (a.pool) opts.pool = Number(a.pool);
     if (a.n) opts.n = Number(a.n);
     if (a.resume) opts.resume = true;
+    if (a.fix) opts.settings = { ...(opts.settings || {}), fixBranchCategoryGene: true };   // match the desktop app's fix-on decode for FRESH runs (resumed runs keep their stored config)
+    if (a.settings) { try { opts.settings = { ...(opts.settings || {}), ...JSON.parse(a.settings) }; } catch { console.error('bad --settings JSON'); process.exit(2); } }
     mkdirSync(dirname(out), { recursive: true });
     const t0 = Date.now();
     const r = generateRun(out, seed, opts);
