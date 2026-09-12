@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('pool', {
     keyframe:  (t)     => ipcRenderer.invoke('scrub:keyframe', t),            // -> {tick, snapshot} nearest <= t
     stats:     (t)     => ipcRenderer.invoke('scrub:stats', t),              // -> {tick, stats} nearest <= t
     popSeries: (opts)  => ipcRenderer.invoke('scrub:popSeries', opts),        // -> [{tick,pop,food}] downsampled
+    reportHead:(seed, head) => ipcRenderer.send('scrub:reportHead', { seed, head }),   // persist per-seed playhead across runs (fire-and-forget)
     onFrontier:(cb)    => ipcRenderer.on('scrub:frontier', (_e, msg) => cb(msg)),   // msg = { seed, tick }
     onDone:    (cb)    => ipcRenderer.on('scrub:done', (_e, m) => cb(m)),
   },

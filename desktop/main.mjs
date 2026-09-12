@@ -75,7 +75,7 @@ function stopGenerator(){
 function selectSeed(seed){
   return new Promise((resolve) => {
     if (scrub && scrub.seed === seed && scrub.ready){
-      resolve({ ok: true, seed, frontier: scrub.reader.frontier(), runConfig: scrub.reader.runConfig() });
+      resolve({ ok: true, seed, frontier: scrub.reader.frontier(), runConfig: scrub.reader.runConfig(), lastHead: headOf(seed) });
       return;
     }
     stopGenerator();                                            // kill+respawn on seed change (S5)
@@ -88,7 +88,7 @@ function selectSeed(seed){
       if (s !== scrub) return;                                  // a newer seed superseded this child
       if (m.type === 'ready'){
         try { s.reader = openRunReader(dbPath); s.ready = true;
-          resolve({ ok: true, seed, frontier: s.reader.frontier(), runConfig: s.reader.runConfig() }); }
+          resolve({ ok: true, seed, frontier: s.reader.frontier(), runConfig: s.reader.runConfig(), lastHead: headOf(seed) }); }
         catch (e){ resolve({ ok: false, error: String(e) }); }
       } else if (m.type === 'progress'){
         if (win && !win.isDestroyed()) win.webContents.send('scrub:frontier', { seed: s.seed, tick: m.tick });   // tag with the seed so the renderer drops a killed run's late frontier
@@ -102,7 +102,7 @@ function selectSeed(seed){
     child.postMessage({ seed, out: dbPath, opts: { resume, ticks: Infinity, settings: POOL_SETTINGS } });
   });
 }
-ipcMain.handle('scrub:select',    (_e, seed)  => selectSeed((seed >>> 0)));
+ipcMain.handle('scrub:select',    async (_e, seed) => { await loadHeads(); return selectSeed(seed >>> 0); });
 ipcMain.handle('scrub:frontier',  ()          => scrub?.reader ? scrub.reader.frontier() : -1);
 ipcMain.handle('scrub:keyframe',  (_e, t)     => scrub?.reader ? scrub.reader.getKeyframe(t) : null);
 ipcMain.handle('scrub:stats',     (_e, t)     => scrub?.reader ? scrub.reader.getStats(t) : null);
@@ -150,6 +150,18 @@ ipcMain.handle('params:save', async (_e, obj) => {
 });
 ipcMain.handle('params:load', async () => {
   try { return JSON.parse(await readFile(paramsPath(), 'utf8')); } catch { return null; }
+});
+// Per-seed playhead memory, persisted ACROSS runs. Sidecar JSON in userData (NOT the .db: the flat-out generator owns
+// the .db writer, and writing to a live run would contend with it -- Karl's hard rule). The renderer reports the current
+// head (throttled + on seed switch); scrub:select returns lastHead so the viewer lands where it left off.
+const headsPath = () => join(app.getPath('userData'), 'scrub-heads.json');
+let scrubHeads = null;
+async function loadHeads(){ if (scrubHeads) return scrubHeads; try { scrubHeads = JSON.parse(await readFile(headsPath(), 'utf8')) || {}; } catch { scrubHeads = {}; } return scrubHeads; }
+const headOf = (seed) => (scrubHeads && scrubHeads[String(seed >>> 0)]) || 0;
+let _headsWriteT = null;
+ipcMain.on('scrub:reportHead', async (_e, msg) => {
+  const h = await loadHeads(); h[String((msg.seed >>> 0))] = Math.max(0, msg.head | 0);
+  clearTimeout(_headsWriteT); _headsWriteT = setTimeout(() => writeFile(headsPath(), JSON.stringify(h)).catch(() => {}), 400);   // debounce fs writes
 });
 // Save a recorded viewer video (WebM bytes from the renderer's MediaRecorder) to a date/time-named file in ~/Movies/GenePool.
 ipcMain.handle('video:save', async (_e, bytes) => {

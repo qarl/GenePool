@@ -212,9 +212,9 @@
   <span id="sbSpeeds">
     <button id="vidRec" class="vidrec" title="record a video of the viewer (click to start, click to stop)"></button>
     <button class="sbSpeed" data-n="0" title="play 1×">▶</button>
-    <button class="sbSpeed" data-n="1" title="fast 2×">▶▶</button>
-    <button class="sbSpeed" data-n="2" title="faster 4×">▶▶▶</button>
-    <button class="sbSpeed" data-n="3" title="fastest 8×">▶▶▶▶</button>
+    <button class="sbSpeed" data-n="1" title="fast 4×">▶▶</button>
+    <button class="sbSpeed" data-n="2" title="faster 16×">▶▶▶</button>
+    <button class="sbSpeed" data-n="3" title="fastest 64×">▶▶▶▶</button>
   </span>
   <input id="sbSlider" type="range" min="0" max="0" value="0" step="1">
   <span id="sbTime">00:00 / 00:00</span>
@@ -2414,17 +2414,20 @@ function startPlayback(){
   const $seed = document.getElementById('sbSeed'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
   const speedBtns = [...document.querySelectorAll('#sbSpeeds .sbSpeed')];
   let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null, curSeed = -1;
-  const seedHeads = new Map();   // per-seed playhead memory: leaving a seed saves its timecode, returning restores it (Karl)
+  const seedHeads = new Map();   // per-seed playhead memory (in-session): leaving a seed saves its timecode, returning restores it (Karl)
+  let _lastHeadReport = 0, _lastReportedHead = -1;   // throttle persisting the current head to main (survives quit/restart)
 
   function updateBar(){
     if (!dragging){ $slider.max = Math.max(0, frontier); $slider.value = head; }
     { const u = timeUnits(frontier); $time.textContent = `${fmtTime(head, u)} / ${fmtTime(frontier, u)}`; }
     scrubHead = head; scrubFrontier = frontier;   // mirror the playhead for the timeline graph
+    // persist the current head across runs (throttled, only when it moved) so a quit/crash keeps your place per seed
+    if (curSeed >= 0 && head !== _lastReportedHead){ const now = performance.now(); if (now - _lastHeadReport > 1500){ _lastHeadReport = now; _lastReportedHead = head; window.pool.scrub.reportHead?.(curSeed, head); } }
     // updateBar runs EVERY frame (even paused); only redraw the graph when the playhead/length actually moved, else
     // an open graph would re-stroke two 1400-pt polylines + force a layout flush at 60fps on top of the WebGL render.
     if (graphEl && !graphEl.hidden && (head !== _gDrawnHead || frontier !== _gDrawnFront)){ _gDrawnHead = head; _gDrawnFront = frontier; drawGraph(); }
     // highlight the active speed while playing (2^N == ticksPerFrame); nothing highlighted when paused
-    for (const b of speedBtns) b.classList.toggle('active', playing && ticksPerFrame === (1 << (+b.dataset.n)));
+    for (const b of speedBtns) b.classList.toggle('active', playing && ticksPerFrame === (1 << (2 * +b.dataset.n)));
   }
   // drag-snap: restore the nearest keyframe <= t (no re-sim). Coalesce to the latest target while one is in flight.
   async function snapTo(t){
@@ -2440,13 +2443,15 @@ function startPlayback(){
   async function selectSeed(sd){
     const wasPlaying = playing;   // resume playback after the switch if it was already running (Karl)
     playing = false;              // hold ticks while we swap worlds (don't tick the stale world during the async load)
-    if (curSeed >= 0) seedHeads.set(curSeed, head);   // remember where we left the seed we're leaving
+    if (curSeed >= 0){ seedHeads.set(curSeed, head); window.pool.scrub.reportHead?.(curSeed, head); }   // remember where we left the seed we're leaving (in-session + persist)
     curSeed = sd >>> 0;   // set BEFORE the await so a killed run's in-flight frontier (tagged with the old seed) is dropped
     const r = await window.pool.scrub.select(sd >>> 0);
     if (!r || !r.ok){ document.getElementById('err').textContent = 'run failed: ' + ((r && r.error) || '?'); return; }
     document.getElementById('err').textContent = '';
     cfg = r.runConfig.config; frontier = r.frontier;
-    head = Math.min(seedHeads.get(sd >>> 0) ?? 0, Math.max(0, frontier));   // return to where we left this seed (clamped to its current length)
+    // return to where we left this seed: in-session position wins; else the persisted lastHead (across app runs); else 0. Clamped to the run's current length.
+    head = Math.min(seedHeads.get(sd >>> 0) ?? r.lastHead ?? 0, Math.max(0, frontier));
+    _lastReportedHead = head;
     updateBar();   // reset the slider RANGE to the new run's length now (don't wait on snapTo's keyframe, which may be momentarily null)
     seedJunk(mulberry32((sd >>> 0) ^ 0x5eed1234));   // detritus pool (cosmetic; build() normally does this)
     await snapTo(head);
@@ -2459,7 +2464,7 @@ function startPlayback(){
   window.pool.scrub.onFrontier(msg => { if (!msg || (msg.seed >>> 0) !== curSeed) return; frontier = Math.max(frontier, msg.tick); if (!dragging) updateBar(); });
   // 4 fast-forward buttons: each plays at 2^N x real-time (1x, 2x, 4x, 8x); clicking the ACTIVE speed pauses.
   for (const b of speedBtns) b.onclick = () => {
-    const tpf = 1 << (+b.dataset.n);
+    const tpf = 1 << (2 * +b.dataset.n);
     if (playing && ticksPerFrame === tpf) playing = false;          // click the playing speed -> pause
     else { ticksPerFrame = tpf; playing = true; }
     updateBar();
