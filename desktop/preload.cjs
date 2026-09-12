@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('pool', {
   recordStop:     ()         => ipcRenderer.invoke('pool:recordStop'),         // -> {ok, path, events}
   saveParams:     (obj)      => ipcRenderer.invoke('params:save', obj),        // K-panel: persist to a userData file (localStorage is lost across launches -- ephemeral port -> new origin)
   loadParams:     ()         => ipcRenderer.invoke('params:load'),             // -> saved params object | null
-  saveVideo:      (bytes)    => ipcRenderer.invoke('video:save', bytes),       // WebM bytes -> a date/time-named file in ~/Movies/GenePool -> {ok, path}
+  saveVideo:      (bytes, ext) => ipcRenderer.invoke('video:save', { bytes, ext }),   // video bytes + ext (mp4/webm) -> a date/time-named file in ~/Movies/GenePool -> {ok, path}
   // scrub/playback: pick a seed (main starts/continues its run generator), then read the run back for playback.
   scrub: {
     select:    (seed)  => ipcRenderer.invoke('scrub:select', seed),            // -> {ok, seed, frontier, runConfig}

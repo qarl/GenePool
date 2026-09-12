@@ -164,11 +164,11 @@ ipcMain.on('scrub:reportHead', async (_e, msg) => {
   clearTimeout(_headsWriteT); _headsWriteT = setTimeout(() => writeFile(headsPath(), JSON.stringify(h)).catch(() => {}), 400);   // debounce fs writes
 });
 // Save a recorded viewer video (WebM bytes from the renderer's MediaRecorder) to a date/time-named file in ~/Movies/GenePool.
-ipcMain.handle('video:save', async (_e, bytes) => {
+ipcMain.handle('video:save', async (_e, { bytes, ext }) => {
   try {
     const dir = join(app.getPath('videos'), 'GenePool'); mkdirSync(dir, { recursive: true });
     const ts = new Date().toISOString().replace('T', '_').replace(/:/g, '-').replace(/\..+$/, '');   // 2026-09-07_15-30-12
-    const path = join(dir, `genepool-${ts}.webm`);
+    const path = join(dir, `genepool-${ts}.${ext === 'mp4' ? 'mp4' : 'webm'}`);
     await writeFile(path, Buffer.from(bytes));
     return { ok: true, path };
   } catch (e) { return { ok: false, error: String(e) }; }

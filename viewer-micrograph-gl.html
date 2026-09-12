@@ -946,20 +946,24 @@ function setupVideoRecorder(){
     if (rec){ if (rec.state !== 'inactive') rec.stop(); return; }   // second click -> stop
     // record the COMPOSITING canvas (WebGL frame + info overlay), sized to the live canvas, filled each frame by render()
     if (!recCanvas){ recCanvas = document.createElement('canvas'); recCtx = recCanvas.getContext('2d'); }
-    recCanvas.width = cv.width; recCanvas.height = cv.height;
+    recCanvas.width = cv.width & ~1; recCanvas.height = cv.height & ~1;   // even dims: H.264/MP4 requires width & height divisible by 2
     recCompositeFrame();                       // seed one frame so the stream starts with content
     recActive = true;
     let stream; try { stream = recCanvas.captureStream(30); } catch (e){ recActive = false; return; }
-    const mime = (window.MediaRecorder && MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) ? 'video/webm;codecs=vp9' : 'video/webm';
+    // prefer MP4/H.264 (plays everywhere); fall back to WebM if this build can't record MP4
+    const MIME_PREFS = ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+    const mime = MIME_PREFS.find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || 'video/webm';
     try { rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16_000_000 }); }
     catch (e){ rec = null; recActive = false; return; }
     chunks = [];
     rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = async () => {
       recActive = false; btn.classList.remove('recording');
-      const blob = new Blob(chunks, { type: 'video/webm' }); chunks = []; rec = null;
+      const type = (rec && rec.mimeType) || mime;   // the container actually produced
+      const ext = type.startsWith('video/mp4') ? 'mp4' : 'webm';
+      const blob = new Blob(chunks, { type }); chunks = []; rec = null;
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      await window.pool?.saveVideo?.(bytes);   // desktop writes ~/Movies/GenePool/genepool-<timestamp>.webm
+      await window.pool?.saveVideo?.(bytes, ext);   // desktop writes ~/Movies/GenePool/genepool-<timestamp>.<ext>
     };
     rec.start();
     btn.classList.add('recording');
