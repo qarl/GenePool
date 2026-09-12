@@ -84,13 +84,13 @@
      select (updateSelRing sets width/height each frame from the frozen radius x zoom -> the circle scales with zoom but the
      1.5px line stays thin at every zoom; transform:scale would fatten the line). */
   #selClip { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; border-radius: 12px; }   /* clip the ring to the main view (matches #cv's rounded corners) so it never spills onto the species panel */
-  #selRing { position: absolute; box-sizing: border-box; border: 0.75px solid #000; border-radius: 50%; transform: translate(-50%, -50%); }
+  #selRing { position: absolute; box-sizing: border-box; border: var(--sel-lw, 0.75px) solid #000; border-radius: 50%; transform: translate(-50%, -50%); }
   #selRing[hidden] { display: none; }
   /* 4 compass tick marks straddling the ring (N/E/S/W) -> a gun-sight reticle. Fixed pixel size (like the ring line), so
      they stay crisp ticks at every zoom; percentage-anchored to the ring edge so they follow it as it resizes. */
   #selRing .tk { position: absolute; background: #000; }
-  #selRing .tk.n, #selRing .tk.s { left: 50%; width: 0.75px; height: var(--sel-tick, 7px); transform: translate(-50%, -50%); }
-  #selRing .tk.e, #selRing .tk.w { top: 50%; height: 0.75px; width: var(--sel-tick, 7px); transform: translate(-50%, -50%); }
+  #selRing .tk.n, #selRing .tk.s { left: 50%; width: var(--sel-lw, 0.75px); height: var(--sel-tick, 7px); transform: translate(-50%, -50%); }
+  #selRing .tk.e, #selRing .tk.w { top: 50%; height: var(--sel-lw, 0.75px); width: var(--sel-tick, 7px); transform: translate(-50%, -50%); }
   #selRing .tk.n { top: 0; }  #selRing .tk.s { top: 100%; }
   #selRing .tk.e { left: 100%; }  #selRing .tk.w { left: 0; }
   /* debug FPS/hair HUD, top-RIGHT of the main view (DOM overlay -> does not touch the canvas goldens) */
@@ -297,6 +297,7 @@ const P = {
   camSmooth: 0.125, // tracking-camera follow time constant, seconds (higher = smoother/steadier on a jittery swimmer,
                     // more lag on real travel; lower = snappier). A = 1-exp(-dt/camSmooth); 0.125 == the old -8*dt.
   selTickLen: 0.1,  // selection-ring compass tick length as a FRACTION of the ring radius (so it scales with zoom + swimmer size; 0 = no ticks)
+  selLineWidth: 0.01, // selection-ring + tick LINE thickness as a FRACTION of the ring radius (also scales with zoom)
 };
 // Factory snapshot for the K-panel Reset baseline. MUST be taken here, BEFORE any localStorage merge (else Reset +
 // the golden capture would key off a saved set instead of the baked look). See docs/PLAN-kconstants-panel.md.
@@ -1380,6 +1381,7 @@ const SPEC = [
   { k:'plateInk',    label:'Plate Ink',min:0,    max:1,   step:0.02 },
   { k:'camSmooth',   label:'CamSmooth',min:0.05, max:1,   step:0.005 },  // tracking-camera steadiness (sec); higher = smoother
   { k:'selTickLen',  label:'SelTick',  min:0,    max:0.5, step:0.01 },   // selection-ring tick length (fraction of ring radius)
+  { k:'selLineWidth',label:'SelLine',  min:0.002,max:0.04,step:0.001 },  // selection-ring line thickness (fraction of ring radius)
 ];
 const K_KEYS = SPEC.map(s => s.k);
 let _plateRasterQueued = false;
@@ -1884,7 +1886,7 @@ function drawInfoOverlay(ctx){   // mirrors #labMain: population plate + diversi
 function drawSelRing2D(ctx, kx, ky){   // draw the selection ring onto a 2D ctx (kx/ky scale backing px -> the ctx). Returns whether it drew.
   const g = selRingGeom(); if (!g) return false;   // selection ring is a DOM layer captureStream can't see -> redraw it here
   const cx = g.sx * kx, cy = g.sy * ky, rx = g.r * kx, ry = g.r * ky;
-  ctx.strokeStyle = '#000'; ctx.lineWidth = 0.75 * kx;
+  ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(0.5, (P.selLineWidth ?? 0.01) * rx);   // line thickness = fraction of the ring radius (scales with zoom)
   ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
   // 4 compass ticks straddling the ring (gun-sight), centred on N/E/S/W; length = fraction of the ring radius so it
   // scales with zoom + swimmer size (matches the DOM ticks). h = half-length in canvas px.
@@ -2021,6 +2023,7 @@ function updateSelRing(){   // called each frame AFTER render() (so cam/W/H are 
   if (!g){ if (!selRing.hidden) selRing.hidden = true; return; }
   selRing.style.left = g.sx + 'px'; selRing.style.top = g.sy + 'px'; selRing.style.width = (g.r*2) + 'px'; selRing.style.height = (g.r*2) + 'px';
   selRing.style.setProperty('--sel-tick', (P.selTickLen * g.r) + 'px');   // tick length = fraction of the on-screen ring radius (scales with zoom)
+  selRing.style.setProperty('--sel-lw', Math.max(0.5, P.selLineWidth * g.r) + 'px');   // line thickness = fraction of the ring radius (scales with zoom; >=0.5px so it never vanishes)
   if (selRing.hidden) selRing.hidden = false;
 }
 function select(sb){
