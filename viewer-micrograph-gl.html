@@ -1883,20 +1883,22 @@ function drawInfoOverlay(ctx){   // mirrors #labMain: population plate + diversi
     ctx.beginPath(); ctx.fillStyle = '#35c46a'; ctx.arc(cx + 4.5, rowY + 10, 4.5, 0, Math.PI * 2); ctx.fill();
   }
 }
-function drawSelRing2D(ctx, kx, ky){   // draw the selection ring onto a 2D ctx (kx/ky scale backing px -> the ctx). Returns whether it drew.
-  const g = selRingGeom(); if (!g) return false;   // selection ring is a DOM layer captureStream can't see -> redraw it here
-  const cx = g.sx * kx, cy = g.sy * ky, rx = g.r * kx, ry = g.r * ky;
-  ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(0.5, (P.selLineWidth ?? 0.01) * rx);   // line thickness = fraction of the ring radius (scales with zoom)
+// Draw the reticle (ring + 4 compass ticks) onto a 2D ctx at centre (cx,cy), radii (rx,ry). `ref` is the radius the
+// line-thickness/tick-length fractions are taken from. Shared by the recording composite AND the selected swimmer's mini.
+function drawReticle(ctx, cx, cy, rx, ry, ref){
+  ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(0.5, (P.selLineWidth ?? 0.01) * ref);   // thickness = fraction of the ring radius (scales with zoom)
   ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
-  // 4 compass ticks straddling the ring (gun-sight), centred on N/E/S/W; length = fraction of the ring radius so it
-  // scales with zoom + swimmer size (matches the DOM ticks). h = half-length in canvas px.
-  const h = (P.selTickLen ?? 0.1) * rx / 2;
+  const h = (P.selTickLen ?? 0.1) * ref / 2;   // half tick length; ticks straddle the ring at N/E/S/W (gun-sight)
   ctx.beginPath();
   ctx.moveTo(cx, cy - ry - h); ctx.lineTo(cx, cy - ry + h);   // N
   ctx.moveTo(cx, cy + ry - h); ctx.lineTo(cx, cy + ry + h);   // S
   ctx.moveTo(cx - rx - h, cy); ctx.lineTo(cx - rx + h, cy);   // W
   ctx.moveTo(cx + rx - h, cy); ctx.lineTo(cx + rx + h, cy);   // E
   ctx.stroke();
+}
+function drawSelRing2D(ctx, kx, ky){   // recording composite: the reticle over the MAIN view (a DOM layer captureStream can't see)
+  const g = selRingGeom(); if (!g) return false;
+  drawReticle(ctx, g.sx * kx, g.sy * ky, g.r * kx, g.r * ky, g.r * kx);
   return true;
 }
 function recCompositeFrame(){
@@ -1931,7 +1933,14 @@ function render(){
       const c = showBot.getPosition();
       renderView({ x: c.x, y: c.y, zoom: TILE_ZOOM }, VIEW_SMALL, VIEW_SMALL, smallSet, 0, 0, false, 0, showBot);
       const el = rowMap.get(id);
-      if (el && el._miniCtx) el._miniCtx.drawImage(cv, 0, CANVAS_H - VIEW_SMALL, VIEW_SMALL, VIEW_SMALL, 0, 0, VIEW_SMALL, VIEW_SMALL);
+      if (el && el._miniCtx){
+        el._miniCtx.drawImage(cv, 0, CANVAS_H - VIEW_SMALL, VIEW_SMALL, VIEW_SMALL, 0, 0, VIEW_SMALL, VIEW_SMALL);
+        // the SELECTED swimmer's mini shows him centred at TILE_ZOOM -> draw the same reticle over him here too
+        if (id === selSpecies && selRingR > 0){
+          const rr = selRingR * (VIEW_SMALL / P.pool) * TILE_ZOOM;   // frozen world radius -> mini px (mini scale = fitZoom(VIEW_SMALL) x TILE_ZOOM)
+          drawReticle(el._miniCtx, VIEW_SMALL / 2, VIEW_SMALL / 2, rr, rr, rr);   // showBot is centred in the mini
+        }
+      }
     }
     if (vis.length) miniCursor = (miniCursor + n) % vis.length;
   }
