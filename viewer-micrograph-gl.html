@@ -1385,7 +1385,7 @@ const SPEC = [
   { k:'plateInk',    label:'Plate Ink',min:0,    max:1,   step:0.02 },
   { k:'camSmooth',   label:'CamSmooth',min:0.05, max:1,   step:0.005 },  // tracking-camera steadiness (sec); higher = smoother
   { k:'selTickLen',  label:'SelTick',  min:0,    max:0.5, step:0.01 },   // selection-ring tick length (fraction of ring radius)
-  { k:'selLineWidth',label:'SelLine',  min:0.002,max:0.04,step:0.001 },  // selection-ring line thickness (fraction of ring radius)
+  { k:'selLineWidth',label:'SelLine',  min:0.002,max:0.25,step:0.005 },  // selection-ring line thickness (fraction of ring radius)
 ];
 const K_KEYS = SPEC.map(s => s.k);
 let _plateRasterQueued = false;
