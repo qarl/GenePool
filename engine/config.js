@@ -124,6 +124,10 @@ export function resolveWorldConfig(config = {}) {
         // OWN mutation rate (evolution of evolvability). Off = the byte is plain junk (JJ-identical). See world.js.
         evolvableMutationRate: config.evolvableMutationRate ?? false,
         mutationRateGeneScale: config.mutationRateGeneScale ?? 64,   // K in rate = base * 2^(avg(int8 gene)/K); smaller = wilder
+        // foodReseedWhenEmpty: JJ food only buds from LIVING food, so food=0 is an absorbing state (irreversible ->
+        // guaranteed swimbot extinction). true reseeds ONE bit at a random pool location when the pool empties, so
+        // food (and thus the pool) can recover. Off = JJ-identical. See world.js _updateFood / foodBit.spawnRandomInPool.
+        foodReseedWhenEmpty: config.foodReseedWhenEmpty ?? false,
     };
     for (const field of SCHEDULABLE_FIELDS) validateScheduleForm(field, resolved[field]); // §10: fail malformed schedules at config time
 
@@ -163,6 +167,9 @@ export function resolveWorldConfig(config = {}) {
     }
     if (typeof resolved.mutationRateGeneScale !== 'number' || !Number.isFinite(resolved.mutationRateGeneScale) || resolved.mutationRateGeneScale <= 0) {
         throw new Error(`config: mutationRateGeneScale must be a positive finite number (got ${resolved.mutationRateGeneScale})`);
+    }
+    if (typeof resolved.foodReseedWhenEmpty !== 'boolean') {
+        throw new Error(`config: foodReseedWhenEmpty must be a boolean (got ${resolved.foodReseedWhenEmpty})`);
     }
     // SCHEDULABLE numeric fields (scalar OR every schedule step): reject NaN. foodSpread additionally must be a FINITE
     // spawn radius >= 0 -- Infinity/NaN there yields NaN food positions that corrupt the grid (the others only degrade

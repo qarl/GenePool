@@ -51,6 +51,19 @@ export class FoodBit {
         this.randomizeSpawnPosition(parentFoodBit, rng);
     }
 
+    // Spawn this (dead) bit at a UNIFORM RANDOM position in the pool (inset by the boundary margin), with no
+    // parent. Used only by the opt-in foodReseedWhenEmpty divergence (world.js) to reseed an emptied pool so food
+    // is not permanently extinct. Draws exactly 2 from rng (x, y). Not a JJ path (JJ food only buds from food).
+    spawnRandomInPool(childIndex, type, energy, rng) {
+        this._index = childIndex;
+        this._energy = energy;
+        this._type = type;
+        const pl = this._pool.left + this._pool.margin, pr = this._pool.right - this._pool.margin;
+        const pb = this._pool.top + this._pool.margin, pt = this._pool.bottom - this._pool.margin;
+        this._position.x = pl + rng() * (pr - pl);
+        this._position.y = pb + rng() * (pt - pb);
+    }
+
     // Position near the parent within _maxSpawnRadius, reflected off the boundary margin. Draws exactly
     // 6 from rng (xx=rng*rng, yy=rng*rng, sign xx, sign yy), left-to-right -- the frozen order.
     randomizeSpawnPosition(parentFoodBit, rng) {

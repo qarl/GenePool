@@ -38,7 +38,7 @@ import { makeTopology } from './topology.js';
 import { resolveWorldConfig, scheduleValue } from './config.js';
 import {
     ZERO, ONE, ONE_HALF, NULL_INDEX, NUM_GENES, NUM_GENES_USED, BYTE_SIZE, MUTATION_RATE_GENE,
-    MAX_FOODBITS_PER_TYPE,
+    MAX_FOODBITS_PER_TYPE, DEFAULT_FOOD_BIT_ENERGY,
     SWIMBOT_VIEW_RADIUS, resolvePoolBounds,
 } from './constants.js';
 
@@ -125,6 +125,8 @@ export class World {
         // evolvable mutation rate (opt-in): one junk byte becomes a coding gene scaling a lineage's own mutation rate.
         this._evolvableMutationRate = config.evolvableMutationRate === true;
         this._mutationRateGeneScale = config.mutationRateGeneScale ?? 64;
+        // food reseed (opt-in divergence): reseed one random bit when the pool empties, so food=0 isn't absorbing.
+        this._foodReseedWhenEmpty = config.foodReseedWhenEmpty === true;
         // L5 carrying-capacity knob (D-f): OPT-IN population bound. Default = no cap (Infinity) -> births never
         // suppressed -> byte-identical to pre-cap (North Star: bounds are user config, not an engine default). §10:
         // read fresh each tick via _sched (may be a step-schedule) so carrying capacity can change over time.
@@ -629,6 +631,22 @@ export class World {
                 this._livingFoodCount++;
                 // Regen runs AFTER perception, so this food is first perceivable next tick (same as brute
                 // force, which also scans _foodBits only during _updateSwimbots). Add it to the grid now.
+                if (this._useSpatialGrid) { const p = child.getPosition(); this._foodGrid.insert(child, p.x, p.y); }
+            } else if (this._foodReseedWhenEmpty) {
+                // DIVERGENCE (opt-in, default off): no living food to bud from -> the pool is empty. JJ leaves it
+                // empty forever (absorbing -> extinction); instead reseed ONE bit at a random pool location so food
+                // can recover. Only reachable at food=0, which never happens in a JJ-faithful default run -> the
+                // default draw stream is unchanged (oracle-safe). Draws 2 from the food-regen stream (x, y).
+                const childId = this._nextFoodId++;
+                const child = new FoodBit();
+                child.setMaxSpawnRadius(this._sched('foodSpread'));
+                child.setPoolBounds(this._config.pool);
+                child.setTopology(this._topology);
+                // energy = the founder food energy (50); the budding path inherits parent energy, but a reseed has no
+                // parent, so seed it at the same value founders start with (foodBitEnergy is not a wired config field).
+                child.spawnRandomInPool(childId, newFoodType, DEFAULT_FOOD_BIT_ENERGY, this._foodRegenRng);
+                this._foodBits.set(childId, child);
+                this._livingFoodCount++;
                 if (this._useSpatialGrid) { const p = child.getPosition(); this._foodGrid.insert(child, p.x, p.y); }
             }
         }
