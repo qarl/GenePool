@@ -63,7 +63,7 @@ let scrub = null;   // { seed, child, reader, dbPath, ready }
 // CURRENT per-pool experiment settings -- overrides baked into every NEWLY generated run's config (and thus its bodies).
 // Changing these invalidates existing run caches (they keep their OWN stored config on resume/restore), so after editing
 // this, wipe runs/ so seeds regenerate. (A pool-settings UI is the eventual home for these.)
-const POOL_SETTINGS = { fixBranchCategoryGene: true };
+const POOL_SETTINGS = { fixBranchCategoryGene: true, evolvableMutationRate: true };
 function runsDir(){ const d = join(app.getPath('userData'), 'runs'); mkdirSync(d, { recursive: true }); return d; }
 function stopGenerator(){
   if (!scrub) return;

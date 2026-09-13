@@ -19,6 +19,10 @@ export const NUM_GENES = 256;      // genes per genome
 // count vs a hardcoded NUM_GENES_USED=112 -- PLAN §12). The decode fills exactly this many; genes
 // [NUM_GENES_USED, NUM_GENES) are junk DNA (reproductive-isolation markers).
 export const NUM_GENES_USED = 112;
+// One junk byte repurposed as a CODING gene when config.evolvableMutationRate is on: it encodes a per-lineage mutation-
+// rate modifier (read as int8, neutral 0). Excluded from the junk/speciation metric + kept random (not zeroed) in
+// founders under that flag; a plain zeroed junk byte otherwise. See world.js / pool-seed.mjs / config.js.
+export const MUTATION_RATE_GENE = NUM_GENES - 1;   // 255
 
 // Body/morphology format
 export const NULL_PART = -1;

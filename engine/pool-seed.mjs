@@ -5,6 +5,7 @@
 import { World } from './world.js';
 import { Genotype } from './genotype.js';
 import { SPECIES_ISO } from './analysis/species.mjs';
+import { MUTATION_RATE_GENE } from './constants.js';
 
 const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000;
 
@@ -36,7 +37,8 @@ export function makeStandardWorld(seed, { pool = POOL_DEFAULTS.pool, n = POOL_DE
   for (let i = 0; i < n; i++){
     const g = new Genotype(); g.randomize(rng);
     const genes = g.getGenes().slice();
-    for (let k = USED; k < NUM_GENES; k++) genes[k] = 0;   // junk-zeroed (JJ's rule)
+    // junk-zeroed (JJ's rule) -- but when the mutation-rate gene is active it's a CODING gene, so keep its random value.
+    for (let k = USED; k < NUM_GENES; k++){ if (config.evolvableMutationRate === true && k === MUTATION_RATE_GENE) continue; genes[k] = 0; }
     const p = diskPoint(rng, pool / 2, pool / 2, pool / 2.4);
     const age = YOUNG_AGE + Math.floor((MAX_LIFESPAN - YOUNG_AGE) * rng());
     world.loadSwimbot(i, { age, x: p.x, y: p.y, angle: rng() * 360 - 180, energy: 50, genes });

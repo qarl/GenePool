@@ -120,6 +120,10 @@ export function resolveWorldConfig(config = {}) {
         // fixBranchCategoryGene: JJ's branchCategory selector has an off-by-one so the 4th body category is never
         // chosen -- ~1/4 of the shape genome is inert. true makes all NUM_CATEGORIES reachable (see embryology.js).
         fixBranchCategoryGene: config.fixBranchCategoryGene ?? false,
+        // evolvableMutationRate: repurpose one junk byte (MUTATION_RATE_GENE) as a coding gene that scales a lineage's
+        // OWN mutation rate (evolution of evolvability). Off = the byte is plain junk (JJ-identical). See world.js.
+        evolvableMutationRate: config.evolvableMutationRate ?? false,
+        mutationRateGeneScale: config.mutationRateGeneScale ?? 64,   // K in rate = base * 2^(avg(int8 gene)/K); smaller = wilder
     };
     for (const field of SCHEDULABLE_FIELDS) validateScheduleForm(field, resolved[field]); // §10: fail malformed schedules at config time
 
@@ -153,6 +157,12 @@ export function resolveWorldConfig(config = {}) {
     }
     if (typeof resolved.fixBranchCategoryGene !== 'boolean') {
         throw new Error(`config: fixBranchCategoryGene must be a boolean (got ${resolved.fixBranchCategoryGene})`);
+    }
+    if (typeof resolved.evolvableMutationRate !== 'boolean') {
+        throw new Error(`config: evolvableMutationRate must be a boolean (got ${resolved.evolvableMutationRate})`);
+    }
+    if (typeof resolved.mutationRateGeneScale !== 'number' || !Number.isFinite(resolved.mutationRateGeneScale) || resolved.mutationRateGeneScale <= 0) {
+        throw new Error(`config: mutationRateGeneScale must be a positive finite number (got ${resolved.mutationRateGeneScale})`);
     }
     // SCHEDULABLE numeric fields (scalar OR every schedule step): reject NaN. foodSpread additionally must be a FINITE
     // spawn radius >= 0 -- Infinity/NaN there yields NaN food positions that corrupt the grid (the others only degrade
