@@ -85,6 +85,25 @@ test('flag on vs off: same seed DIVERGES (the gene actually influences the run)'
         'turning the gene on must change the evolved outcome (else it does nothing)');
 });
 
+test('species metric: the display clustering excludes gene 255 when active, matching the engine gate', async () => {
+    const { Genotype, NUM_GENES, MUTATION_RATE_GENE } = await load();
+    const { junkOf, junkSim, NJ, SPECIES_ISO } = await import('../../engine/analysis/species.mjs');
+
+    // two creatures whose junk genes are IDENTICAL except the mutation-rate byte (255), maximally different there
+    const mk = (b255) => { const g = new Genotype(); const a = new Uint8Array(NUM_GENES); a[MUTATION_RATE_GENE] = b255; g.setGenes(a); return { getGenotype: () => g }; };
+    const A = mk(0), B = mk(255);
+
+    // full span (flag off): the byte counts -> similarity < 1, but the nudge is tiny (never crosses SPECIES_ISO=0.9),
+    // which is why leaving it in was only cosmetic, never a spurious split.
+    const full = junkSim(junkOf(A), junkOf(B));
+    assert.ok(full < 1, 'full span: the differing byte lowers similarity');
+    assert.ok(full > SPECIES_ISO, 'full span: even the max difference never splits the species (cosmetic only)');
+
+    // active span (flag on -> nj = NJ-1 drops the last junk gene, index 255): excluded -> exactly 1, == the engine gate.
+    const excl = junkSim(junkOf(A, NJ - 1), junkOf(B, NJ - 1));
+    assert.equal(excl, 1, 'active span: gene 255 excluded -> identical junk -> similarity 1');
+});
+
 test('rate mapping: 2^(s/64) is neutral at 0, doubles at +64, halves at -64', () => {
     const mult = (s) => Math.pow(2, s / 64);
     assert.equal(mult(0), 1);

@@ -897,7 +897,7 @@ function build(){
   try { const r = makeStandardWorld(seed, { pool: P.pool, n: P.n, food: P.food }); world = r.world; curConfig = r.config; rng = r.rng; }
   catch(e){ world = null; errEl.textContent = 'Cannot build: ' + e.message; return; }
   known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;   // no stale death-fade ghosts / junk drift across a rebuild
-  frameCount = 0; speciesModel = createSpeciesAnalyzer();   // reset species state -> deterministic from a fresh build
+  frameCount = 0; speciesModel = createSpeciesAnalyzer(curConfig);   // reset species state -> deterministic from a fresh build (config -> exclude the mutation-rate gene from clustering when active)
   rowMap = new Map(); expanded = new Set(); if (speciesPanel) speciesPanel.replaceChildren();   // ids reuse from 1 across builds -> drop stale rows/expansion + the DOM (else orphans accumulate)
   SC_REF = (VIEW_MAIN / P.pool) * 6;   // main-view calibrated (independent of canvas aspect); recompute if P.pool changed
   seedJunk(rng);
@@ -929,7 +929,7 @@ function loadWorld(saved){
   deselect();   // replacing the world -> discard the stale selection
   world = w; curConfig = saved.config; if (saved.seed != null) seed = saved.seed;
   known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;
-  frameCount = 0; speciesModel = createSpeciesAnalyzer();
+  frameCount = 0; speciesModel = createSpeciesAnalyzer(curConfig);
   rowMap = new Map(); expanded = new Set(); if (speciesPanel) speciesPanel.replaceChildren();
   const rng = mulberry32((seed>>>0) ^ 0x5eed1234); seedJunk(rng);    // detritus re-seeded from seed (deterministic, cosmetic)
   cam = { x:P.pool/2, y:P.pool/2, zoom: cam.zoom || 6 };
@@ -2410,7 +2410,7 @@ for (const el of document.querySelectorAll('#graphLegend .glg')){
   });
 }
 
-function resetOverlays(clock = 0){ deselect(); known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(); }   // deselect: scrub/snap rebuilds world (stale ref)
+function resetOverlays(clock = 0, config = curConfig){ deselect(); known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = clock; speciesModel = createSpeciesAnalyzer(config); }   // deselect: scrub/snap rebuilds world (stale ref). config -> exclude the mutation-rate gene from clustering when the run has it on
 
 function startPlayback(){
   document.body.classList.add('desktop');            // fill-the-window layout (browser keeps the fixed 768 layout -> goldens unchanged)
@@ -2445,7 +2445,7 @@ function startPlayback(){
     snapInFlight = true;
     const kf = await window.pool.scrub.keyframe(t);
     snapInFlight = false;
-    if (kf){ world = World.restore(cfg, kf.snapshot); head = kf.tick; resetOverlays(head); render(); updateBar(); }
+    if (kf){ world = World.restore(cfg, kf.snapshot); head = kf.tick; resetOverlays(head, cfg); render(); updateBar(); }
     if (snapPending != null){ const p = snapPending; snapPending = null; snapTo(p); }
   }
   async function selectSeed(sd){

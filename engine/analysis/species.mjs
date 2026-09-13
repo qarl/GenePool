@@ -43,8 +43,11 @@ export { SIG_ALPHA };
 const SIG_AMP = 2.0;                      // amplify signature coordinates (stronger plates; extremes clamp)
 
 // --- pure helpers ---
-export function junkOf(sb) { const g = sb.getGenotype(); const a = new Float64Array(NJ); for (let k = 0; k < NJ; k++) a[k] = g.getGeneValue(USED + k); return a; }
-export function junkSim(a, b) { let d = 0; for (let k = 0; k < NJ; k++) d += Math.abs(a[k] - b[k]); return 1 - (d / 256) / NJ; }   // engine metric (/BYTE_SIZE)
+// `nj` junk genes from [USED, USED+nj). Default NJ (the full span). When the mutation-rate gene is active it is a CODING
+// gene, not a speciation marker -- and it is exactly the LAST junk gene (255 == NUM_GENES-1), so the analyzer passes
+// nj = NJ-1 to drop it, matching the engine's _getJunkDnaSimilarity exclusion (world.js) so display clusters == mating.
+export function junkOf(sb, nj = NJ) { const g = sb.getGenotype(); const a = new Float64Array(nj); for (let k = 0; k < nj; k++) a[k] = g.getGeneValue(USED + k); return a; }
+export function junkSim(a, b) { const n = a.length; let d = 0; for (let k = 0; k < n; k++) d += Math.abs(a[k] - b[k]); return 1 - (d / 256) / n; }   // engine metric (/BYTE_SIZE), over the active span
 
 function erf(x) { const s = x < 0 ? -1 : 1; x = Math.abs(x); const t = 1 / (1 + 0.3275911 * x);
     const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return s * y; }
@@ -66,7 +69,10 @@ export function signatureOf(vec) {        // -> 5 signed base36 symbols ('0' = m
 // re-cluster every living creature every recompute (O(N*K*NJ) -> ~8ms at pop 1000), we assign each creature ONCE the
 // first recompute it appears in, maintain per-lineage running sums, and just advance the EMAs (plate crawl) + rebuild the
 // list each call. Per-recompute cost is O(new + dead), not O(N). Same outputs (tracked/speciesList/pop EMAs/statsRow).
-export function createSpeciesAnalyzer() {
+export function createSpeciesAnalyzer(config = null) {
+    // Active junk span for the speciation metric. When evolvableMutationRate is on, the last junk gene (255) is a coding
+    // gene -> drop it (nj = NJ-1) so the display clustering matches the engine mating gate exactly. Off -> full NJ span.
+    const nj = (config && config.evolvableMutationRate === true) ? NJ - 1 : NJ;
     let tracked = new Map();             // id -> { ema, emaUsed, divEMA, sig, count, misses, seed, idset, rep, lifeEMA, sumJunk, sumUsed, sumSqUsed }
     const assigned = new Map();          // sb -> lineage id (fixed at birth; genes never change -> membership never migrates)
     let nextSpeciesId = 1;
@@ -74,20 +80,20 @@ export function createSpeciesAnalyzer() {
     let speciesById = new Map(), speciesList = [];
 
     function newLineage(jg) {
-        return { seed: Float64Array.from(jg), sumJunk: new Float64Array(NJ), sumUsed: new Float64Array(EXPRESSED), sumSqUsed: new Float64Array(EXPRESSED),
+        return { seed: Float64Array.from(jg), sumJunk: new Float64Array(nj), sumUsed: new Float64Array(EXPRESSED), sumSqUsed: new Float64Array(EXPRESSED),
                  count: 0, ema: null, emaUsed: null, divEMA: 0, sig: '00000', misses: 0, idset: new Set(), rep: null, lifeEMA: null };
     }
     function memberAdd(t, sb, jg) {       // running sums so per-lineage mean/variance need no re-scan of members
         t.idset.add(sb); t.count++;
-        for (let k = 0; k < NJ; k++) t.sumJunk[k] += jg[k];
+        for (let k = 0; k < nj; k++) t.sumJunk[k] += jg[k];
         const gt = sb.getGenotype();
         for (let k = 0; k < EXPRESSED; k++) { const v = gt.getGeneValue(k); t.sumUsed[k] += v; t.sumSqUsed[k] += v * v; }
     }
     function memberRemove(t, sb) {         // genes are immutable -> add-then-remove of the SAME integer values cancels exactly (no FP drift)
         if (!t.idset.has(sb)) return;
         t.idset.delete(sb); t.count--;
-        const jg = junkOf(sb), gt = sb.getGenotype();
-        for (let k = 0; k < NJ; k++) t.sumJunk[k] -= jg[k];
+        const jg = junkOf(sb, nj), gt = sb.getGenotype();
+        for (let k = 0; k < nj; k++) t.sumJunk[k] -= jg[k];
         for (let k = 0; k < EXPRESSED; k++) { const v = gt.getGeneValue(k); t.sumUsed[k] -= v; t.sumSqUsed[k] -= v * v; }
     }
 
@@ -99,7 +105,7 @@ export function createSpeciesAnalyzer() {
             const ph = sb._phenotype; if (!ph || ph.numParts <= 1) continue;
             alive.add(sb);
             if (assigned.has(sb)) continue;                        // already in a lineage (fixed at birth) -> no re-scan
-            const jg = junkOf(sb);
+            const jg = junkOf(sb, nj);
             let best = null, bestId = null, bestS = SPECIES_ISO;
             for (const [tid, t] of tracked) { const s = junkSim(jg, t.seed); if (s > bestS) { bestS = s; best = t; bestId = tid; } }
             if (!best) {
@@ -110,19 +116,19 @@ export function createSpeciesAnalyzer() {
         }
         for (const [sb, tid] of assigned) { if (!alive.has(sb)) { const t = tracked.get(tid); if (t) memberRemove(t, sb); assigned.delete(sb); } }
         // per-lineage: running mean -> advance EMAs (the plate crawls) -> sig -> rep; prune extinct after a little hysteresis
-        const mean = new Float64Array(NJ), meanUsed = new Float64Array(EXPRESSED);
+        const mean = new Float64Array(nj), meanUsed = new Float64Array(EXPRESSED);
         for (const [tid, t] of tracked) {
             if (t.count <= 0) { if (++t.misses > 4) tracked.delete(tid); continue; }
             t.misses = 0;
-            for (let k = 0; k < NJ; k++) mean[k] = t.sumJunk[k] / t.count;
+            for (let k = 0; k < nj; k++) mean[k] = t.sumJunk[k] / t.count;
             let ss = 0; for (let k = 0; k < EXPRESSED; k++) { const mu = t.sumUsed[k] / t.count; meanUsed[k] = mu; const vr = t.sumSqUsed[k] / t.count - mu * mu; ss += Math.sqrt(vr > 0 ? vr : 0); }
             const divRaw = ss / EXPRESSED;
             if (!t.ema) { t.ema = Float64Array.from(mean); t.emaUsed = Float64Array.from(meanUsed); t.divEMA = divRaw; }
-            else { for (let k = 0; k < NJ; k++) t.ema[k] += SIG_EMA * (mean[k] - t.ema[k]);
+            else { for (let k = 0; k < nj; k++) t.ema[k] += SIG_EMA * (mean[k] - t.ema[k]);
                    for (let k = 0; k < EXPRESSED; k++) t.emaUsed[k] += SIG_EMA * (meanUsed[k] - t.emaUsed[k]);
                    t.divEMA += SIG_EMA * (divRaw - t.divEMA); }
             t.sig = signatureOf(t.emaUsed);
-            if (!(t.rep && t.rep.getAlive() && t.idset.has(t.rep))) { let best = null, bs = -1; for (const m of t.idset) { const s = junkSim(junkOf(m), mean); if (s > bs) { bs = s; best = m; } } t.rep = best; }
+            if (!(t.rep && t.rep.getAlive() && t.idset.has(t.rep))) { let best = null, bs = -1; for (const m of t.idset) { const s = junkSim(junkOf(m, nj), mean); if (s > bs) { bs = s; best = m; } } t.rep = best; }
         }
         let popTot = 0; const popSum = new Float64Array(EXPRESSED), popSumSq = new Float64Array(EXPRESSED);
         for (const [, t] of tracked) { if (t.count <= 0) continue; popTot += t.count; for (let k = 0; k < EXPRESSED; k++) { popSum[k] += t.sumUsed[k]; popSumSq[k] += t.sumSqUsed[k]; } }

@@ -34,8 +34,9 @@ export function buildWorld(seed, { pool, n, food, settings } = {}) {
 // under UNBOUNDED generation (o.ticks = Infinity): the generator runs one core flat-out until the process is killed.
 export function generateRun(path, seed, opts = {}) {
     const o = { ...GEN_DEFAULTS, ...opts };
+    const runConfig = poolConfig(o.pool, o.settings ?? {});   // per-pool experiment settings baked into the run's stored config
     const writer = openRunWriter(path, {
-        seed: seed >>> 0, config: poolConfig(o.pool, o.settings ?? {}),   // per-pool experiment settings baked into the run's stored config
+        seed: seed >>> 0, config: runConfig,
         keyframeInterval: o.keyframeInterval, keyframeBudget: o.keyframeBudget,
         engineVersion: o.engineVersion ?? null, perceptionMode: 'mixed-live',
     }, { resume: !!o.resume });
@@ -45,7 +46,7 @@ export function generateRun(path, seed, opts = {}) {
     // lightweight world event handler (only 'death' is used). Measured overhead is within noise (tick cost dominates), so
     // the generator stays flat-out. NOTE: on resume the EMAs restart (fresh analyzer) -> a resumed run's early stats are
     // null/rebuilding; a fresh run (the wipe-and-regenerate flow) has full-history stats.
-    const analyzer = createSpeciesAnalyzer();
+    const analyzer = createSpeciesAnalyzer(runConfig);   // exclude the mutation-rate gene from clustering when it's active (matches the engine gate)
     const statsRow = () => ({ div: analyzer.popDivEMA, life: analyzer.popLifeEMA });
 
     let world, startTick = 0, keyframes = 0, resumed = false;
