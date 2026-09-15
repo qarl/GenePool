@@ -1,6 +1,6 @@
 # PLAN — Interactive Parameter Timeline ("change parameters") — v2
 
-> **Status:** hardened through the full review process (1-agent first pass + 5 distinct-lens reviews: determinism, persistence, app/UX, correctness, scope). Two rounds of blockers folded in. This version **re-slices** the build (MVP = two clean options; the rest deferred) and adds a **Commit Invariants** section that every slice must obey. Ready to build engine-first once Karl green-lights the slicing.
+> **Status:** hardened through the full review process (1-agent first pass + 5 distinct-lens reviews + a final-gate review of v2). Blockers folded across all rounds. Re-sliced (MVP = two clean options; rest deferred) with a **Commit Invariants** section (I1–I8) every slice must obey. Final gate confirmed I1–I7 correct and the MVP genuinely founder/analyzer-independent, and caught one MVP blocker (I8 — absent-key defaults) now folded in. **Build-ready for the MVP slice** pending Karl's green-light on the slicing + the `fixBranchCategoryGene` defer/slice-3 call.
 
 ## Goal / UX
 
@@ -26,6 +26,7 @@ These are the rules the reviews forced; the commit routine is only correct if al
 - **I5 — `runConfig` is the load-bearing key (persistence).** Resume reconstructs from `writer.runConfig().config` (run-db.mjs:175); the plain `config` key is not read on resume. Editing only `config` is an **inert no-op** (marker drawn, simulation unchanged). Write **both `runConfig` and `config`**, before resume.
 - **I6 — Lifecycle: await exit, close, then fork (persistence + app).** `stopGenerator` (main.mjs:68-73) kills without awaiting; the child holds the WAL writer. Use a **dedicated commit routine** (not the shared `stopGenerator`, which also serves quit/seed-switch — awaiting there risks hanging quit) that: signals → **awaits the child `exit`** → opens the truncate/commit connection → commits (I3) → **closes it** → forks the resume child. Add `PRAGMA busy_timeout` to the writer connection (sqlite-sink.mjs:22) as defense-in-depth.
 - **I7 — Ordered insert/replace.** Build the field's schedule by inserting/replacing at T keeping ticks ascending (validateScheduleForm allows equal ticks — config.js:75 uses `<` not `<=`, so a dup-tick would silently last-win; avoid by replace-on-equal). Later steps `> T` that survive the truncation are kept (they correctly re-fire on resim) — do NOT drop them.
+- **I8 — Resolve ABSENT keys via defaults (MVP blocker, final-gate finding).** The two MVP fields are NOT stored in `runConfig.config` — `poolConfig` (pool-seed.mjs:20-29) omits them; they only acquire their defaults (`false`/`64`) at `World` construction via `resolveWorldConfig` (config.js:126,130). Desktop's stored config carries only `POOL_SETTINGS = {fixBranchCategoryGene, evolvableMutationRate}` (main.mjs:66). So `scheduleValue(cfg[field], head)` on an MVP field returns **`undefined`**, not `false`/`64`. Both the **dialog pre-fill** and the **I1 baseline `effectiveOldValue`** MUST resolve an absent key through the `resolveWorldConfig` defaults first (else pre-fill is blank and I1 seeds `[0, undefined]` → I4 rejects every first-time edit; for `mutationRateGeneScale`, an undefined that slipped past would give `Math.pow(2, x/undefined)` = NaN → genome-wide corruption, which I4 is what's masking). Test: editing a field **absent** from the stored config (distinct from the scalar case).
 
 ## Engine — make options time-varying (default byte-identical)
 
@@ -34,7 +35,7 @@ These are the rules the reviews forced; the commit routine is only correct if al
 Read live per event (not cached) via `scheduleValue`/`_sched`:
 - **`mutationRateGeneScale`** — `this._sched(...)` at reproduction (world.js ~528).
 - **`foodReseedWhenEmpty`** — replace cached `this._foodReseedWhenEmpty` (world.js:133) with a live read at the reseed branch (world.js ~635).
-- **`evolvableMutationRate`** *(slice 2)* — replace cached `this._evolvableMutationRate` (world.js:126) at: reproduction (~525); mating gate `_getJunkDnaSimilarity` (world.js:281) — **hoist the read OUT of the 112→256 loop** (perf, hot path); founder seeding **pool-seed.mjs:41** (`scheduleValue(spec, 0) === true`); and the display analyzer **species.mjs:75** (see limitation below).
+- **`evolvableMutationRate`** *(slice 2)* — replace cached `this._evolvableMutationRate` (world.js:126) at: reproduction (~525); mating gate `_getJunkDnaSimilarity` (world.js:281) — **hoist the read OUT of the 112→256 loop** (perf, hot path); founder seeding **pool-seed.mjs:41** (`scheduleValue(spec, 0) === true`); and the display analyzer **species.mjs:75** (see limitation below). Diagnostic-only reader to update for accuracy: `tools/scrub/peek-mutrate.mjs:46,52` (`=== true`) — determinism-neutral.
 
 **Byte-identical guarantee:** `scheduleValue(scalar,tick) === scalar`, so constant configs (the default, every golden/gate) read exactly as the cached fields did. Confirmed sound by the determinism lens; goldens hash `dumpSwimbots()`, separate from `serializeCheckpoint()` (O1 ✓).
 
@@ -42,9 +43,11 @@ Read live per event (not cached) via `scheduleValue`/`_sched`:
 
 ## `fixBranchCategoryGene` (slice 3) — the birth-stamp, done right
 
-Bodies decode once at `create()` (swimbot.js:173) and freeze; restore re-decodes. Making the flag time-varying requires the decode to use the value **as of each swimbot's birth**:
-- **Decode fallback (determinism #2, #3):** `generatePhenotypeFromGenotype` keeps a `config.fixBranchCategoryGene` fallback so the **≥5** decode call sites (world.js:559 birth, :220 founders, :813 restore, plus `partition.mjs:150` and `pool.js:32`) stay correct when unchanged.
-- **Restore uses birth value, never live config:** `makeBot` resolves `sd.fixStamp ?? scheduleValue(config.fixBranchCategoryGene, snapshotClock − sd.age)` and passes it INTO `create()`/decode **before** `restoreCheckpointState` overlays geometry (fixing the current create-then-restore order, world.js:813-819). `age` is already in `serializeCheckpoint` (swimbot.js:1036), so birthTick is reconstructable.
+Bodies decode once at `create()` and freeze; restore re-decodes. Making the flag time-varying requires the decode to use the value **as of each swimbot's birth**. Corrected call-graph (final-gate finding — the earlier "≥5 sites" was inaccurate):
+- There is **exactly one decode read**: `generatePhenotypeFromGenotype(this._genotype, this._config)` at **swimbot.js:173**. The "world.js:559/220/813" are `create()` **callers** that all funnel through it — not separate decode sites. `create()` (swimbot.js:161) takes **no config override** today, so threading a per-bot fix value **is a real `create()`/decode signature change**, not a tweak.
+- **Decode fallback:** `generatePhenotypeFromGenotype` keeps a `config.fixBranchCategoryGene` fallback so untouched callers stay correct — notably `engine/parallel/partition.mjs:149-150` (correct path; note it does NOT implement evolvableMutationRate either — pre-existing, out of scope) and `engine/pool.js:32`, which today decodes with `{numFoodTypes}` only and **omits `fixBranchCategoryGene` entirely** (test-only path, already ignores the flag).
+- **Live birth must also resolve the schedule:** the birth decode (swimbot.js:173 via world.js:559) must read `scheduleValue(fix, this._clock)` so a restored body matches how it was actually born. State this explicitly.
+- **Restore uses birth value, never live config:** `makeBot` resolves `sd.fixStamp ?? scheduleValue(config.fixBranchCategoryGene, birthTick)` and passes it INTO the decode **before** `restoreCheckpointState` overlays geometry (fixing the current create-then-restore order, world.js:813-819). `age` is in `serializeCheckpoint` (swimbot.js:1036); **nail the off-by-one** — `_age` starts 0 at create and increments at swimbot.js:386, and newborns are staged to T+1 (world.js:560-561), so `birthTick = snapshotClock − sd.age` needs verification against a scrub-identity test. (Founders survive regardless: derived birthTick goes negative → `scheduleValue` clamps to the tick-0 step, which I1 pins.)
 - **Do NOT use the "stamp only when scheduled" optimization for the restore read** — a scalar-era snapshot has no `fixStamp`, and after the edit converts the field to a schedule, a naive `undefined === true` → fix=false → wrong `numParts` → `restoreCheckpointState` reads `d.parts[p]` off the end → crash/corruption. The `?? scheduleValue(...)` fallback (or: always write the stamp — golden-safe per O1) closes this. Prefer the **age-derived fallback** so old snapshots migrate correctly with no format change.
 
 ## `evolvableMutationRate` species analyzer (slice 2) — state the limitation
@@ -60,7 +63,9 @@ A run is defined by keyframe-0 = post-seeding `serialize()`; restore never re-se
 
 ## App layer
 
-**MVP dialog:** an **in-page DOM dialog** inside the existing `BrowserWindow` (like the scrub bar) — not a second Electron window (avoids window-management + flicker). Pre-fill from `scheduleValue(cfg[field], head)`.
+**MVP dialog:** an **in-page DOM dialog** inside the existing `BrowserWindow` (like the scrub bar) — not a second Electron window (avoids window-management + flicker). Pre-fill from `scheduleValue(cfg[field], head)` **with the absent-key default fallback (I8)** — MVP fields aren't in the stored config, so fall back to `resolveWorldConfig` defaults (`foodReseedWhenEmpty=false`, `mutationRateGeneScale=64`).
+
+**Observability expectation (final-gate finding, not a defect):** `mutationRateGeneScale` is read only inside `if (evolvableMutationRate)` (world.js:530) — true on desktop, so it's live — and `foodReseedWhenEmpty` only fires at `_livingFoodCount==0` (near extinction). So the visible "watch it diverge" demo effectively rides on `mutationRateGeneScale`; `foodReseedWhenEmpty`'s effect only shows in a pool that would otherwise die. Set expectations accordingly when demoing the MVP.
 
 **Commit refresh (blockers, app lens):**
 - **Assign, don't max, the frontier.** The renderer merges frontier with `Math.max` (viewer:2472) — it will never see a commit's rewind. After commit, **assign** `frontier` from the value main returns (as `selectSeed` does, viewer:2459) and re-clamp `head`.
