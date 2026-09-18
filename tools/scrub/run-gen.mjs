@@ -1,11 +1,11 @@
 // run-gen.mjs -- the headless run-ahead GENERATOR for scrub/playback. Simulates a seed flat-out, single-thread,
-// mixed-live (the viewer's default perception), and writes a sparse, replayable run to `runs/run-<seed>.db` via
+// mixed-live (the viewer's default perception), and writes a sparse, replayable run to `runs/seed-<seed>.db` via
 // run-db.mjs: gzipped keyframes every KEYFRAME_INTERVAL ticks + a dense stats row every STATS_INTERVAL + the event
 // stream (ticks throttled, N5). In the desktop app this same code runs inside an Electron utilityProcess (D1) --
 // same V8 as the playback renderer, so restore()+resim is bit-identical. Here it runs as plain Node so the whole
 // path is testable without a GUI (D11 Phase 2).
 //
-//   node tools/scrub/run-gen.mjs --seed 7 [--ticks 20000] [--out runs/run-7.db]
+//   node tools/scrub/run-gen.mjs --seed 7 [--ticks 20000] [--out runs/seed-7.db]
 //        [--keyframe 2000] [--stats 250] [--throttle 100] [--pool 8000] [--n 1500]
 //
 // Determinism note: a run is DEFINED by its keyframe-0 (serialize() taken after seeding, D8); playback restores
@@ -92,7 +92,7 @@ if (isMain) {
     const a = parseArgs(process.argv.slice(2));
     if (a.seed === undefined) { console.error('usage: node tools/scrub/run-gen.mjs --seed S [--ticks T] [--out path] [--keyframe K] [--stats S] [--pool P] [--n N]'); process.exit(2); }
     const seed = Number(a.seed) >>> 0;
-    const out = a.out || `runs/run-${seed}.db`;
+    const out = a.out || `runs/seed-${seed}.db`;
     const opts = {};
     if (a.ticks) opts.ticks = Number(a.ticks);
     if (a.keyframe) opts.keyframeInterval = Number(a.keyframe);

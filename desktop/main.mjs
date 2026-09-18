@@ -12,6 +12,11 @@ import { createSqliteSink } from '../tools/events/sqlite-sink.mjs';
 import { createJsonlSink } from '../tools/events/jsonl-sink.mjs';
 import { openRunReader } from '../tools/events/run-db.mjs';
 
+// App identity: "GenePool" (dock, About, menus, and the userData folder ~/Library/Application Support/GenePool).
+// Set before any app.getPath('userData') call so runs/params/heads land under the GenePool folder. Packaging
+// (productName in package.json) sets the same name for the built GenePool.app.
+app.setName('GenePool');
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');                 // repo root: serves the viewer + engine + fonts to our own renderer
 const MIME = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript', '.json':'application/json',
@@ -79,7 +84,7 @@ function selectSeed(seed){
       return;
     }
     stopGenerator();                                            // kill+respawn on seed change (S5)
-    const dbPath = join(runsDir(), `run-${seed}.db`);
+    const dbPath = join(runsDir(), `seed-${seed}.db`);
     const resume = existsSync(dbPath);                          // continue a partial run (S4)
     const child = utilityProcess.fork(join(HERE, 'generator.mjs'));
     const s = { seed, child, reader: null, dbPath, ready: false };

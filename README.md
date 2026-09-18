@@ -58,13 +58,12 @@ JJ's GenePool is the foundation; this fork rebuilt the engine and wrapped it in 
 
 ## Running it
 
-**Desktop app** (recommended):
+**Desktop app:**
 ```sh
 cd desktop
-./node_modules/.bin/electron .
+npm install
+npm start
 ```
-
-**In a browser** — open `viewer-micrograph-gl.html` (the microscope renderer) via a static server.
 
 **Tests** (the engine's faithfulness + determinism guarantees):
 ```sh
