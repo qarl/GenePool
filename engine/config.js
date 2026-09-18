@@ -80,6 +80,7 @@ export function validateScheduleForm(field, spec) {
 // The per-pool values World resolves per tick through scheduleValue (so each may be scalar or a step-schedule).
 export const SCHEDULABLE_FIELDS = Object.freeze([
     'foodRegenerationPeriod', 'reproductiveIsolation', 'crossoverRate', 'mutationRate', 'foodSpread', 'maxFood', 'maxPopulation',
+    'mutationRateGeneScale', 'foodReseedWhenEmpty',   // opt-in divergences, made time-varying for the parameter timeline
 ]);
 
 // P3/§6 — the FULL world-config schema `World` reads: fill every ecology/lifecycle/spatial default so a MINIMAL
@@ -165,12 +166,9 @@ export function resolveWorldConfig(config = {}) {
     if (typeof resolved.evolvableMutationRate !== 'boolean') {
         throw new Error(`config: evolvableMutationRate must be a boolean (got ${resolved.evolvableMutationRate})`);
     }
-    if (typeof resolved.mutationRateGeneScale !== 'number' || !Number.isFinite(resolved.mutationRateGeneScale) || resolved.mutationRateGeneScale <= 0) {
-        throw new Error(`config: mutationRateGeneScale must be a positive finite number (got ${resolved.mutationRateGeneScale})`);
-    }
-    if (typeof resolved.foodReseedWhenEmpty !== 'boolean') {
-        throw new Error(`config: foodReseedWhenEmpty must be a boolean (got ${resolved.foodReseedWhenEmpty})`);
-    }
+    // mutationRateGeneScale + foodReseedWhenEmpty are SCHEDULABLE (§10): validate the scalar OR every schedule step's value.
+    eachVal('mutationRateGeneScale', (v) => { if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) throw new Error(`config: mutationRateGeneScale must be a positive finite number (got ${v})`); });
+    eachVal('foodReseedWhenEmpty', (v) => { if (typeof v !== 'boolean') throw new Error(`config: foodReseedWhenEmpty must be a boolean (got ${v})`); });
     // SCHEDULABLE numeric fields (scalar OR every schedule step): reject NaN. foodSpread additionally must be a FINITE
     // spawn radius >= 0 -- Infinity/NaN there yields NaN food positions that corrupt the grid (the others only degrade
     // behaviorally). crossover/mutation are probabilities -> [0,1] (Infinity is caught by the >1 bound).

@@ -124,9 +124,8 @@ export class World {
         this._viewRadius = config.viewRadius ?? SWIMBOT_VIEW_RADIUS;
         // evolvable mutation rate (opt-in): one junk byte becomes a coding gene scaling a lineage's own mutation rate.
         this._evolvableMutationRate = config.evolvableMutationRate === true;
-        this._mutationRateGeneScale = config.mutationRateGeneScale ?? 64;
-        // food reseed (opt-in divergence): reseed one random bit when the pool empties, so food=0 isn't absorbing.
-        this._foodReseedWhenEmpty = config.foodReseedWhenEmpty === true;
+        // mutationRateGeneScale + foodReseedWhenEmpty are read LIVE via this._sched (schedulable, §10) at their use
+        // sites, so a parameter-timeline edit takes effect mid-run. A scalar resolves to itself -> byte-identical default.
         // L5 carrying-capacity knob (D-f): OPT-IN population bound. Default = no cap (Infinity) -> births never
         // suppressed -> byte-identical to pre-cap (North Star: bounds are user config, not an engine default). §10:
         // read fresh each tick via _sched (may be a step-schedule) so carrying capacity can change over time.
@@ -530,7 +529,7 @@ export class World {
         if (this._evolvableMutationRate) {
             const b0 = this._myGenotype.getGeneValue(MUTATION_RATE_GENE), b1 = mateGenotype.getGeneValue(MUTATION_RATE_GENE);
             const s0 = b0 < 128 ? b0 : b0 - 256, s1 = b1 < 128 ? b1 : b1 - 256;   // int8
-            mutationRate *= Math.pow(2, ((s0 + s1) / 2) / this._mutationRateGeneScale);
+            mutationRate *= Math.pow(2, ((s0 + s1) / 2) / this._sched('mutationRateGeneScale'));
             if (mutationRate > 1) mutationRate = 1;   // it's a per-gene probability
         }
         this._childGenotype.setAsOffspring(this._myGenotype, mateGenotype, genomeRng, {
@@ -632,7 +631,7 @@ export class World {
                 // Regen runs AFTER perception, so this food is first perceivable next tick (same as brute
                 // force, which also scans _foodBits only during _updateSwimbots). Add it to the grid now.
                 if (this._useSpatialGrid) { const p = child.getPosition(); this._foodGrid.insert(child, p.x, p.y); }
-            } else if (this._foodReseedWhenEmpty) {
+            } else if (this._sched('foodReseedWhenEmpty')) {
                 // DIVERGENCE (opt-in, default off): no living food to bud from -> the pool is empty. JJ leaves it
                 // empty forever (absorbing -> extinction); instead reseed ONE bit at a random pool location so food
                 // can recover. Only reachable at food=0, which never happens in a JJ-faithful default run -> the
