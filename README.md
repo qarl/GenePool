@@ -58,11 +58,18 @@ JJ's GenePool is the foundation; this fork rebuilt the engine and wrapped it in 
 
 ## Running it
 
-**Desktop app:**
+**Run it (dev):**
 ```sh
 cd desktop
 npm install
 npm start
+```
+
+**Build the standalone GenePool.app** (macOS):
+```sh
+cd desktop
+npm install
+npm run package   # → desktop/dist/GenePool-darwin-<arch>/GenePool.app
 ```
 
 **Tests** (the engine's faithfulness + determinism guarantees):

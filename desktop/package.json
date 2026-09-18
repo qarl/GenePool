@@ -7,9 +7,11 @@
   "type": "module",
   "main": "main.mjs",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "package": "bash build-app.sh"
   },
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
     "electron": "^44.2.0"
   }
 }

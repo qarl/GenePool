@@ -22,3 +22,7 @@ runs/
 # local Jimmy fleet artifacts (transcripts, agent config) -- never source
 .Jimmy/
 AGENTS.md
+
+# Electron packaging artifacts (built app + staging; the icon + build-app.sh ARE committed)
+desktop/dist/
+desktop/.stage/
