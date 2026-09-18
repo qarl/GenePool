@@ -241,3 +241,42 @@ export function openRunReader(path, { readOnly = true } = {}) {
 
     return { db, frontier, meta, runConfig, getKeyframe, getStats, getPopSeries, close() { db.close(); } };
 }
+
+// ---- parameter-timeline commit (main process) --------------------------------------------------------------------
+// Apply an option-keyframe edit to a run: rewind the run to just before `tick`, write the new config, so a resume
+// re-simulates forward under the new schedule. ONE atomic transaction on ONE fresh connection (I3) -- a crash leaves
+// the run either fully-old (rolled back) or fully-applied-and-resumable. The CALLER must have validated newRunConfig
+// with resolveWorldConfig() BEFORE calling (I4), and must ensure the generator child has exited first (I6).
+//
+//   newRunConfig : the full { seed, config } object to store (config already carries the edited schedules)
+//   tick         : the edit tick T. Anchor rule (I2): keep everything BEFORE T and re-sim from there ->
+//                  T>0 deletes tick >= T (keyframes < T are kept, computed under the OLD value; the change lands AT T);
+//                  T==0 keeps keyframe-0 (the run definition) and deletes tick > 0 -- valid only for non-founder
+//                  fields (MVP: mutationRateGeneScale, foodReseedWhenEmpty never touch seeding).
+// Returns { anchor } -- the newest surviving keyframe tick (= the resume point / new frontier).
+export function commitParamEdit(path, { newRunConfig, tick }) {
+    if (!existsSync(path)) throw new Error(`commitParamEdit: no run at ${path}`);
+    if (!newRunConfig || !newRunConfig.config) throw new Error('commitParamEdit: newRunConfig must be { seed, config }');
+    const T = tick >>> 0;
+    const db = new DatabaseSync(path);
+    db.exec('PRAGMA busy_timeout = 5000;');   // wait out any lingering lock rather than throwing SQLITE_BUSY
+    try {
+        const setMeta = (k, v) => db.prepare('INSERT OR REPLACE INTO run_meta (k,v) VALUES (?,?)')
+            .run(k, typeof v === 'string' ? v : JSON.stringify(v));
+        db.exec('BEGIN');
+        try {
+            for (const tbl of ['snapshots', 'stats', 'births', 'deaths', 'eats', 'ticks']) {
+                if (T === 0) db.prepare(`DELETE FROM ${tbl} WHERE tick > 0`).run();          // keep keyframe-0
+                else db.prepare(`DELETE FROM ${tbl} WHERE tick >= ?`).run(T);                // keep everything < T
+            }
+            const newest = db.prepare('SELECT MAX(tick) AS m FROM snapshots').get().m;
+            if (newest == null) throw new Error(`commitParamEdit: no keyframe would survive (tick ${T}) -- refusing to orphan the run`);
+            setMeta('runConfig', newRunConfig);          // I5: resume restores from runConfig().config ...
+            setMeta('config', newRunConfig.config);      // ... keep the plain `config` key in sync too
+            setMeta('frontier', String(newest));         // rewind frontier to the resume anchor
+            setMeta('done', '0');                        // a previously-extinct/finished run is live again
+            db.exec('COMMIT');
+            return { anchor: newest };
+        } catch (e) { db.exec('ROLLBACK'); throw e; }
+    } finally { db.close(); }
+}

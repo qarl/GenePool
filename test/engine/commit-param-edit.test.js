@@ -1,0 +1,95 @@
+'use strict';
+// Parameter-timeline MVP step 2: the persistence commit (commitParamEdit) + the schedule-builder (withKeyframe).
+// The load-bearing proof is SCRUB-IDENTITY: a run generated straight-through with a schedule is byte-identical to a
+// constant run that is edited at T and then resumed -- i.e. the "change parameters" commit + resume reproduces the
+// timeline exactly. Plus withKeyframe invariants (I1 baseline / I7 replace-on-equal / I8 default) and the commit's
+// truncation rules (I2 anchor incl. the T=0 case; I3/I5 config written + frontier/done).
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { mkdtempSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
+
+const load = async () => ({
+    ...(await import('../../engine/config.js')),
+    ...(await import('../../tools/events/run-db.mjs')),
+    ...(await import('../../tools/scrub/run-gen.mjs')),
+    ...(await import('../../engine/pool-seed.mjs')),
+});
+const tmp = () => mkdtempSync(join(tmpdir(), 'gp-commit-'));
+
+test('withKeyframe: I8 default, I1 baseline, T=0 collapse, I7 replace-on-equal + keep-later', async () => {
+    const { withKeyframe } = await load();
+    // absent spec -> uses default as the baseline (I8), keeps old value before T (I1)
+    assert.deepEqual(withKeyframe(undefined, 2000, 16, 64), { schedule: [[0, 64], [2000, 16]] });
+    // scalar spec -> baseline is the scalar
+    assert.deepEqual(withKeyframe(64, 2000, 16, 64), { schedule: [[0, 64], [2000, 16]] });
+    // tick 0 collapses to a single step (no double-seed)
+    assert.deepEqual(withKeyframe(64, 0, 16, 64), { schedule: [[0, 16]] });
+    // existing schedule: insert ordered, keep later steps
+    assert.deepEqual(withKeyframe({ schedule: [[0, 64], [5000, 8]] }, 2000, 16, 64),
+        { schedule: [[0, 64], [2000, 16], [5000, 8]] });
+    // re-edit the same tick replaces (no duplicate)
+    assert.deepEqual(withKeyframe({ schedule: [[0, 64], [2000, 16]] }, 2000, 32, 64),
+        { schedule: [[0, 64], [2000, 32]] });
+});
+
+test('commitParamEdit: truncates at T, writes config, rewinds frontier (T>0 and T=0)', async () => {
+    const { generateRun, commitParamEdit, openRunReader, poolConfig, withKeyframe } = await load();
+    const dir = tmp(); const path = join(dir, 'seed-5.db');
+    generateRun(path, 5, { ticks: 6000, keyframeInterval: 2000, settings: { evolvableMutationRate: true } });
+
+    // edit mutationRateGeneScale at T=2500 (not on the keyframe grid)
+    const base = poolConfig(3000, { evolvableMutationRate: true });
+    const edited = { ...base, mutationRateGeneScale: withKeyframe(base.mutationRateGeneScale, 2500, 16, 64) };
+    const { anchor } = commitParamEdit(path, { newRunConfig: { seed: 5, config: edited }, tick: 2500 });
+    assert.equal(anchor, 2000, 'T=2500 -> newest surviving keyframe is 2000 (< T)');
+
+    const r = openRunReader(path);
+    const ticks = r.db.prepare('SELECT tick FROM snapshots ORDER BY tick').all().map((x) => x.tick);
+    assert.ok(ticks.every((t) => t < 2500) && ticks.includes(2000) && ticks.includes(0), 'kept keyframes < 2500');
+    assert.equal(r.frontier(), 2000, 'frontier rewound to the anchor');
+    assert.equal(r.meta('done'), '0', 'done cleared');
+    assert.deepEqual(r.runConfig().config.mutationRateGeneScale, { schedule: [[0, 64], [2500, 16]] }, 'runConfig updated');
+    assert.equal(r.meta('config') && JSON.parse(r.meta('config')).mutationRateGeneScale.schedule.length, 2, 'plain config key synced');
+    r.close();
+});
+
+test('commitParamEdit: T=0 keeps keyframe-0, deletes tick > 0', async () => {
+    const { generateRun, commitParamEdit, openRunReader, poolConfig, withKeyframe } = await load();
+    const dir = tmp(); const path = join(dir, 'seed-6.db');
+    generateRun(path, 6, { ticks: 4000, keyframeInterval: 2000, settings: { evolvableMutationRate: true } });
+    const base = poolConfig(3000, { evolvableMutationRate: true });
+    const edited = { ...base, mutationRateGeneScale: withKeyframe(base.mutationRateGeneScale, 0, 16, 64) };
+    const { anchor } = commitParamEdit(path, { newRunConfig: { seed: 6, config: edited }, tick: 0 });
+    assert.equal(anchor, 0);
+    const r = openRunReader(path);
+    const ticks = r.db.prepare('SELECT tick FROM snapshots ORDER BY tick').all().map((x) => x.tick);
+    assert.deepEqual(ticks, [0], 'only keyframe-0 remains');
+    r.close();
+});
+
+test('SCRUB-IDENTITY: straight-through schedule == constant edited-at-T then resumed', async () => {
+    const { generateRun, commitParamEdit, openRunReader, poolConfig, withKeyframe } = await load();
+    const T = 2500, END = 6000, SEED = 3;
+    const sched = { schedule: [[0, 64], [T, 16]] };
+
+    // A: generated straight through WITH the schedule
+    const dirA = tmp(); const pA = join(dirA, 'a.db');
+    generateRun(pA, SEED, { ticks: END, keyframeInterval: 2000, settings: { evolvableMutationRate: true, mutationRateGeneScale: sched } });
+
+    // B: generated constant (64), then edited at T, then RESUMED to END
+    const dirB = tmp(); const pB = join(dirB, 'b.db');
+    generateRun(pB, SEED, { ticks: END, keyframeInterval: 2000, settings: { evolvableMutationRate: true } });
+    const base = poolConfig(3000, { evolvableMutationRate: true });
+    const edited = { ...base, mutationRateGeneScale: withKeyframe(base.mutationRateGeneScale, T, 16, 64) };
+    commitParamEdit(pB, { newRunConfig: { seed: SEED, config: edited }, tick: T });
+    generateRun(pB, SEED, { ticks: END, keyframeInterval: 2000, resume: true }); // resume from the anchor under the new schedule
+
+    const A = openRunReader(pA), B = openRunReader(pB);
+    const snapA = A.getKeyframe(END).snapshot, snapB = B.getKeyframe(END).snapshot;
+    A.close(); B.close();
+    assert.equal(JSON.stringify(snapA), JSON.stringify(snapB),
+        'edit+resume reproduces the straight-through scheduled run byte-for-byte at END');
+});

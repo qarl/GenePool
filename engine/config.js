@@ -61,6 +61,26 @@ export function scheduleValue(spec, tick) {
     return v;
 }
 
+// Add/replace an option-keyframe at `tick` on a field's schedule -- the pure core of a parameter-timeline edit.
+// Invariants (see docs/PLAN-parameter-timeline.md): I8 an absent/null spec resolves via `defaultVal`; I1 converting a
+// SCALAR to a schedule seeds a `[0, oldValue]` baseline so history before `tick` keeps the old value (scheduleValue
+// holds the first step's value backward, which would otherwise rewrite the past); I7 ordered insert with
+// replace-on-equal (a re-edit at the same tick replaces, never duplicates). At tick 0 this collapses to `[[0,newVal]]`.
+export function withKeyframe(spec, tick, newVal, defaultVal) {
+    const T = tick >>> 0;
+    let steps;
+    if (spec !== null && typeof spec === 'object' && Array.isArray(spec.schedule)) {
+        steps = spec.schedule.map((s) => [s[0], s[1]]);               // existing schedule: keep its steps
+    } else {
+        const base = (spec === undefined || spec === null) ? defaultVal : spec;   // I8 absent -> default
+        steps = [[0, base]];                                          // I1 baseline so pre-T history stays `base`
+    }
+    steps = steps.filter((s) => s[0] !== T);                          // I7 replace-on-equal
+    steps.push([T, newVal]);
+    steps.sort((a, b) => a[0] - b[0]);
+    return { schedule: steps };
+}
+
 // Validate a schedule's FORM (not its values -- those are the author's world design). Throws at config time so a
 // malformed schedule fails at the boundary, not deep in a tick. A scalar is always valid.
 export function validateScheduleForm(field, spec) {
