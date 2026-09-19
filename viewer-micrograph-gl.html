@@ -342,6 +342,10 @@ let cam = { x: P.pool/2, y: P.pool/2, zoom: 6 };
 // frame (exp, time constant P.camSmooth). Drag/wheel/track all flow through the one smoother -> a cohesive, weighty feel
 // with a little "give" on the grab. Hard camera resets (build/loadWorld) must re-sync camT so the ease doesn't fight them.
 let camT = { x: cam.x, y: cam.y, zoom: cam.zoom };
+// Camera wrap is TORUS-only. A walled (flat) world must NOT wrap -- otherwise panning/zooming past an edge teleports
+// the view to the far side. Set from the active world's config (build/loadWorld/selectSeed); default false = walls.
+let camTorus = false;
+const CAM_MARGIN = 0.5;   // walls: how far past the pool (as a fraction of pool size) you can pan -- see outside, not to infinity
 // --- swimmer selection + camera animation (see docs/PLAN-swimmer-selection.md) ---
 let selectedSb = null;            // the selected/tracked swimbot (a live World object; nulled on death/deselect/world-rebuild)
 let selectionOpenedId = null;     // species-row id that selection auto-opened (provenance, so deselect closes only that one)
@@ -925,7 +929,7 @@ function build(){
   // the world (config + junk-zeroed founders + food) is built by the SHARED seeder so live and scrub match exactly;
   // it returns the seed's rng AFTER founders/food so the detritus below continues the same stream (byte-identical).
   let rng;
-  try { const r = makeStandardWorld(seed, { pool: P.pool, n: P.n, food: P.food }); world = r.world; curConfig = r.config; rng = r.rng; }
+  try { const r = makeStandardWorld(seed, { pool: P.pool, n: P.n, food: P.food }); world = r.world; curConfig = r.config; rng = r.rng; camTorus = curConfig?.topology === 'torus'; }
   catch(e){ world = null; errEl.textContent = 'Cannot build: ' + e.message; return; }
   known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;   // no stale death-fade ghosts / junk drift across a rebuild
   frameCount = 0; speciesModel = createSpeciesAnalyzer(curConfig);   // reset species state -> deterministic from a fresh build (config -> exclude the mutation-rate gene from clustering when active)
@@ -958,7 +962,7 @@ function loadWorld(saved){
   if (recording) stopRecording();
   let w; try { w = World.restore(saved.config, saved.data); } catch(e){ errEl.textContent = 'Load failed: ' + e.message; return; }
   deselect();   // replacing the world -> discard the stale selection
-  world = w; curConfig = saved.config; if (saved.seed != null) seed = saved.seed;
+  world = w; curConfig = saved.config; if (saved.seed != null) seed = saved.seed; camTorus = curConfig?.topology === 'torus';
   known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;
   frameCount = 0; speciesModel = createSpeciesAnalyzer(curConfig);
   rowMap = new Map(); expanded = new Set(); if (speciesPanel) speciesPanel.replaceChildren();
@@ -2034,7 +2038,7 @@ document.getElementById('seedIn').onchange = (e)=>{ const v=parseInt(e.target.va
 const speed=document.getElementById('speed'); speed.oninput=()=>{ ticksPerFrame=+speed.value; document.getElementById('speedv').textContent=ticksPerFrame+'×'; };
 // -- selection + camera helpers --
 const easeInOut = p => p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2;   // easeInOutQuad: soft both ends (not a snap)
-function wrapNear(v, ref, span){ let d = ((v - ref) % span + span*1.5) % span - span/2; return ref + d; }   // nearest torus copy of v to ref
+function wrapNear(v, ref, span){ if (!camTorus) return v; let d = ((v - ref) % span + span*1.5) % span - span/2; return ref + d; }   // nearest torus copy of v to ref (walls: no wrap)
 function cursorToBacking(e){ const r = cv.getBoundingClientRect(); return [ (e.clientX-r.left)/r.width*W, (e.clientY-r.top)/r.height*H ]; }
 function screenToWorld(px, py){ const s = sc(); return [ cam.x + (px-W/2)/s, cam.y + (py-H/2)/s ]; }
 function botRadius(sb){ const ph = sb._phenotype, c = sb.getPosition(); let wr = 0;
@@ -2089,7 +2093,7 @@ function deselect(){
   if (selectionOpenedId != null && expanded.has(selectionOpenedId)) setRowExpanded(selectionOpenedId, false);   // close only the selection-opened mini
   selectionOpenedId = null; selectedSb = null; selRingR = 0; camAnim.phase = 'idle'; camAnim.tracking = false;
 }
-const _mod = v => ((v % P.pool) + P.pool) % P.pool;
+const _mod = v => camTorus ? (((v % P.pool) + P.pool) % P.pool) : v;   // torus wraps into [0,pool); walls: identity (no wrap)
 function updateCamera(dt){
   dt = Math.min(dt, 0.1);   // clamp so a tab-stall doesn't jump-cut the camera
   // (1) advance the TARGET from the active selection animation (drag/wheel set camT directly in their handlers).
@@ -2107,6 +2111,13 @@ function updateCamera(dt){
         camT.x = _mod(c.x); camT.y = _mod(c.y);
       }
     }
+  }
+  // Walls: clamp the target to the pool bounds + a margin so you can see outside the tank but not pan to infinity
+  // (no wrap for a flat world). Torus wraps instead, so it's never clamped.
+  if (!camTorus){
+    const M = P.pool * CAM_MARGIN, lo = -M, hi = P.pool + M;
+    camT.x = Math.max(lo, Math.min(hi, camT.x));
+    camT.y = Math.max(lo, Math.min(hi, camT.y));
   }
   // (2) the ONE smoother: ease the real camera toward the target every frame (so drag/wheel are smoothed too, not just
   // tracking). Exp, frame-rate-independent; P.camSmooth = time constant (K-panel). Offset-snap x/y across the torus seam.
@@ -2488,7 +2499,7 @@ function startPlayback(){
     const r = await window.pool.scrub.select(sd >>> 0);
     if (!r || !r.ok){ document.getElementById('err').textContent = 'run failed: ' + ((r && r.error) || '?'); return; }
     document.getElementById('err').textContent = '';
-    cfg = r.runConfig.config; frontier = r.frontier;
+    cfg = r.runConfig.config; frontier = r.frontier; camTorus = cfg?.topology === 'torus';
     // return to where we left this seed: in-session position wins; else the persisted lastHead (across app runs); else 0. Clamped to the run's current length.
     head = Math.min(seedHeads.get(sd >>> 0) ?? r.lastHead ?? 0, Math.max(0, frontier));
     _lastReportedHead = head;
@@ -2560,7 +2571,7 @@ function startPlayback(){
       r = await window.pool.scrub.commit({ seed: curSeed, field, value, tick: T });
       if (!r || !r.ok){ msg.textContent = 'failed: ' + ((r && r.error) || '?'); btn.disabled = false; return; }
     }
-    cfg = r.runConfig.config; frontier = r.frontier;                  // rebind cfg + ASSIGN frontier (not max) after the rewind
+    cfg = r.runConfig.config; frontier = r.frontier; camTorus = cfg?.topology === 'torus';                  // rebind cfg + ASSIGN frontier (not max) after the rewind
     head = Math.min(head, Math.max(0, frontier)); _lastReportedHead = head;
     updateBar(); await snapTo(head); refreshMarks();
     btn.disabled = false; _dlg.hidden = true;
