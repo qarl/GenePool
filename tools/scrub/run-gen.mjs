@@ -56,7 +56,11 @@ export function generateRun(path, seed, opts = {}) {
         startTick = writer.resumedFrom.tick;
         resumed = true;
     } else {
-        ({ world } = buildWorld(seed, o));                 // built without onEvent; the death handler below is attached next
+        // Seed founders from the run's STORED config (the recipe), NOT o.settings -- so a tick-0 parameter edit
+        // (commitParamEdit deletes keyframe-0 + rewrites the stored config) re-seeds under the EDITED config on resume.
+        // For a plain fresh run the stored config == poolConfig(o.pool,o.settings), so this is byte-identical.
+        const seedCfg = writer.runConfig()?.config ?? runConfig;
+        ({ world } = makeStandardWorld(seed, { n: o.n, food: o.food, config: seedCfg }));   // no onEvent; death handler attached next
         analyzer.recompute(world._swimbots.values());
         writer.writeKeyframe(0, world.serialize(), statsRow()); keyframes++;   // keyframe-0 = seeded state (D8) + its stats
     }

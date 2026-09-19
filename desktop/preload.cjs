@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('pool', {
   // scrub/playback: pick a seed (main starts/continues its run generator), then read the run back for playback.
   scrub: {
     select:    (seed)  => ipcRenderer.invoke('scrub:select', seed),            // -> {ok, seed, frontier, runConfig}
+    commit:    (edit)  => ipcRenderer.invoke('scrub:commit', edit),            // {seed, field, value, tick} -> {ok, seed, frontier, runConfig, lastHead, error?}
     frontier:  ()      => ipcRenderer.invoke('scrub:frontier'),               // -> int (max consistent tick, grows)
     keyframe:  (t)     => ipcRenderer.invoke('scrub:keyframe', t),            // -> {tick, snapshot} nearest <= t
     stats:     (t)     => ipcRenderer.invoke('scrub:stats', t),              // -> {tick, stats} nearest <= t

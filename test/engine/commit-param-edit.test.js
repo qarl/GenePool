@@ -56,18 +56,24 @@ test('commitParamEdit: truncates at T, writes config, rewinds frontier (T>0 and 
     r.close();
 });
 
-test('commitParamEdit: T=0 keeps keyframe-0, deletes tick > 0', async () => {
+test('commitParamEdit: T=0 deletes ALL keyframes (generator re-seeds on resume)', async () => {
     const { generateRun, commitParamEdit, openRunReader, poolConfig, withKeyframe } = await load();
     const dir = tmp(); const path = join(dir, 'seed-6.db');
     generateRun(path, 6, { ticks: 4000, keyframeInterval: 2000, settings: { evolvableMutationRate: true } });
     const base = poolConfig(3000, { evolvableMutationRate: true });
     const edited = { ...base, mutationRateGeneScale: withKeyframe(base.mutationRateGeneScale, 0, 16, 64) };
     const { anchor } = commitParamEdit(path, { newRunConfig: { seed: 6, config: edited }, tick: 0 });
-    assert.equal(anchor, 0);
+    assert.equal(anchor, -1, 'T=0 anchor is pre-seed (-1)');
     const r = openRunReader(path);
     const ticks = r.db.prepare('SELECT tick FROM snapshots ORDER BY tick').all().map((x) => x.tick);
-    assert.deepEqual(ticks, [0], 'only keyframe-0 remains');
+    assert.deepEqual(ticks, [], 'no keyframes remain -> the run re-seeds from the edited config on resume');
+    assert.equal(r.frontier(), -1);
     r.close();
+    // resume actually re-seeds a fresh keyframe-0 under the edited config
+    generateRun(path, 6, { ticks: 2000, keyframeInterval: 2000, resume: true });
+    const r2 = openRunReader(path);
+    assert.ok(r2.getKeyframe(0), 'keyframe-0 re-seeded on resume');
+    r2.close();
 });
 
 test('SCRUB-IDENTITY: straight-through schedule == constant edited-at-T then resumed', async () => {
@@ -92,4 +98,28 @@ test('SCRUB-IDENTITY: straight-through schedule == constant edited-at-T then res
     A.close(); B.close();
     assert.equal(JSON.stringify(snapA), JSON.stringify(snapB),
         'edit+resume reproduces the straight-through scheduled run byte-for-byte at END');
+});
+
+test('FOUNDER RE-SEED: evolvable-on-from-start == off, then flipped on AT TICK 0, then resumed', async () => {
+    const { generateRun, commitParamEdit, openRunReader, poolConfig, withKeyframe } = await load();
+    const END = 6000, SEED = 3;
+
+    // A: evolvable-mutation ON from founding (byte-255 randomized in founders)
+    const dirA = tmp(); const pA = join(dirA, 'a.db');
+    generateRun(pA, SEED, { ticks: END, keyframeInterval: 2000, settings: { evolvableMutationRate: true } });
+
+    // B: OFF from founding (byte-255 zeroed), then edit evolvable-mutation -> ON at tick 0 (re-seeds), then resume
+    const dirB = tmp(); const pB = join(dirB, 'b.db');
+    generateRun(pB, SEED, { ticks: END, keyframeInterval: 2000, settings: {} });
+    const base = poolConfig(3000, {});
+    const edited = { ...base, evolvableMutationRate: withKeyframe(base.evolvableMutationRate, 0, true, false) };
+    const { anchor } = commitParamEdit(pB, { newRunConfig: { seed: SEED, config: edited }, tick: 0 });
+    assert.equal(anchor, -1, 'tick-0 edit rewinds to pre-seed');
+    generateRun(pB, SEED, { ticks: END, keyframeInterval: 2000, resume: true });   // re-seeds founders under evolvable=on
+
+    const A = openRunReader(pA), B = openRunReader(pB);
+    // founders themselves match (the re-seed produced the diverse-random byte-255 founders), and so does END
+    assert.equal(JSON.stringify(A.getKeyframe(0).snapshot), JSON.stringify(B.getKeyframe(0).snapshot), 'founders re-seeded identically');
+    assert.equal(JSON.stringify(A.getKeyframe(END).snapshot), JSON.stringify(B.getKeyframe(END).snapshot), 'whole run reproduced');
+    A.close(); B.close();
 });

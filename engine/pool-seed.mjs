@@ -6,6 +6,7 @@ import { World } from './world.js';
 import { Genotype } from './genotype.js';
 import { SPECIES_ISO } from './analysis/species.mjs';
 import { MUTATION_RATE_GENE } from './constants.js';
+import { scheduleValue } from './config.js';
 
 const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000;
 
@@ -30,19 +31,26 @@ export function poolConfig(pool, settings = {}){
 
 // Build the standard world for a seed. Returns { world, config, rng } -- `rng` is the seed's stream AFTER founders +
 // food are drawn, so the viewer can continue it for its (cosmetic) detritus seeding and stay byte-identical.
-export function makeStandardWorld(seed, { pool = POOL_DEFAULTS.pool, n = POOL_DEFAULTS.n, food = POOL_DEFAULTS.food, settings = {} } = {}){
-  const config = poolConfig(pool, settings);
-  const world = new World(config, seed >>> 0, {});   // no onEvent by default (the generator attaches it after)
+export function makeStandardWorld(seed, { pool = POOL_DEFAULTS.pool, n = POOL_DEFAULTS.n, food = POOL_DEFAULTS.food, settings = {}, config = null } = {}){
+  // `config`: seed from a pre-resolved config (the run's STORED recipe) instead of rebuilding from `settings`. This is
+  // what makes a tick-0 parameter edit re-seed founders under the EDITED config -- no special case. When omitted, build
+  // it from settings as before (byte-identical). Seeding geometry uses the pool WIDTH either way.
+  const cfg = config ?? poolConfig(pool, settings);
+  const poolW = config ? (cfg.pool.right - cfg.pool.left) : pool;
+  const world = new World(cfg, seed >>> 0, {});   // no onEvent by default (the generator attaches it after)
   const rng = mulberry32((seed >>> 0) ^ 0x5eed1234);
+  // evolvableMutationRate is schedulable (§10) -> resolve it AT founding (tick 0): the gene is coding (keep its random
+  // byte) iff on at tick 0. scheduleValue(scalar,0)===scalar, so a constant config is byte-identical.
+  const evolvableAtSeed = scheduleValue(cfg.evolvableMutationRate, 0) === true;
   for (let i = 0; i < n; i++){
     const g = new Genotype(); g.randomize(rng);
     const genes = g.getGenes().slice();
     // junk-zeroed (JJ's rule) -- but when the mutation-rate gene is active it's a CODING gene, so keep its random value.
-    for (let k = USED; k < NUM_GENES; k++){ if (config.evolvableMutationRate === true && k === MUTATION_RATE_GENE) continue; genes[k] = 0; }
-    const p = diskPoint(rng, pool / 2, pool / 2, pool / 2.4);
+    for (let k = USED; k < NUM_GENES; k++){ if (evolvableAtSeed && k === MUTATION_RATE_GENE) continue; genes[k] = 0; }
+    const p = diskPoint(rng, poolW / 2, poolW / 2, poolW / 2.4);
     const age = YOUNG_AGE + Math.floor((MAX_LIFESPAN - YOUNG_AGE) * rng());
     world.loadSwimbot(i, { age, x: p.x, y: p.y, angle: rng() * 360 - 180, energy: 50, genes });
   }
-  for (let i = 0; i < food; i++){ const p = diskPoint(rng, pool / 2, pool / 2, pool / 2.2); world.loadFood(i, { x: p.x, y: p.y, type: 0, energy: 50 }); }
-  return { world, config, rng };
+  for (let i = 0; i < food; i++){ const p = diskPoint(rng, poolW / 2, poolW / 2, poolW / 2.2); world.loadFood(i, { x: p.x, y: p.y, type: 0, energy: 50 }); }
+  return { world, config: cfg, rng };
 }

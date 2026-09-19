@@ -249,10 +249,10 @@ export function openRunReader(path, { readOnly = true } = {}) {
 // with resolveWorldConfig() BEFORE calling (I4), and must ensure the generator child has exited first (I6).
 //
 //   newRunConfig : the full { seed, config } object to store (config already carries the edited schedules)
-//   tick         : the edit tick T. Anchor rule (I2): keep everything BEFORE T and re-sim from there ->
-//                  T>0 deletes tick >= T (keyframes < T are kept, computed under the OLD value; the change lands AT T);
-//                  T==0 keeps keyframe-0 (the run definition) and deletes tick > 0 -- valid only for non-founder
-//                  fields (MVP: mutationRateGeneScale, foodReseedWhenEmpty never touch seeding).
+//   tick         : the edit tick T. Uniform rule: delete tick >= T (keyframes < T survive, computed under the OLD
+//                  value, so the change lands AT T). At T=0 this deletes keyframe-0 too -> the generator re-seeds it
+//                  from the edited stored config on resume, regenerating the founders under the new parameters. No
+//                  special case: a tick-0 edit regenerates the founding frame exactly as any tick regenerates its frame.
 // Returns { anchor } -- the newest surviving keyframe tick (= the resume point / new frontier).
 export function commitParamEdit(path, { newRunConfig, tick }) {
     if (!existsSync(path)) throw new Error(`commitParamEdit: no run at ${path}`);
@@ -265,18 +265,21 @@ export function commitParamEdit(path, { newRunConfig, tick }) {
             .run(k, typeof v === 'string' ? v : JSON.stringify(v));
         db.exec('BEGIN');
         try {
+            // Uniform (no tick-0 special case): delete everything AT or AFTER T. Keyframes < T survive (computed under
+            // the OLD value; the change lands AT T). At T=0 this deletes keyframe-0 too -> nothing survives -> the
+            // generator re-seeds keyframe-0 from the (edited) stored config on resume (run-gen's fresh path). So a
+            // tick-0 edit regenerates the founders under the new parameters, exactly like any other tick regenerates.
             for (const tbl of ['snapshots', 'stats', 'births', 'deaths', 'eats', 'ticks']) {
-                if (T === 0) db.prepare(`DELETE FROM ${tbl} WHERE tick > 0`).run();          // keep keyframe-0
-                else db.prepare(`DELETE FROM ${tbl} WHERE tick >= ?`).run(T);                // keep everything < T
+                db.prepare(`DELETE FROM ${tbl} WHERE tick >= ?`).run(T);
             }
-            const newest = db.prepare('SELECT MAX(tick) AS m FROM snapshots').get().m;
-            if (newest == null) throw new Error(`commitParamEdit: no keyframe would survive (tick ${T}) -- refusing to orphan the run`);
-            setMeta('runConfig', newRunConfig);          // I5: resume restores from runConfig().config ...
+            const newest = db.prepare('SELECT MAX(tick) AS m FROM snapshots').get().m;   // null iff T=0 (re-seed on resume)
+            const anchor = newest == null ? -1 : newest;
+            setMeta('runConfig', newRunConfig);          // I5: resume restores/re-seeds from runConfig().config ...
             setMeta('config', newRunConfig.config);      // ... keep the plain `config` key in sync too
-            setMeta('frontier', String(newest));         // rewind frontier to the resume anchor
+            setMeta('frontier', String(anchor));         // rewind frontier to the resume anchor (-1 = pre-seed)
             setMeta('done', '0');                        // a previously-extinct/finished run is live again
             db.exec('COMMIT');
-            return { anchor: newest };
+            return { anchor };
         } catch (e) { db.exec('ROLLBACK'); throw e; }
     } finally { db.close(); }
 }

@@ -123,9 +123,9 @@ export class World {
         // perception filter and the normalizer stay consistent.
         this._viewRadius = config.viewRadius ?? SWIMBOT_VIEW_RADIUS;
         // evolvable mutation rate (opt-in): one junk byte becomes a coding gene scaling a lineage's own mutation rate.
-        this._evolvableMutationRate = config.evolvableMutationRate === true;
-        // mutationRateGeneScale + foodReseedWhenEmpty are read LIVE via this._sched (schedulable, §10) at their use
-        // sites, so a parameter-timeline edit takes effect mid-run. A scalar resolves to itself -> byte-identical default.
+        // evolvableMutationRate + mutationRateGeneScale + foodReseedWhenEmpty are read LIVE via this._sched (schedulable,
+        // §10) at their use sites, so a parameter-timeline edit takes effect mid-run. A scalar resolves to itself ->
+        // byte-identical default. (evolvableMutationRate also gates founder seeding -- resolved at tick 0 in pool-seed.)
         // L5 carrying-capacity knob (D-f): OPT-IN population bound. Default = no cap (Infinity) -> births never
         // suppressed -> byte-identical to pre-cap (North Star: bounds are user config, not an engine default). §10:
         // read fresh each tick via _sched (may be a step-schedule) so carrying capacity can change over time.
@@ -278,8 +278,9 @@ export class World {
     _getJunkDnaSimilarity(genotype1, genotype2) {
         let diff = ZERO;
         let num = 0;
+        const evolvable = this._sched('evolvableMutationRate') === true;   // resolve once (schedulable, §10) -- NOT inside the gene loop
         for (let g = NUM_GENES_USED; g < NUM_GENES; g++) {
-            if (this._evolvableMutationRate && g === MUTATION_RATE_GENE) continue;   // it's a coding gene now, not a speciation marker
+            if (evolvable && g === MUTATION_RATE_GENE) continue;   // it's a coding gene now, not a speciation marker
             diff += Math.abs(genotype1.getGeneValue(g) - genotype2.getGeneValue(g)) / BYTE_SIZE;
             num++;
         }
@@ -526,7 +527,7 @@ export class World {
         // the child's OWN newBornId-addressed OFFSPRING_GENOME stream -- independent of every other entity/tick, so
         // nothing else desyncs. (Flag off -> mutationRate is the pre-change value verbatim -> byte-identical to JJ.)
         let mutationRate = this._sched('mutationRate');
-        if (this._evolvableMutationRate) {
+        if (this._sched('evolvableMutationRate') === true) {
             const b0 = this._myGenotype.getGeneValue(MUTATION_RATE_GENE), b1 = mateGenotype.getGeneValue(MUTATION_RATE_GENE);
             const s0 = b0 < 128 ? b0 : b0 - 256, s1 = b1 < 128 ? b1 : b1 - 256;   // int8
             mutationRate *= Math.pow(2, ((s0 + s1) / 2) / this._sched('mutationRateGeneScale'));

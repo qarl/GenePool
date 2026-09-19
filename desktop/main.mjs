@@ -10,7 +10,8 @@ import { extname, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSqliteSink } from '../tools/events/sqlite-sink.mjs';
 import { createJsonlSink } from '../tools/events/jsonl-sink.mjs';
-import { openRunReader } from '../tools/events/run-db.mjs';
+import { openRunReader, commitParamEdit } from '../tools/events/run-db.mjs';
+import { withKeyframe, resolveWorldConfig } from '../engine/config.js';
 
 // App identity: "GenePool" (dock, About, menus, and the userData folder ~/Library/Application Support/GenePool).
 // Set before any app.getPath('userData') call so runs/params/heads land under the GenePool folder. Packaging
@@ -76,6 +77,19 @@ function stopGenerator(){
   try { scrub.child?.kill(); } catch { /* already gone */ }
   scrub = null;
 }
+// Like stopGenerator, but AWAIT the child's actual exit before resolving (I6): the commit path must not open a second
+// writer on the .db while the generator still holds the WAL writer. Dedicated (not stopGenerator, which quit/select
+// also call synchronously). Force-kill + timeout fallback so a wedged child can't deadlock the commit.
+function stopGeneratorAndWait(){
+  return new Promise((resolve) => {
+    if (!scrub) return resolve();
+    const s = scrub;
+    try { s.reader?.close(); } catch { /* already closed */ }
+    let done = false; const finish = () => { if (done) return; done = true; if (scrub === s) scrub = null; resolve(); };
+    try { s.child?.once('exit', finish); s.child?.kill(); } catch { finish(); return; }
+    setTimeout(() => { try { s.child?.kill(); } catch { /* gone */ } finish(); }, 3000);
+  });
+}
 // Select (or start generating) a seed's run. Resolves once the .db is readable (the S3 "db ready" handshake).
 function selectSeed(seed){
   return new Promise((resolve) => {
@@ -112,6 +126,26 @@ ipcMain.handle('scrub:frontier',  ()          => scrub?.reader ? scrub.reader.fr
 ipcMain.handle('scrub:keyframe',  (_e, t)     => scrub?.reader ? scrub.reader.getKeyframe(t) : null);
 ipcMain.handle('scrub:stats',     (_e, t)     => scrub?.reader ? scrub.reader.getStats(t) : null);
 ipcMain.handle('scrub:popSeries', (_e, opts)  => scrub?.reader ? scrub.reader.getPopSeries(opts || {}) : []);
+
+// Parameter-timeline commit: edit one option at the playhead tick. Validate FIRST (I4), await the generator's exit
+// (I6), apply the atomic edit (commitParamEdit), then re-fork the generator to resume under the new schedule. Resolves
+// like scrub:select ({ok, seed, frontier, runConfig, lastHead}) so the renderer runs its selectSeed refresh.
+const EDITABLE_DEFAULTS = { evolvableMutationRate: false, mutationRateGeneScale: 64, foodReseedWhenEmpty: false };
+ipcMain.handle('scrub:commit', async (_e, { seed, field, value, tick }) => {
+  seed = seed >>> 0; tick = tick >>> 0;
+  if (!scrub || scrub.seed !== seed || !scrub.ready) return { ok: false, error: 'no active run for that seed' };
+  if (!(field in EDITABLE_DEFAULTS)) return { ok: false, error: `field not editable: ${field}` };
+  const stored = scrub.reader.runConfig();
+  if (!stored || !stored.config) return { ok: false, error: 'run has no stored config' };
+  // build the candidate config with the new option-keyframe, and VALIDATE before touching the DB
+  const candidate = { ...stored.config, [field]: withKeyframe(stored.config[field], tick, value, EDITABLE_DEFAULTS[field]) };
+  try { resolveWorldConfig(candidate); } catch (e) { return { ok: false, error: `invalid edit: ${e.message}` }; }
+  const dbPath = scrub.dbPath;
+  await stopGeneratorAndWait();                                   // I6: generator must be gone before we open a writer
+  try { commitParamEdit(dbPath, { newRunConfig: { seed, config: candidate }, tick }); }
+  catch (e) { return { ok: false, error: `commit failed: ${e.message}` }; }
+  return await selectSeed(seed);                                  // re-fork resume (db exists -> resume under the edited stored config)
+});
 
 let win = null;
 async function createWindow(){

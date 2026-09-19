@@ -146,6 +146,22 @@
   #kpanelBtns { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #1e2733; }
   #kpanelBtns button { flex: 1; background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 6px 4px; cursor: pointer; font-size: 11px; }
   #kpanelBtns button:hover { background: #24344a; }
+  /* parameter-timeline dialog + scrub markers */
+  #paramsDlg { position: fixed; right: 12px; bottom: 56px; z-index: 70; width: 268px; display: flex; flex-direction: column; gap: 10px;
+    background: #0d1117f2; border: 1px solid #1e2733; border-radius: 10px; backdrop-filter: blur(4px); padding: 12px 14px;
+    font: 500 12px var(--ui-font); color: #9fb0c3; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
+  #paramsDlg[hidden] { display: none; }
+  #paramsDlg #pdTitle { font-weight: 600; color: #c7d3e0; letter-spacing: .02em; }
+  #paramsDlg #pdTick { color: #3aa06f; }
+  #paramsDlg .pdRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #paramsDlg .pdRow input[type=number] { width: 64px; background: #0b0e13; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 5px; padding: 3px 4px; font: 500 12px var(--ui-font); }
+  #paramsDlg #pdMsg { min-height: 0; color: #d98b6b; font-size: 11px; }
+  #paramsDlg #pdBtns { display: flex; gap: 8px; }
+  #paramsDlg #pdBtns button { flex: 1; background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 7px 4px; cursor: pointer; font-size: 11px; }
+  #paramsDlg #pdBtns button:hover { background: #24344a; }
+  #paramsDlg #pdApply { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
+  #sbMarks .sbMark { position: absolute; top: 50%; width: 2px; height: 14px; margin-top: -7px; background: #3aa06f; border-radius: 1px; box-shadow: 0 0 3px #3aa06f; }
+  #scrubbar #sbParams { min-width: 36px; }
   /* whole-timeline history graph (G): a glass panel overlaying the main view, same material as #kpanel. */
   #graph { position: absolute; top: 22px; left: 22px; right: 22px; bottom: 22px; z-index: 40; display: flex; flex-direction: column;
     background: #0d1117f2; border: 1px solid #1e2733; border-radius: 10px; backdrop-filter: blur(4px);
@@ -218,8 +234,12 @@
     <button class="sbSpeed" data-n="2" title="faster 16×">▶▶▶</button>
     <button class="sbSpeed" data-n="3" title="fastest 64×">▶▶▶▶</button>
   </span>
-  <input id="sbSlider" type="range" min="0" max="0" value="0" step="1">
+  <span id="sbSliderWrap" style="flex:1; min-width:120px; position:relative; display:flex; align-items:center;">
+    <input id="sbSlider" type="range" min="0" max="0" value="0" step="1" style="flex:1;">
+    <div id="sbMarks" aria-hidden="true" style="position:absolute; left:0; right:0; top:0; bottom:0; pointer-events:none;"></div>
+  </span>
   <span id="sbTime">00:00 / 00:00</span>
+  <button id="sbParams" title="change parameters from this frame onward">⚙</button>
 </footer>
 <!-- live visual-constants editor; toggle with the K key ("kConstants"). Rows are built from SPEC in JS. -->
 <aside id="kpanel" hidden>
@@ -229,12 +249,23 @@
     <button id="kSave" title="make the current look your default (persists)">Save to defaults</button>
   </div>
 </aside>
+<!-- parameter-timeline: "change parameters" dialog. Edits an option at the current playhead; discards frames after
+     it and re-simulates forward under the new value. Opened by the ⚙ button in the scrub bar. -->
+<aside id="paramsDlg" hidden>
+  <div id="pdTitle">Change parameters — from <span id="pdTick">now</span> on</div>
+  <label class="pdRow"><input id="pdEvolvable" type="checkbox"> Evolvable mutation rate</label>
+  <label class="pdRow">Mutation-rate scale (K) <input id="pdScale" type="number" min="1" step="1"></label>
+  <label class="pdRow"><input id="pdReseed" type="checkbox"> Food recovers from empty</label>
+  <div id="pdMsg"></div>
+  <div id="pdBtns"><button id="pdCancel">Cancel</button><button id="pdApply">Apply from here →</button></div>
+</aside>
 
 <script type="module">
 import { World } from './engine/world.js';
 import { Genotype } from './engine/genotype.js';
 import { createSpeciesAnalyzer, SIG_ALPHA, SPECIES_ISO } from './engine/analysis/species.mjs';
 import { makeStandardWorld } from './engine/pool-seed.mjs';
+import { scheduleValue } from './engine/config.js';   // parameter-timeline: resolve an option's value at a tick for the dialog pre-fill
 
 const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000, EGG_SIZE = 5, SPLINE = 0.4;
 const cv = document.getElementById('cv');
@@ -2465,11 +2496,67 @@ function startPlayback(){
     await snapTo(head);
     playing = wasPlaying;         // new pool plays on from tick 0 if we were running before the switch
     updateBar();
+    refreshMarks();               // parameter-timeline: show this run's option-keyframe markers
   }
 
   // frontier grows monotonically WITHIN a run; a seed switch resets it (in selectSeed). Drop updates tagged with any
   // other seed so a just-killed generator's late progress can't Math.max the range back up to the old run's length.
   window.pool.scrub.onFrontier(msg => { if (!msg || (msg.seed >>> 0) !== curSeed) return; frontier = Math.max(frontier, msg.tick); if (!dragging) updateBar(); });
+
+  // --- parameter timeline: "change parameters" dialog + option-keyframe markers ---
+  const PARAM_DEFAULTS = { evolvableMutationRate: false, mutationRateGeneScale: 64, foodReseedWhenEmpty: false };
+  const _dlg = document.getElementById('paramsDlg'), _marks = document.getElementById('sbMarks');
+  const effVal = (field) => scheduleValue((cfg && cfg[field] !== undefined) ? cfg[field] : PARAM_DEFAULTS[field], head);
+  function markTicks(){
+    const out = new Set();
+    for (const f of Object.keys(PARAM_DEFAULTS)){ const s = cfg && cfg[f];
+      if (s && typeof s === 'object' && Array.isArray(s.schedule)) for (const step of s.schedule) if (step[0] > 0) out.add(step[0]); }
+    return [...out];
+  }
+  function refreshMarks(){
+    if (!_marks) return; _marks.replaceChildren();
+    if (!(frontier > 0)) return;
+    const r = $slider.getBoundingClientRect(), wrap = document.getElementById('sbSliderWrap').getBoundingClientRect();
+    for (const t of markTicks()){
+      const m = document.createElement('div'); m.className = 'sbMark';
+      m.style.left = ((r.left - wrap.left) + Math.max(0, Math.min(1, t / frontier)) * r.width) + 'px';
+      _marks.appendChild(m);
+    }
+  }
+  window.addEventListener('resize', refreshMarks);
+  document.getElementById('sbParams').onclick = () => {
+    if (!_dlg.hidden){ _dlg.hidden = true; return; }
+    if (curSeed < 0) return;
+    document.getElementById('pdTick').textContent = fmtTime(head);
+    document.getElementById('pdEvolvable').checked = !!effVal('evolvableMutationRate');
+    document.getElementById('pdScale').value = effVal('mutationRateGeneScale');
+    document.getElementById('pdReseed').checked = !!effVal('foodReseedWhenEmpty');
+    document.getElementById('pdMsg').textContent = head === 0 ? 'at tick 0 → re-seeds the founders' : '';
+    _dlg.hidden = false;
+  };
+  document.getElementById('pdCancel').onclick = () => { _dlg.hidden = true; };
+  document.getElementById('pdApply').onclick = async () => {
+    if (curSeed < 0) return;
+    const T = head, msg = document.getElementById('pdMsg'), btn = document.getElementById('pdApply');
+    const edits = [];
+    const newEvolvable = document.getElementById('pdEvolvable').checked;
+    if (newEvolvable !== !!effVal('evolvableMutationRate')) edits.push(['evolvableMutationRate', newEvolvable]);
+    const newScale = Math.max(1, Math.round(+document.getElementById('pdScale').value || 64));
+    if (newScale !== effVal('mutationRateGeneScale')) edits.push(['mutationRateGeneScale', newScale]);
+    const newReseed = document.getElementById('pdReseed').checked;
+    if (newReseed !== !!effVal('foodReseedWhenEmpty')) edits.push(['foodReseedWhenEmpty', newReseed]);
+    if (!edits.length){ _dlg.hidden = true; return; }
+    btn.disabled = true; msg.textContent = 'applying…'; playing = false;   // pause while we truncate + resume
+    let r;
+    for (const [field, value] of edits){
+      r = await window.pool.scrub.commit({ seed: curSeed, field, value, tick: T });
+      if (!r || !r.ok){ msg.textContent = 'failed: ' + ((r && r.error) || '?'); btn.disabled = false; return; }
+    }
+    cfg = r.runConfig.config; frontier = r.frontier;                  // rebind cfg + ASSIGN frontier (not max) after the rewind
+    head = Math.min(head, Math.max(0, frontier)); _lastReportedHead = head;
+    updateBar(); await snapTo(head); refreshMarks();
+    btn.disabled = false; _dlg.hidden = true;
+  };
   // 4 fast-forward buttons: each plays at 2^N x real-time (1x, 2x, 4x, 8x); clicking the ACTIVE speed pauses.
   for (const b of speedBtns) b.onclick = () => {
     const tpf = 1 << (2 * +b.dataset.n);
