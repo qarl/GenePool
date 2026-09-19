@@ -2,16 +2,17 @@
 // micrograph viewer (WebGL + the JS engine), and this Node 24 main process gives it REAL files + SQLite recording
 // via IPC -- reusing the tested tools/events pipeline verbatim (node:sqlite). No personal browser, no separate server
 // (the loopback below is internal to the app, only so the renderer's ES modules + font load exactly as in dev).
-import { app, BrowserWindow, ipcMain, dialog, utilityProcess } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, dialog, utilityProcess } from 'electron';
 import { createServer } from 'node:http';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, copyFile } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
 import { extname, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSqliteSink } from '../tools/events/sqlite-sink.mjs';
 import { createJsonlSink } from '../tools/events/jsonl-sink.mjs';
-import { openRunReader, commitParamEdit } from '../tools/events/run-db.mjs';
+import { openRunReader, commitParamEdit, commitImport } from '../tools/events/run-db.mjs';
 import { withKeyframe, resolveWorldConfig } from '../engine/config.js';
+import { World } from '../engine/world.js';
 
 // App identity: "GenePool" (dock, About, menus, and the userData folder ~/Library/Application Support/GenePool).
 // Set before any app.getPath('userData') call so runs/params/heads land under the GenePool folder. Packaging
@@ -147,6 +148,93 @@ ipcMain.handle('scrub:commit', async (_e, { seed, field, value, tick }) => {
   return await selectSeed(seed);                                  // re-fork resume (db exists -> resume under the edited stored config)
 });
 
+// Import commit: BRANCH the run at the playhead -- the imported frame becomes keyframe-T, the future is invalidated, and
+// the generator resumes forward under the imported config. Same lifecycle as scrub:commit (validate -> stop -> edit ->
+// re-fork resume). The renderer already validated via pool:importPick; we re-validate here (defense in depth) before the DB.
+ipcMain.handle('scrub:commitImport', async (_e, { seed, tick, config, data }) => {
+  seed = seed >>> 0; tick = tick >>> 0;
+  if (!scrub || scrub.seed !== seed || !scrub.ready) return { ok: false, error: 'no active run for that seed' };
+  if (!config || !data) return { ok: false, error: 'import needs { config, data }' };
+  try { resolveWorldConfig(config); World.restore(config, data); } catch (e) { return { ok: false, error: `invalid import: ${e.message}` }; }
+  const dbPath = scrub.dbPath;
+  await stopGeneratorAndWait();                                   // I6: generator gone before we open a writer
+  try { commitImport(dbPath, { newRunConfig: { seed, config }, tick, snapshot: data }); }
+  catch (e) { return { ok: false, error: `import failed: ${e.message}` }; }
+  return await selectSeed(seed);                                  // re-fork resume from the imported keyframe-T
+});
+
+// --- native application menu: a File menu owns all file ops (the bottom-bar SEED/FILE toggle is gone). Menu clicks send
+//     menu:action to the renderer, which owns the live world/selection/playhead and drives the actual read/write/import.
+//     "Save As" is the exception: it copies the run's .db entirely in main. ---
+let exportSwimmerItem = null;   // ref so menu:selection can enable/disable it as the renderer's selection changes
+function sendMenu(action){ if (win && !win.isDestroyed()) win.webContents.send('menu:action', action); }
+function buildAppMenu(){
+  const fileMenu = {
+    label: 'File',
+    submenu: [
+      { id: 'exportSwimmer', label: 'Export Swimmer…', enabled: false, click: () => sendMenu('exportSwimmer') },
+      { label: 'Export Pool…', click: () => sendMenu('exportPool') },
+      { type: 'separator' },
+      { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => saveRunAs() },
+      { label: 'Import…', accelerator: 'CmdOrCtrl+I', click: () => sendMenu('import') },
+    ],
+  };
+  const template = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    fileMenu,
+    { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  exportSwimmerItem = menu.getMenuItemById('exportSwimmer');
+  Menu.setApplicationMenu(menu);
+}
+ipcMain.on('menu:selection', (_e, on) => { if (exportSwimmerItem) exportSwimmerItem.enabled = !!on; });
+
+// Save As: copy the CURRENT seed's run .db to a file the user picks. Stop the generator first so the WAL is checkpointed
+// into a single consistent .db (I6-style), copy, then re-fork to resume -- so the live run continues where it left off.
+async function saveRunAs(){
+  if (!scrub || !scrub.ready){ dialog.showMessageBox(win, { message: 'No active run to save yet.' }); return; }
+  const seed = scrub.seed, srcPath = scrub.dbPath;
+  const r = await dialog.showSaveDialog(win, { title: 'Save run as', defaultPath: `seed-${seed}.db`,
+    filters: [{ name: 'GenePool run (SQLite)', extensions: ['db'] }] });
+  if (r.canceled || !r.filePath) return;
+  await stopGeneratorAndWait();                       // checkpoint + release the writer so the copy is a clean single file
+  try { await copyFile(srcPath, r.filePath); }
+  catch (e){ dialog.showMessageBox(win, { message: 'Save failed: ' + e.message }); }
+  await selectSeed(seed);                             // resume the live run
+  if (win && !win.isDestroyed()) win.webContents.send('scrub:frontier', { seed, tick: scrub?.reader ? scrub.reader.frontier() : -1 });
+}
+
+// Export Swimmer / Export Pool: the renderer hands over the data (it owns the live world); main just picks a path + writes.
+ipcMain.handle('pool:exportSwimmer', async (_e, obj) => {
+  const r = await dialog.showSaveDialog(win, { title: 'Export swimmer', defaultPath: 'swimmer.gpswimmer.json',
+    filters: [{ name: 'GenePool swimmer', extensions: ['gpswimmer.json', 'json'] }] });
+  if (r.canceled || !r.filePath) return { ok: false };
+  await writeFile(r.filePath, JSON.stringify(obj, null, 2));
+  return { ok: true, path: r.filePath };
+});
+ipcMain.handle('pool:exportPool', async (_e, obj) => {
+  const r = await dialog.showSaveDialog(win, { title: 'Export pool (one frame)', defaultPath: 'pool.gpool.json',
+    filters: [{ name: 'GenePool pool', extensions: ['gpool.json', 'json'] }] });
+  if (r.canceled || !r.filePath) return { ok: false };
+  await writeFile(r.filePath, JSON.stringify(obj));
+  return { ok: true, path: r.filePath };
+});
+// Import: pick a .gpool.json, then read + VALIDATE it (config resolves AND the snapshot restores) before handing it back.
+ipcMain.handle('pool:importPick', async () => {
+  const r = await dialog.showOpenDialog(win, { title: 'Import pool', properties: ['openFile'],
+    filters: [{ name: 'GenePool pool', extensions: ['gpool.json', 'json'] }] });
+  if (r.canceled || !r.filePaths?.[0]) return { ok: false };
+  try {
+    const obj = JSON.parse(await readFile(r.filePaths[0], 'utf8'));
+    const config = obj.config, data = obj.data ?? obj;   // accept {config,data} (Export Pool) or a bare serialize()+config
+    if (!config || !data) return { ok: false, error: 'not a pool file (missing config/data)' };
+    resolveWorldConfig(config);                          // throws on a bad config
+    World.restore(config, data);                         // throws if the snapshot can't be restored -> reject before touching the DB
+    return { ok: true, config, data };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
 let win = null;
 async function createWindow(){
   const port = await startStaticServer();
@@ -223,7 +311,7 @@ ipcMain.on('pool:record', (_e, events) => recordEvents(events));
 ipcMain.handle('pool:recordSnapshot', (_e, snapshot) => { recordSnapshot(snapshot); return { ok: true }; });
 ipcMain.handle('pool:recordStop', () => ({ ok: true, ...(recordStop() || {}) }));
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => { buildAppMenu(); createWindow(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 app.on('before-quit', () => { stopGenerator(); });
 app.on('window-all-closed', () => { recordStop(); stopGenerator(); app.quit(); });

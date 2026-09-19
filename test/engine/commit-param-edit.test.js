@@ -146,3 +146,52 @@ test('FOUNDER RE-SEED: evolvable-on-from-start == off, then flipped on AT TICK 0
     assert.equal(JSON.stringify(A.getKeyframe(END).snapshot), JSON.stringify(B.getKeyframe(END).snapshot), 'whole run reproduced');
     A.close(); B.close();
 });
+
+test('commitImport: imported state becomes keyframe-T, future invalidated, resume is deterministic + lockstep', async () => {
+    // Import = "branch the run at the playhead". Proves: (1) keyframes >= T are dropped and the imported frame is stored
+    // AS keyframe-T with clock forced to T; (2) keyframes < T survive; (3) config is adopted; (4) resuming forward is
+    // deterministic AND matches restore-keyframe-T-then-tick (the lockstep the viewer relies on to scrub past the import).
+    const { generateRun, commitImport, openRunReader, poolConfig, buildWorld } = {
+        ...(await import('../../tools/scrub/run-gen.mjs')),
+        ...(await import('../../tools/events/run-db.mjs')),
+        ...(await import('../../engine/config.js')),
+        ...(await import('../../engine/pool-seed.mjs')),
+    };
+    const { World } = await import('../../engine/world.js');
+    const T = 4000, END = 8000, HOST = 5, GUEST = 12;
+
+    const dir = tmp(); const path = join(dir, 'seed-5.db');
+    generateRun(path, HOST, { ticks: 6000, keyframeInterval: 2000, settings: { evolvableMutationRate: true } });
+
+    // an INDEPENDENT world (a different seed, ticked a bit) is the "imported pool"
+    const guestCfg = poolConfig(3000, { evolvableMutationRate: true });
+    const { world: guest } = (await import('../../engine/pool-seed.mjs')).makeStandardWorld(GUEST, { config: guestCfg });
+    for (let i = 0; i < 1500; i++) guest.tick();
+    const importedSnap = guest.serialize();
+
+    const { anchor } = commitImport(path, { newRunConfig: { seed: HOST, config: guestCfg }, tick: T, snapshot: importedSnap });
+    assert.equal(anchor, T, 'anchor is the import tick');
+
+    let r = openRunReader(path);
+    const kept = r.db.prepare('SELECT tick FROM snapshots ORDER BY tick').all().map((x) => x.tick);
+    assert.ok(kept.includes(0) && kept.includes(2000) && kept.includes(T), 'keyframes <T survive; T inserted');
+    assert.ok(kept.every((t) => t <= T), 'no keyframe past T');
+    assert.equal(r.frontier(), T, 'frontier rewound to T');
+    const kfT = r.getKeyframe(T).snapshot;
+    assert.equal(kfT.clock, T, 'imported snapshot clock forced to T');
+    assert.equal(JSON.stringify(kfT), JSON.stringify({ ...importedSnap, clock: T }), 'keyframe-T is the imported frame (clock=T)');
+    assert.deepEqual(r.runConfig().config, guestCfg, 'imported config adopted');
+    r.close();
+
+    // resume-generate forward from the import, twice -> identical (deterministic branch)
+    generateRun(path, HOST, { ticks: END, keyframeInterval: 2000, resume: true });
+    r = openRunReader(path);
+    const genEnd = r.getKeyframe(END).snapshot;
+    r.close();
+
+    // lockstep: restore keyframe-T and tick (END-T) forward under the adopted config -> byte-identical to the stored END
+    const w = World.restore(guestCfg, { ...importedSnap, clock: T });
+    for (let i = 0; i < END - T; i++) w.tick();
+    assert.equal(JSON.stringify(w.serialize()), JSON.stringify(genEnd),
+        'restore-keyframe-T-then-tick == generator END (viewer scrubs past the import in lockstep)');
+});

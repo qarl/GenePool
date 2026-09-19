@@ -5,6 +5,12 @@ contextBridge.exposeInMainWorld('pool', {
   isDesktop: true,
   save:           (obj)      => ipcRenderer.invoke('pool:save', obj),          // -> {ok, path}
   load:           ()         => ipcRenderer.invoke('pool:load'),               // -> {ok, data, path}
+  // File menu (main sends menu:<action> here; the renderer gathers live data + drives the write/import):
+  onMenu:         (cb)       => ipcRenderer.on('menu:action', (_e, action) => cb(action)),   // 'exportSwimmer' | 'exportPool' | 'import'
+  menuSelection:  (on)       => ipcRenderer.send('menu:selection', !!on),      // enable/disable "Export Swimmer" as selection changes
+  exportSwimmer:  (obj)      => ipcRenderer.invoke('pool:exportSwimmer', obj),  // {..swimbot..} -> {ok, path}   (.gpswimmer.json)
+  exportPool:     (obj)      => ipcRenderer.invoke('pool:exportPool', obj),     // {config, data} -> {ok, path}   (.gpool.json)
+  importPick:     ()         => ipcRenderer.invoke('pool:importPick'),          // open+read+validate a .gpool.json -> {ok, config, data} | {ok:false, error?}
   recordStart:    (opts)     => ipcRenderer.invoke('pool:recordStart', opts),  // {seed, config, snapshot} -> {ok, path}
   record:         (events)   => ipcRenderer.send('pool:record', events),       // fire-and-forget event batch
   recordSnapshot: (snapshot) => ipcRenderer.invoke('pool:recordSnapshot', snapshot),
@@ -16,6 +22,7 @@ contextBridge.exposeInMainWorld('pool', {
   scrub: {
     select:    (seed)  => ipcRenderer.invoke('scrub:select', seed),            // -> {ok, seed, frontier, runConfig}
     commit:    (edit)  => ipcRenderer.invoke('scrub:commit', edit),            // {seed, field, value, tick} -> {ok, seed, frontier, runConfig, lastHead, error?}
+    commitImport: (imp) => ipcRenderer.invoke('scrub:commitImport', imp),      // {seed, tick, config, data} -> branch the run at the playhead -> {ok, seed, frontier, runConfig, ...}
     frontier:  ()      => ipcRenderer.invoke('scrub:frontier'),               // -> int (max consistent tick, grows)
     keyframe:  (t)     => ipcRenderer.invoke('scrub:keyframe', t),            // -> {tick, snapshot} nearest <= t
     stats:     (t)     => ipcRenderer.invoke('scrub:stats', t),              // -> {tick, stats} nearest <= t

@@ -283,3 +283,41 @@ export function commitParamEdit(path, { newRunConfig, tick }) {
         } catch (e) { db.exec('ROLLBACK'); throw e; }
     } finally { db.close(); }
 }
+
+// Import a foreign world state at the playhead tick T -- the "branch the run at import" edit. Like commitParamEdit
+// (future ticks are invalidated + the run resumes), BUT the imported state also BECOMES the keyframe at T (rather than
+// re-simulating a surviving keyframe forward). So: delete tick >= T, INSERT the imported snapshot as keyframe-T, adopt
+// the imported config, rewind frontier to T. On resume the generator restores keyframe-T (the import) and ticks
+// forward, and playback restores the same keyframe -- so both stay in lockstep, exactly as after any keyframe.
+//   newRunConfig : { seed, config } -- the config the imported state was serialized under (governs forward sim + restore)
+//   tick         : the playhead T where the import lands (>= 0)
+//   snapshot     : a World.serialize() object (the imported pool frame)
+// The snapshot's clock is FORCED to T so world-clock stays aligned with the DB timeline (parameter schedules, head, and
+// keyframe scheduling are all keyed off the clock). Swimbot age is a relative counter (not clock-derived), so relocating
+// the frame in time leaves ages/energies untouched -- only the absolute time label moves. Returns { anchor: T }.
+export function commitImport(path, { newRunConfig, tick, snapshot }) {
+    if (!existsSync(path)) throw new Error(`commitImport: no run at ${path}`);
+    if (!newRunConfig || !newRunConfig.config) throw new Error('commitImport: newRunConfig must be { seed, config }');
+    if (!snapshot || typeof snapshot !== 'object') throw new Error('commitImport: snapshot object required');
+    const T = tick >>> 0;
+    const snap = { ...snapshot, clock: T };   // relocate to the DB tick (see note above); age is relative so unaffected
+    const db = new DatabaseSync(path);
+    db.exec('PRAGMA busy_timeout = 5000;');
+    try {
+        const setMeta = (k, v) => db.prepare('INSERT OR REPLACE INTO run_meta (k,v) VALUES (?,?)')
+            .run(k, typeof v === 'string' ? v : JSON.stringify(v));
+        db.exec('BEGIN');
+        try {
+            for (const tbl of ['snapshots', 'stats', 'births', 'deaths', 'eats', 'ticks']) {
+                db.prepare(`DELETE FROM ${tbl} WHERE tick >= ?`).run(T);   // invalidate the future (keyframes < T survive)
+            }
+            db.prepare('INSERT INTO snapshots (tick, gz) VALUES (?, ?)').run(T, encode(snap));   // imported state IS keyframe-T
+            setMeta('runConfig', newRunConfig);          // resume restores keyframe-T under THIS config
+            setMeta('config', newRunConfig.config);
+            setMeta('frontier', String(T));              // T is the newest keyframe = resume anchor
+            setMeta('done', '0');
+            db.exec('COMMIT');
+            return { anchor: T };
+        } catch (e) { db.exec('ROLLBACK'); throw e; }
+    } finally { db.close(); }
+}
