@@ -2467,6 +2467,7 @@ function startPlayback(){
     if (graphEl && !graphEl.hidden && (head !== _gDrawnHead || frontier !== _gDrawnFront)){ _gDrawnHead = head; _gDrawnFront = frontier; drawGraph(); }
     // highlight the active speed while playing (2^N == ticksPerFrame); nothing highlighted when paused
     for (const b of speedBtns) b.classList.toggle('active', playing && ticksPerFrame === (1 << (2 * +b.dataset.n)));
+    refreshMarks();   // keep option-keyframe markers aligned as the frontier grows (cached: no-op unless it changed)
   }
   // drag-snap: restore the nearest keyframe <= t (no re-sim). Coalesce to the latest target while one is in flight.
   async function snapTo(t){
@@ -2513,17 +2514,24 @@ function startPlayback(){
       if (s && typeof s === 'object' && Array.isArray(s.schedule)) for (const step of s.schedule) if (step[0] > 0) out.add(step[0]); }
     return [...out];
   }
-  function refreshMarks(){
-    if (!_marks) return; _marks.replaceChildren();
-    if (!(frontier > 0)) return;
+  let _marksSig = '';
+  function refreshMarks(force){
+    if (!_marks) return;
+    const ticks = markTicks();
+    const sig = frontier + '|' + ticks.join(',');
+    if (!force && sig === _marksSig) return;          // frontier + mark set unchanged -> skip (cheap every-frame call)
+    _marksSig = sig; _marks.replaceChildren();
+    if (!ticks.length || !(frontier > 0)) return;
     const r = $slider.getBoundingClientRect(), wrap = document.getElementById('sbSliderWrap').getBoundingClientRect();
-    for (const t of markTicks()){
+    const INSET = 8, track = Math.max(1, r.width - 2 * INSET), x0 = (r.left - wrap.left) + INSET;   // thumb inset
+    for (const t of ticks){
       const m = document.createElement('div'); m.className = 'sbMark';
-      m.style.left = ((r.left - wrap.left) + Math.max(0, Math.min(1, t / frontier)) * r.width) + 'px';
+      m.title = 'parameter change at ' + fmtTime(t);
+      m.style.left = (x0 + Math.max(0, Math.min(1, t / frontier)) * track) + 'px';
       _marks.appendChild(m);
     }
   }
-  window.addEventListener('resize', refreshMarks);
+  window.addEventListener('resize', () => refreshMarks(true));   // geometry changed -> force reposition
   document.getElementById('sbParams').onclick = () => {
     if (!_dlg.hidden){ _dlg.hidden = true; return; }
     if (curSeed < 0) return;

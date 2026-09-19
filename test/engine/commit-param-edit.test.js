@@ -76,6 +76,29 @@ test('commitParamEdit: T=0 deletes ALL keyframes (generator re-seeds on resume)'
     r2.close();
 });
 
+test('parameter keyframes survive: editing at T1 keeps an existing param-keyframe at T2 > T1', async () => {
+    // Parameter keyframes live in the run's stored config (schedule steps), NOT in the snapshot table -- so the
+    // snapshot deletion (commitParamEdit / thinning) never removes them, and withKeyframe keeps later steps.
+    const { generateRun, commitParamEdit, openRunReader, poolConfig, withKeyframe } = await load();
+    const dir = tmp(); const path = join(dir, 'seed-7.db');
+    generateRun(path, 7, { ticks: 6000, keyframeInterval: 2000, settings: { evolvableMutationRate: true } });
+
+    // edit #1 at T2=4000
+    let stored = openRunReader(path).runConfig().config;
+    let cfg = { ...stored, mutationRateGeneScale: withKeyframe(stored.mutationRateGeneScale, 4000, 16, 64) };
+    commitParamEdit(path, { newRunConfig: { seed: 7, config: cfg }, tick: 4000 });
+    // edit #2 at an EARLIER tick T1=2000
+    stored = openRunReader(path).runConfig().config;
+    cfg = { ...stored, mutationRateGeneScale: withKeyframe(stored.mutationRateGeneScale, 2000, 32, 64) };
+    commitParamEdit(path, { newRunConfig: { seed: 7, config: cfg }, tick: 2000 });
+
+    const r = openRunReader(path);
+    assert.deepEqual(r.runConfig().config.mutationRateGeneScale,
+        { schedule: [[0, 64], [2000, 32], [4000, 16]] },
+        'the 4000 parameter keyframe survived the earlier 2000 edit (not deleted)');
+    r.close();
+});
+
 test('SCRUB-IDENTITY: straight-through schedule == constant edited-at-T then resumed', async () => {
     const { generateRun, commitParamEdit, openRunReader, poolConfig, withKeyframe } = await load();
     const T = 2500, END = 6000, SEED = 3;
