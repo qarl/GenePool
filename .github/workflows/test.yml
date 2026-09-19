@@ -30,6 +30,7 @@ jobs:
           fi
           echo "OK: no passing {todo} pins."
 
-      # Coverage is informational (not a gate); print the per-file table to the log.
+      # Coverage is informational (not a gate); print the per-file table to the log. Bounded by `timeout` so a slow/stuck
+      # instrumented run (the heavy sim tests are much slower under coverage) can never hang the job to its 6h ceiling.
       - name: Coverage (report only)
-        run: node --test --experimental-test-coverage 'test/**/*.test.js' || true
+        run: timeout 300 node --test --experimental-test-coverage 'test/**/*.test.js' || true
