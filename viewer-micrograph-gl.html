@@ -163,8 +163,20 @@
   #paramsDlg #pdBtns button { flex: 1; background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 7px 4px; cursor: pointer; font-size: 11px; }
   #paramsDlg #pdBtns button:hover { background: #24344a; }
   #paramsDlg #pdApply { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
-  #sbMarks .sbMark { position: absolute; top: 50%; width: 2px; height: 14px; margin-top: -7px; background: #3aa06f; border-radius: 1px; box-shadow: 0 0 3px #3aa06f; }
-  #scrubbar #sbParams { min-width: 36px; }
+  /* each parameter keyframe is a ⚙ glyph on the scrubber -- same icon + green accent as the ⚙ button, so they read as one thing */
+  #sbMarks .sbMark { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 11px; line-height: 1; color: #4bbd8c; text-shadow: 0 0 3px #3aa06f; }
+  #scrubbar #sbParams { min-width: 34px; color: #4bbd8c; font-size: 15px; }   /* parameter-keyframe button (matches its scrub markers) */
+  /* pure-seed guard pop-up: a modal shown when you try to add a keyframe or import into a locked seed timeline */
+  #pureWarn { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); }
+  #pureWarn[hidden] { display: none; }
+  #pwCard { width: 340px; display: flex; flex-direction: column; gap: 12px; background: #0d1117f7; border: 1px solid #2b3a4d; border-radius: 12px;
+    backdrop-filter: blur(6px); padding: 18px 20px; font: 500 13px var(--ui-font); color: #9fb0c3; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+  #pwCard #pwTitle { font-weight: 700; color: #e0c36c; font-size: 14px; }
+  #pwCard #pwBody { line-height: 1.5; color: #b9c6d6; }
+  #pwCard #pwBtns { display: flex; gap: 10px; justify-content: flex-end; }
+  #pwCard #pwBtns button { background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 12px; }
+  #pwCard #pwBtns button:hover { background: #24344a; }
+  #pwCard #pwSave { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
   /* whole-timeline history graph (G): a glass panel overlaying the main view, same material as #kpanel. */
   #graph { position: absolute; top: 22px; left: 22px; right: 22px; bottom: 22px; z-index: 40; display: flex; flex-direction: column;
     background: #0d1117f2; border: 1px solid #1e2733; border-radius: 10px; backdrop-filter: blur(4px);
@@ -242,8 +254,8 @@
     <input id="sbSlider" type="range" min="0" max="0" value="0" step="1" style="flex:1;">
     <div id="sbMarks" aria-hidden="true" style="position:absolute; left:0; right:0; top:0; bottom:0; pointer-events:none;"></div>
   </span>
+  <button id="sbParams" title="change parameters from this frame onward (⚙ marks show existing keyframes on the scrubber)">⚙</button>
   <span id="sbTime">00:00 / 00:00</span>
-  <button id="sbParams" title="change parameters from this frame onward">⚙</button>
 </footer>
 <!-- live visual-constants editor; toggle with the K key ("kConstants"). Rows are built from SPEC in JS. -->
 <aside id="kpanel" hidden>
@@ -263,6 +275,14 @@
   <div id="pdMsg"></div>
   <div id="pdBtns"><button id="pdCancel">Cancel</button><button id="pdApply">Apply from here →</button></div>
 </aside>
+<!-- pure-seed guard: pops up when you try to add a parameter keyframe (⚙) or Import into a locked seed timeline -->
+<div id="pureWarn" hidden>
+  <div id="pwCard">
+    <div id="pwTitle">This is a pure seed timeline</div>
+    <div id="pwBody">Seed timelines stay reproducible, so you can't add parameter keyframes or import into one. Save it as a custom timeline first — then edit it however you like.</div>
+    <div id="pwBtns"><button id="pwCancel">OK</button><button id="pwSave">Save As…</button></div>
+  </div>
+</div>
 
 <script type="module">
 import { World } from './engine/world.js';
@@ -2589,24 +2609,30 @@ function startPlayback(){
     const r = $slider.getBoundingClientRect(), wrap = document.getElementById('sbSliderWrap').getBoundingClientRect();
     const INSET = 8, track = Math.max(1, r.width - 2 * INSET), x0 = (r.left - wrap.left) + INSET;   // thumb inset
     for (const t of ticks){
-      const m = document.createElement('div'); m.className = 'sbMark';
+      const m = document.createElement('div'); m.className = 'sbMark'; m.textContent = '⚙';   // ⚙ glyph = same as the param button
       m.title = 'parameter change at ' + fmtTime(t);
       m.style.left = (x0 + Math.max(0, Math.min(1, t / frontier)) * track) + 'px';
       _marks.appendChild(m);
     }
   }
   window.addEventListener('resize', () => refreshMarks(true));   // geometry changed -> force reposition
+  // pure-seed guard pop-up: shown when you try to add a keyframe (⚙) or Import into a locked seed timeline
+  const _pw = document.getElementById('pureWarn');
+  function showPureWarn(){ if (!_dlg.hidden) _dlg.hidden = true; _pw.hidden = false; }
+  document.getElementById('pwCancel').onclick = () => { _pw.hidden = true; };
+  _pw.onclick = (e) => { if (e.target === _pw) _pw.hidden = true; };   // click the backdrop to dismiss
+  document.getElementById('pwSave').onclick = () => { _pw.hidden = true; saveAsFlow(); };   // offer the fix right here
+
   document.getElementById('sbParams').onclick = () => {
     if (!_dlg.hidden){ _dlg.hidden = true; return; }
     if (!curKey) return;
+    if (!curCustom){ showPureWarn(); return; }   // pure seed = locked -> pop the warning instead of opening the editor
     document.getElementById('pdTick').textContent = fmtTime(head);
     document.getElementById('pdEvolvable').checked = !!effVal('evolvableMutationRate');
     document.getElementById('pdScale').value = effVal('mutationRateGeneScale');
     document.getElementById('pdReseed').checked = !!effVal('foodReseedWhenEmpty');
-    // pure seed timelines are locked: show the guard + disable Apply (you must Save As a custom timeline first)
-    document.getElementById('pdApply').disabled = !curCustom;
-    document.getElementById('pdMsg').textContent = !curCustom ? 'Save into a custom timeline before making changes.'
-      : (head === 0 ? 'at tick 0 → re-seeds the founders' : '');
+    document.getElementById('pdApply').disabled = false;
+    document.getElementById('pdMsg').textContent = head === 0 ? 'at tick 0 → re-seeds the founders' : '';
     _dlg.hidden = false;
   };
   document.getElementById('pdCancel').onclick = () => { _dlg.hidden = true; };
@@ -2658,7 +2684,6 @@ function startPlayback(){
       swimbot: { genes: Array.from(selectedSb.getGenotype().getGenes()), age: selectedSb.getAge(), energy: selectedSb.getEnergy(),
         numOffspring: selectedSb.getNumOffspring(), x: p.x, y: p.y, angle: selectedSb.getAngle() } };
   }
-  const guardMsg = () => { document.getElementById('err').textContent = 'Save into a custom timeline before making changes.'; };
   window.pool.onMenu?.(async (action) => {
     if (action === 'openTimeline'){
       await openTimelineFlow();
@@ -2672,12 +2697,12 @@ function startPlayback(){
       await window.pool.exportPool({ v: 1, kind: 'gpool', seed: srcSeedTag(), tick: head, config: cfg || curConfig, data: world.serialize() });
     } else if (action === 'import'){
       if (!curKey) return;
-      if (!curCustom){ guardMsg(); return; }                          // pure seed timelines are locked
+      if (!curCustom){ showPureWarn(); return; }                      // pure seed timelines are locked -> pop the warning
       const picked = await window.pool.importPick();                 // main: open dialog + read + validate -> {ok, config, data}
       if (!picked || !picked.ok) { if (picked && picked.error) document.getElementById('err').textContent = 'import: ' + picked.error; return; }
       playing = false;                                                // pause while we truncate + resume the generator
       const r = await window.pool.scrub.commitImport({ tick: head, config: picked.config, data: picked.data });
-      if (!r || !r.ok){ if (r && r.error === 'PURE_SEED') guardMsg(); else document.getElementById('err').textContent = 'import failed: ' + ((r && r.error) || '?'); return; }
+      if (!r || !r.ok){ if (r && r.error === 'PURE_SEED') showPureWarn(); else document.getElementById('err').textContent = 'import failed: ' + ((r && r.error) || '?'); return; }
       document.getElementById('err').textContent = '';
       deselect();                                                     // the imported pool is a different population -> drop the stale selection
       await applyRunResult(r, { keepHead: true });                    // rebind + land at the same tick after the rewind
