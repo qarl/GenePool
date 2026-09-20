@@ -6,7 +6,7 @@ import { app, BrowserWindow, Menu, ipcMain, dialog, utilityProcess } from 'elect
 import { createServer } from 'node:http';
 import { readFile, writeFile, copyFile } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
-import { extname, join, dirname, resolve } from 'node:path';
+import { extname, join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSqliteSink } from '../tools/events/sqlite-sink.mjs';
 import { createJsonlSink } from '../tools/events/jsonl-sink.mjs';
@@ -91,37 +91,45 @@ function stopGeneratorAndWait(){
     setTimeout(() => { try { s.child?.kill(); } catch { /* gone */ } finish(); }, 3000);
   });
 }
-// Select (or start generating) a seed's run. Resolves once the .db is readable (the S3 "db ready" handshake).
-function selectSeed(seed){
+// Custom timelines (edited/imported runs) live under ~/Documents/GenePool. A run is one of two SOURCES:
+//   * SEED (runs/seed-N.db, picked by number)  -- pure & reproducible; edits/imports are REFUSED (locked).
+//   * TIMELINE (a .timeline file, opened/saved) -- custom; edits/imports allowed. The bottom bar shows its filename.
+// The source is what makes a run pure-vs-custom; every result payload carries { seed, custom, name, key } so the
+// renderer knows the mode. `key` (seed:N | tl:<path>) is the per-source playhead-memory key.
+function docsDir(){ const d = join(app.getPath('documents'), 'GenePool'); mkdirSync(d, { recursive: true }); return d; }
+const sourceKey = (s) => s.custom ? ('tl:' + s.dbPath) : ('seed:' + s.seed);
+
+// Open (or start generating) a run at dbPath. meta = { seed, custom, name }. Resolves once the .db is readable (S3).
+function startRun(dbPath, meta){
+  const { seed = null, custom = false, name = null } = meta;
+  const key = custom ? ('tl:' + dbPath) : ('seed:' + seed);
+  const payload = (s) => ({ ok: true, seed, custom, name, key, frontier: s.reader.frontier(), runConfig: s.reader.runConfig(), lastHead: headOf(key) });
   return new Promise((resolve) => {
-    if (scrub && scrub.seed === seed && scrub.ready){
-      resolve({ ok: true, seed, frontier: scrub.reader.frontier(), runConfig: scrub.reader.runConfig(), lastHead: headOf(seed) });
-      return;
-    }
-    stopGenerator();                                            // kill+respawn on seed change (S5)
-    const dbPath = join(runsDir(), `seed-${seed}.db`);
-    const resume = existsSync(dbPath);                          // continue a partial run (S4)
+    if (scrub && scrub.dbPath === dbPath && scrub.ready){ resolve(payload(scrub)); return; }
+    stopGenerator();                                            // kill+respawn on source change (S5)
+    const resume = existsSync(dbPath);                          // continue a partial run (S4); a custom timeline always exists (opened/saved) -> resume
     const child = utilityProcess.fork(join(HERE, 'generator.mjs'));
-    const s = { seed, child, reader: null, dbPath, ready: false };
+    const s = { seed, custom, name, key, child, reader: null, dbPath, ready: false };
     scrub = s;
     child.on('message', (m) => {
-      if (s !== scrub) return;                                  // a newer seed superseded this child
+      if (s !== scrub) return;                                  // a newer source superseded this child
       if (m.type === 'ready'){
-        try { s.reader = openRunReader(dbPath); s.ready = true;
-          resolve({ ok: true, seed, frontier: s.reader.frontier(), runConfig: s.reader.runConfig(), lastHead: headOf(seed) }); }
+        try { s.reader = openRunReader(dbPath); s.ready = true; resolve(payload(s)); }
         catch (e){ resolve({ ok: false, error: String(e) }); }
       } else if (m.type === 'progress'){
-        if (win && !win.isDestroyed()) win.webContents.send('scrub:frontier', { seed: s.seed, tick: m.tick });   // tag with the seed so the renderer drops a killed run's late frontier
+        if (win && !win.isDestroyed()) win.webContents.send('scrub:frontier', { key: s.key, tick: m.tick });   // tag with the source key so the renderer drops a killed run's late frontier
       } else if (m.type === 'done'){
         if (win && !win.isDestroyed()) win.webContents.send('scrub:done', m);
       } else if (m.type === 'error' && !s.ready){ resolve({ ok: false, error: m.message }); }
     });
     child.on('exit', () => { if (s === scrub && !s.ready) resolve({ ok: false, error: 'generator exited before ready' }); });
-    // UNBOUNDED generation (Karl): the utilityProcess runs one core flat-out until it's killed (seed change / quit).
-    // Safe because the run records ONLY keyframes, thinned to a fixed budget -> the file stays bounded (~230 MB) forever.
-    child.postMessage({ seed, out: dbPath, opts: { resume, ticks: Infinity, settings: POOL_SETTINGS } });
+    // UNBOUNDED generation (Karl): the utilityProcess runs one core flat-out until it's killed. A custom timeline resumes
+    // its OWN stored config; POOL_SETTINGS only seeds a FRESH seed-run (a custom timeline always exists -> never fresh).
+    child.postMessage({ seed: seed ?? 0, out: dbPath, opts: { resume, ticks: Infinity, settings: POOL_SETTINGS } });
   });
 }
+function selectSeed(seed){ return startRun(join(runsDir(), `seed-${seed}.db`), { seed, custom: false, name: null }); }
+function openTimeline(path){ return startRun(path, { seed: null, custom: true, name: basename(path) }); }
 ipcMain.handle('scrub:select',    async (_e, seed) => { await loadHeads(); return selectSeed(seed >>> 0); });
 ipcMain.handle('scrub:frontier',  ()          => scrub?.reader ? scrub.reader.frontier() : -1);
 ipcMain.handle('scrub:keyframe',  (_e, t)     => scrub?.reader ? scrub.reader.getKeyframe(t) : null);
@@ -132,35 +140,38 @@ ipcMain.handle('scrub:popSeries', (_e, opts)  => scrub?.reader ? scrub.reader.ge
 // (I6), apply the atomic edit (commitParamEdit), then re-fork the generator to resume under the new schedule. Resolves
 // like scrub:select ({ok, seed, frontier, runConfig, lastHead}) so the renderer runs its selectSeed refresh.
 const EDITABLE_DEFAULTS = { evolvableMutationRate: false, mutationRateGeneScale: 64, foodReseedWhenEmpty: false };
-ipcMain.handle('scrub:commit', async (_e, { seed, field, value, tick }) => {
-  seed = seed >>> 0; tick = tick >>> 0;
-  if (!scrub || scrub.seed !== seed || !scrub.ready) return { ok: false, error: 'no active run for that seed' };
-  if (!(field in EDITABLE_DEFAULTS)) return { ok: false, error: `field not editable: ${field}` };
+// A run is editable ONLY when it's a custom timeline. Pure seed timelines are locked (PURE_SEED -> the renderer shows
+// "Save into a custom timeline before making changes"). Captures the source BEFORE stopGeneratorAndWait (which nulls scrub).
+function editTarget(){
+  if (!scrub || !scrub.ready) return { err: 'no active run' };
+  if (!scrub.custom) return { err: 'PURE_SEED' };
   const stored = scrub.reader.runConfig();
-  if (!stored || !stored.config) return { ok: false, error: 'run has no stored config' };
-  // build the candidate config with the new option-keyframe, and VALIDATE before touching the DB
-  const candidate = { ...stored.config, [field]: withKeyframe(stored.config[field], tick, value, EDITABLE_DEFAULTS[field]) };
+  if (!stored || !stored.config) return { err: 'run has no stored config' };
+  return { dbPath: scrub.dbPath, meta: { seed: scrub.seed, custom: true, name: scrub.name }, runSeed: stored.seed ?? 0, config: stored.config };
+}
+ipcMain.handle('scrub:commit', async (_e, { field, value, tick }) => {
+  tick = tick >>> 0;
+  const t = editTarget(); if (t.err) return { ok: false, error: t.err };
+  if (!(field in EDITABLE_DEFAULTS)) return { ok: false, error: `field not editable: ${field}` };
+  const candidate = { ...t.config, [field]: withKeyframe(t.config[field], tick, value, EDITABLE_DEFAULTS[field]) };
   try { resolveWorldConfig(candidate); } catch (e) { return { ok: false, error: `invalid edit: ${e.message}` }; }
-  const dbPath = scrub.dbPath;
   await stopGeneratorAndWait();                                   // I6: generator must be gone before we open a writer
-  try { commitParamEdit(dbPath, { newRunConfig: { seed, config: candidate }, tick }); }
+  try { commitParamEdit(t.dbPath, { newRunConfig: { seed: t.runSeed, config: candidate }, tick }); }
   catch (e) { return { ok: false, error: `commit failed: ${e.message}` }; }
-  return await selectSeed(seed);                                  // re-fork resume (db exists -> resume under the edited stored config)
+  return await startRun(t.dbPath, t.meta);                        // re-fork resume under the edited stored config
 });
 
-// Import commit: BRANCH the run at the playhead -- the imported frame becomes keyframe-T, the future is invalidated, and
-// the generator resumes forward under the imported config. Same lifecycle as scrub:commit (validate -> stop -> edit ->
-// re-fork resume). The renderer already validated via pool:importPick; we re-validate here (defense in depth) before the DB.
-ipcMain.handle('scrub:commitImport', async (_e, { seed, tick, config, data }) => {
-  seed = seed >>> 0; tick = tick >>> 0;
-  if (!scrub || scrub.seed !== seed || !scrub.ready) return { ok: false, error: 'no active run for that seed' };
+// Import commit: BRANCH the timeline at the playhead -- the imported frame becomes keyframe-T, the future is invalidated,
+// the generator resumes forward. Only allowed on a custom timeline (PURE_SEED otherwise). Re-validated here (defense in depth).
+ipcMain.handle('scrub:commitImport', async (_e, { tick, config, data }) => {
+  tick = tick >>> 0;
+  const t = editTarget(); if (t.err) return { ok: false, error: t.err };
   if (!config || !data) return { ok: false, error: 'import needs { config, data }' };
   try { resolveWorldConfig(config); World.restore(config, data); } catch (e) { return { ok: false, error: `invalid import: ${e.message}` }; }
-  const dbPath = scrub.dbPath;
   await stopGeneratorAndWait();                                   // I6: generator gone before we open a writer
-  try { commitImport(dbPath, { newRunConfig: { seed, config }, tick, snapshot: data }); }
+  try { commitImport(t.dbPath, { newRunConfig: { seed: t.runSeed, config }, tick, snapshot: data }); }
   catch (e) { return { ok: false, error: `import failed: ${e.message}` }; }
-  return await selectSeed(seed);                                  // re-fork resume from the imported keyframe-T
+  return await startRun(t.dbPath, t.meta);                        // re-fork resume from the imported keyframe-T
 });
 
 // --- native application menu: a File menu owns all file ops (the bottom-bar SEED/FILE toggle is gone). Menu clicks send
@@ -172,11 +183,13 @@ function buildAppMenu(){
   const fileMenu = {
     label: 'File',
     submenu: [
-      { id: 'exportSwimmer', label: 'Export Swimmer…', enabled: false, click: () => sendMenu('exportSwimmer') },
-      { label: 'Export Pool…', click: () => sendMenu('exportPool') },
+      { label: 'Open Timeline…', accelerator: 'CmdOrCtrl+O', click: () => sendMenu('openTimeline') },
+      { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendMenu('saveAs') },
       { type: 'separator' },
-      { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => saveRunAs() },
       { label: 'Import…', accelerator: 'CmdOrCtrl+I', click: () => sendMenu('import') },
+      { type: 'separator' },
+      { label: 'Export Pool…', click: () => sendMenu('exportPool') },
+      { id: 'exportSwimmer', label: 'Export Swimmer…', enabled: false, click: () => sendMenu('exportSwimmer') },
     ],
   };
   const template = [
@@ -190,20 +203,36 @@ function buildAppMenu(){
 }
 ipcMain.on('menu:selection', (_e, on) => { if (exportSwimmerItem) exportSwimmerItem.enabled = !!on; });
 
-// Save As: copy the CURRENT seed's run .db to a file the user picks. Stop the generator first so the WAL is checkpointed
-// into a single consistent .db (I6-style), copy, then re-fork to resume -- so the live run continues where it left off.
-async function saveRunAs(){
-  if (!scrub || !scrub.ready){ dialog.showMessageBox(win, { message: 'No active run to save yet.' }); return; }
-  const seed = scrub.seed, srcPath = scrub.dbPath;
-  const r = await dialog.showSaveDialog(win, { title: 'Save run as', defaultPath: `seed-${seed}.timeline`,
-    filters: [{ name: 'GenePool timeline', extensions: ['timeline'] }] });
-  if (r.canceled || !r.filePath) return;
-  await stopGeneratorAndWait();                       // checkpoint + release the writer so the copy is a clean single file
-  try { await copyFile(srcPath, r.filePath); }
-  catch (e){ dialog.showMessageBox(win, { message: 'Save failed: ' + e.message }); }
-  await selectSeed(seed);                             // resume the live run
-  if (win && !win.isDestroyed()) win.webContents.send('scrub:frontier', { seed, tick: scrub?.reader ? scrub.reader.frontier() : -1 });
+// copy a run .db plus its live WAL sidecars, so the copy is complete even if the WAL hasn't checkpointed yet.
+async function copyDb(src, dest){
+  await copyFile(src, dest);
+  for (const ext of ['-wal', '-shm']) if (existsSync(src + ext)) await copyFile(src + ext, dest + ext);
 }
+// Save As -> write the CURRENT run to a .timeline in ~/Documents/GenePool and SWITCH INTO it (custom mode: now editable,
+// bar shows the filename). The original source (a seed run, or the previous timeline) is left untouched/frozen. Renderer-
+// driven (menu:'saveAs') so the renderer refreshes its bar from the returned source.
+ipcMain.handle('timeline:saveAs', async () => {
+  if (!scrub || !scrub.ready) return { ok: false, error: 'no active run' };
+  const src = scrub.dbPath;
+  const base = (scrub.name || `seed-${scrub.seed}`).replace(/\.timeline$/i, '');
+  const r = await dialog.showSaveDialog(win, { title: 'Save timeline as', defaultPath: join(docsDir(), base + '.timeline'),
+    filters: [{ name: 'GenePool timeline', extensions: ['timeline'] }] });
+  if (r.canceled || !r.filePath) return { ok: false };
+  await stopGeneratorAndWait();                       // release the writer so the copy is consistent
+  try { await copyDb(src, r.filePath); }
+  catch (e){ await startRun(src, { seed: scrub?.seed ?? null, custom: scrub?.custom ?? false, name: scrub?.name ?? null }); return { ok: false, error: `save failed: ${e.message}` }; }
+  return await openTimeline(r.filePath);              // switch into the new custom timeline
+});
+// Open Timeline -> load a .timeline file (custom mode). Validate it's a readable run before forking.
+ipcMain.handle('timeline:open', async () => {
+  const r = await dialog.showOpenDialog(win, { title: 'Open timeline', defaultPath: docsDir(), properties: ['openFile'],
+    filters: [{ name: 'GenePool timeline', extensions: ['timeline'] }] });
+  if (r.canceled || !r.filePaths?.[0]) return { ok: false };
+  const path = r.filePaths[0];
+  try { openRunReader(path).close(); } catch (e){ return { ok: false, error: `not a GenePool timeline: ${e.message}` }; }
+  await loadHeads();
+  return await openTimeline(path);
+});
 
 // Export Swimmer / Export Pool: the renderer hands over the data (it owns the live world); main just picks a path + writes.
 ipcMain.handle('pool:exportSwimmer', async (_e, obj) => {
@@ -278,16 +307,17 @@ ipcMain.handle('params:save', async (_e, obj) => {
 ipcMain.handle('params:load', async () => {
   try { return JSON.parse(await readFile(paramsPath(), 'utf8')); } catch { return null; }
 });
-// Per-seed playhead memory, persisted ACROSS runs. Sidecar JSON in userData (NOT the .db: the flat-out generator owns
-// the .db writer, and writing to a live run would contend with it -- Karl's hard rule). The renderer reports the current
-// head (throttled + on seed switch); scrub:select returns lastHead so the viewer lands where it left off.
+// Per-SOURCE playhead memory, persisted ACROSS runs. Keyed by the source key (seed:N | tl:<path>) so both seed runs and
+// custom timelines remember where you left them. Sidecar JSON in userData (NOT the .db: the flat-out generator owns the
+// .db writer, and writing to a live run would contend with it -- Karl's hard rule). scrub:select/open returns lastHead.
 const headsPath = () => join(app.getPath('userData'), 'scrub-heads.json');
 let scrubHeads = null;
 async function loadHeads(){ if (scrubHeads) return scrubHeads; try { scrubHeads = JSON.parse(await readFile(headsPath(), 'utf8')) || {}; } catch { scrubHeads = {}; } return scrubHeads; }
-const headOf = (seed) => (scrubHeads && scrubHeads[String(seed >>> 0)]) || 0;
+const headOf = (key) => (scrubHeads && scrubHeads[key]) || 0;
 let _headsWriteT = null;
 ipcMain.on('scrub:reportHead', async (_e, msg) => {
-  const h = await loadHeads(); h[String((msg.seed >>> 0))] = Math.max(0, msg.head | 0);
+  if (!msg || !msg.key) return;
+  const h = await loadHeads(); h[msg.key] = Math.max(0, msg.head | 0);
   clearTimeout(_headsWriteT); _headsWriteT = setTimeout(() => writeFile(headsPath(), JSON.stringify(h)).catch(() => {}), 400);   // debounce fs writes
 });
 // Save a recorded viewer video (WebM bytes from the renderer's MediaRecorder) to a date/time-named file in ~/Movies/GenePool.

@@ -9,8 +9,13 @@ contextBridge.exposeInMainWorld('pool', {
   onMenu:         (cb)       => ipcRenderer.on('menu:action', (_e, action) => cb(action)),   // 'exportSwimmer' | 'exportPool' | 'import'
   menuSelection:  (on)       => ipcRenderer.send('menu:selection', !!on),      // enable/disable "Export Swimmer" as selection changes
   exportSwimmer:  (obj)      => ipcRenderer.invoke('pool:exportSwimmer', obj),  // {..swimbot..} -> {ok, path}   (.gpswimmer.json)
-  exportPool:     (obj)      => ipcRenderer.invoke('pool:exportPool', obj),     // {config, data} -> {ok, path}   (.gpool.json)
-  importPick:     ()         => ipcRenderer.invoke('pool:importPick'),          // open+read+validate a .gpool.json -> {ok, config, data} | {ok:false, error?}
+  exportPool:     (obj)      => ipcRenderer.invoke('pool:exportPool', obj),     // {config, data} -> {ok, path}   (.pool)
+  importPick:     ()         => ipcRenderer.invoke('pool:importPick'),          // open+read+validate a .pool -> {ok, config, data} | {ok:false, error?}
+  // custom timelines (editable runs under ~/Documents/GenePool). open/saveAs return a run source like scrub.select.
+  timeline: {
+    open:   () => ipcRenderer.invoke('timeline:open'),                          // -> {ok, seed:null, custom:true, name, key, frontier, runConfig, lastHead}
+    saveAs: () => ipcRenderer.invoke('timeline:saveAs'),                        // copy current run -> .timeline + switch into it (custom) -> same shape
+  },
   recordStart:    (opts)     => ipcRenderer.invoke('pool:recordStart', opts),  // {seed, config, snapshot} -> {ok, path}
   record:         (events)   => ipcRenderer.send('pool:record', events),       // fire-and-forget event batch
   recordSnapshot: (snapshot) => ipcRenderer.invoke('pool:recordSnapshot', snapshot),
@@ -27,8 +32,8 @@ contextBridge.exposeInMainWorld('pool', {
     keyframe:  (t)     => ipcRenderer.invoke('scrub:keyframe', t),            // -> {tick, snapshot} nearest <= t
     stats:     (t)     => ipcRenderer.invoke('scrub:stats', t),              // -> {tick, stats} nearest <= t
     popSeries: (opts)  => ipcRenderer.invoke('scrub:popSeries', opts),        // -> [{tick,pop,food}] downsampled
-    reportHead:(seed, head) => ipcRenderer.send('scrub:reportHead', { seed, head }),   // persist per-seed playhead across runs (fire-and-forget)
-    onFrontier:(cb)    => ipcRenderer.on('scrub:frontier', (_e, msg) => cb(msg)),   // msg = { seed, tick }
+    reportHead:(key, head) => ipcRenderer.send('scrub:reportHead', { key, head }),   // persist per-source playhead across runs (fire-and-forget)
+    onFrontier:(cb)    => ipcRenderer.on('scrub:frontier', (_e, msg) => cb(msg)),   // msg = { key, tick }
     onDone:    (cb)    => ipcRenderer.on('scrub:done', (_e, m) => cb(m)),
   },
 });

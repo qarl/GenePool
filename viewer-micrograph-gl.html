@@ -108,6 +108,10 @@
   #scrubbar button { min-width: 36px; cursor: pointer; }
   #scrubbar #sbSource { display: inline-flex; align-items: center; gap: 6px; }
   #scrubbar #sbSeedLabel { font-weight: 600; letter-spacing: 0.06em; color: #8fa2b8; }   /* plain SEED label (file ops moved to the File menu) */
+  #scrubbar #sbTimelineName { font-weight: 600; letter-spacing: 0.02em; color: #6cc0a0; background: #12241d; border: 1px solid #2b5a48;
+    border-radius: 5px; padding: 3px 9px; cursor: pointer; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #scrubbar #sbTimelineName:hover { background: #163026; }
+  #scrubbar #sbTimelineName[hidden], #scrubbar #sbSeedLabel[hidden], #scrubbar #sbSeed[hidden] { display: none; }
   #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 172px; text-align: right; color: #c7d3e0; }
   #scrubbar #sbSpeeds { display: inline-flex; align-items: center; gap: 4px; }
   /* record + play + all FF buttons: ONE identical size, glyphs flex-centred (line-height:1 removes the line-box slack that
@@ -220,10 +224,12 @@
   <div id="species"></div>
 </div></div>
 <footer id="scrubbar" hidden>
-  <!-- SEED label + input. File operations (Export Swimmer/Pool, Save As, Import) live in the app's File menu now. -->
+  <!-- Source: SEED [n] for a pure seed run, OR the filename for a custom timeline (click it to return to SEED browsing).
+       File ops (Open/Save As/Import/Export) live in the app's File menu. -->
   <span id="sbSource">
     <span id="sbSeedLabel">SEED</span>
     <input id="sbSeed" type="number" min="0" step="1" value="1">
+    <button id="sbTimelineName" hidden title="custom timeline — click to return to SEED browsing"></button>
   </span>
   <span id="sbSpeeds">
     <button id="vidRec" class="vidrec" title="record a video of the viewer (click to start, click to stop)"></button>
@@ -2466,7 +2472,9 @@ function startPlayback(){
   const $seed = document.getElementById('sbSeed'), $slider = document.getElementById('sbSlider'), $time = document.getElementById('sbTime');
   const speedBtns = [...document.querySelectorAll('#sbSpeeds .sbSpeed')];
   let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null, curSeed = -1;
-  const seedHeads = new Map();   // per-seed playhead memory (in-session): leaving a seed saves its timecode, returning restores it (Karl)
+  // run SOURCE: seed mode (pure, locked) vs custom timeline (editable). curKey (seed:N | tl:<path>) keys the head memory.
+  let curKey = null, curCustom = false, curName = null, lastSeedNum = 1;
+  const srcHeads = new Map();   // per-source playhead memory (in-session): leaving a run saves its timecode, returning restores it (Karl)
   let _lastHeadReport = 0, _lastReportedHead = -1;   // throttle persisting the current head to main (survives quit/restart)
 
   function updateBar(){
@@ -2474,7 +2482,7 @@ function startPlayback(){
     { const u = timeUnits(frontier); $time.textContent = `${fmtTime(head, u)} / ${fmtTime(frontier, u)}`; }
     scrubHead = head; scrubFrontier = frontier;   // mirror the playhead for the timeline graph
     // persist the current head across runs (throttled, only when it moved) so a quit/crash keeps your place per seed
-    if (curSeed >= 0 && head !== _lastReportedHead){ const now = performance.now(); if (now - _lastHeadReport > 1500){ _lastHeadReport = now; _lastReportedHead = head; window.pool.scrub.reportHead?.(curSeed, head); } }
+    if (curKey && head !== _lastReportedHead){ const now = performance.now(); if (now - _lastHeadReport > 1500){ _lastHeadReport = now; _lastReportedHead = head; window.pool.scrub.reportHead?.(curKey, head); } }
     // updateBar runs EVERY frame (even paused); only redraw the graph when the playhead/length actually moved, else
     // an open graph would re-stroke two 1400-pt polylines + force a layout flush at 60fps on top of the WebGL render.
     if (graphEl && !graphEl.hidden && (head !== _gDrawnHead || frontier !== _gDrawnFront)){ _gDrawnHead = head; _gDrawnFront = frontier; drawGraph(); }
@@ -2493,29 +2501,72 @@ function startPlayback(){
     if (kf){ world = World.restore(cfg, kf.snapshot); head = kf.tick; resetOverlays(head, cfg); render(); updateBar(); }
     if (snapPending != null){ const p = snapPending; snapPending = null; snapTo(p); }
   }
+  // Update the bottom bar + source state from a run-open result. SEED mode: label + number input (pure, locked).
+  // TIMELINE mode: the filename in place of SEED (custom, editable), clickable to return to seed browsing.
+  function setBarSource(r){
+    curKey = r.key; curCustom = !!r.custom; curName = r.name || null;
+    const $lbl = document.getElementById('sbSeedLabel'), $tl = document.getElementById('sbTimelineName');
+    if (curCustom){
+      curSeed = -1;
+      $lbl.hidden = true; $seed.hidden = true; $tl.hidden = false; $tl.textContent = curName;
+    } else {
+      curSeed = r.seed >>> 0; lastSeedNum = curSeed;
+      $lbl.hidden = false; $seed.hidden = false; $seed.value = curSeed; $tl.hidden = true;
+    }
+  }
+  // Shared refresh after any run-open/edit result: rebind cfg, land the head, re-render, redraw markers + bar. keepHead
+  // stays at the current tick (used by param-edit / import / save-as); otherwise land at this source's remembered head.
+  async function applyRunResult(r, { keepHead = false } = {}){
+    cfg = r.runConfig.config; frontier = r.frontier; camTorus = cfg?.topology === 'torus';
+    setBarSource(r);
+    head = keepHead ? Math.min(head, Math.max(0, frontier))
+                    : Math.min(srcHeads.get(r.key) ?? r.lastHead ?? 0, Math.max(0, frontier));
+    _lastReportedHead = head;
+    updateBar();
+    seedJunk(mulberry32(((r.runConfig?.seed ?? r.seed ?? 0) >>> 0) ^ 0x5eed1234));   // detritus pool (cosmetic)
+    await snapTo(head);
+    updateBar(); refreshMarks();
+  }
+  // remember where we left the current source before switching away (in-session + persist)
+  function stashHead(){ if (curKey){ srcHeads.set(curKey, head); window.pool.scrub.reportHead?.(curKey, head); } }
+
   async function selectSeed(sd){
-    const wasPlaying = playing;   // resume playback after the switch if it was already running (Karl)
-    playing = false;              // hold ticks while we swap worlds (don't tick the stale world during the async load)
-    if (curSeed >= 0){ seedHeads.set(curSeed, head); window.pool.scrub.reportHead?.(curSeed, head); }   // remember where we left the seed we're leaving (in-session + persist)
-    curSeed = sd >>> 0;   // set BEFORE the await so a killed run's in-flight frontier (tagged with the old seed) is dropped
+    const wasPlaying = playing; playing = false;   // hold ticks while we swap worlds
+    stashHead();
+    curKey = 'seed:' + (sd >>> 0);   // set BEFORE the await so a killed run's in-flight frontier (old key) is dropped
     const r = await window.pool.scrub.select(sd >>> 0);
     if (!r || !r.ok){ document.getElementById('err').textContent = 'run failed: ' + ((r && r.error) || '?'); return; }
     document.getElementById('err').textContent = '';
-    cfg = r.runConfig.config; frontier = r.frontier; camTorus = cfg?.topology === 'torus';
-    // return to where we left this seed: in-session position wins; else the persisted lastHead (across app runs); else 0. Clamped to the run's current length.
-    head = Math.min(seedHeads.get(sd >>> 0) ?? r.lastHead ?? 0, Math.max(0, frontier));
-    _lastReportedHead = head;
-    updateBar();   // reset the slider RANGE to the new run's length now (don't wait on snapTo's keyframe, which may be momentarily null)
-    seedJunk(mulberry32((sd >>> 0) ^ 0x5eed1234));   // detritus pool (cosmetic; build() normally does this)
-    await snapTo(head);
-    playing = wasPlaying;         // new pool plays on from tick 0 if we were running before the switch
-    updateBar();
-    refreshMarks();               // parameter-timeline: show this run's option-keyframe markers
+    await applyRunResult(r);
+    playing = wasPlaying; updateBar();
   }
+  async function openTimelineFlow(){
+    const wasPlaying = playing; playing = false;
+    stashHead();
+    const r = await window.pool.timeline.open();
+    if (!r) return;                                 // canceled
+    if (!r.ok){ document.getElementById('err').textContent = 'open failed: ' + (r.error || '?'); playing = wasPlaying; return; }
+    document.getElementById('err').textContent = ''; curKey = r.key; deselect();
+    await applyRunResult(r);
+    playing = wasPlaying; updateBar();
+  }
+  async function saveAsFlow(){
+    if (!curKey) return;
+    const wasPlaying = playing; playing = false;
+    stashHead();
+    const r = await window.pool.timeline.saveAs();
+    if (!r) return;                                 // canceled
+    if (!r.ok){ document.getElementById('err').textContent = 'save failed: ' + (r.error || '?'); playing = wasPlaying; return; }
+    document.getElementById('err').textContent = ''; curKey = r.key;
+    await applyRunResult(r, { keepHead: true });    // same run copied -> stay at the same tick, now editable
+    playing = wasPlaying; updateBar();
+  }
+  // click the timeline filename -> return to SEED browsing (the last seed you were on)
+  document.getElementById('sbTimelineName').onclick = () => selectSeed(lastSeedNum);
 
-  // frontier grows monotonically WITHIN a run; a seed switch resets it (in selectSeed). Drop updates tagged with any
-  // other seed so a just-killed generator's late progress can't Math.max the range back up to the old run's length.
-  window.pool.scrub.onFrontier(msg => { if (!msg || (msg.seed >>> 0) !== curSeed) return; frontier = Math.max(frontier, msg.tick); if (!dragging) updateBar(); });
+  // frontier grows monotonically WITHIN a run; switching source resets it. Drop updates tagged with any other source key
+  // so a just-killed generator's late progress can't Math.max the range back up to the old run's length.
+  window.pool.scrub.onFrontier(msg => { if (!msg || msg.key !== curKey) return; frontier = Math.max(frontier, msg.tick); if (!dragging) updateBar(); });
 
   // --- parameter timeline: "change parameters" dialog + option-keyframe markers ---
   const PARAM_DEFAULTS = { evolvableMutationRate: false, mutationRateGeneScale: 64, foodReseedWhenEmpty: false };
@@ -2547,18 +2598,22 @@ function startPlayback(){
   window.addEventListener('resize', () => refreshMarks(true));   // geometry changed -> force reposition
   document.getElementById('sbParams').onclick = () => {
     if (!_dlg.hidden){ _dlg.hidden = true; return; }
-    if (curSeed < 0) return;
+    if (!curKey) return;
     document.getElementById('pdTick').textContent = fmtTime(head);
     document.getElementById('pdEvolvable').checked = !!effVal('evolvableMutationRate');
     document.getElementById('pdScale').value = effVal('mutationRateGeneScale');
     document.getElementById('pdReseed').checked = !!effVal('foodReseedWhenEmpty');
-    document.getElementById('pdMsg').textContent = head === 0 ? 'at tick 0 → re-seeds the founders' : '';
+    // pure seed timelines are locked: show the guard + disable Apply (you must Save As a custom timeline first)
+    document.getElementById('pdApply').disabled = !curCustom;
+    document.getElementById('pdMsg').textContent = !curCustom ? 'Save into a custom timeline before making changes.'
+      : (head === 0 ? 'at tick 0 → re-seeds the founders' : '');
     _dlg.hidden = false;
   };
   document.getElementById('pdCancel').onclick = () => { _dlg.hidden = true; };
   document.getElementById('pdApply').onclick = async () => {
-    if (curSeed < 0) return;
+    if (!curKey) return;
     const T = head, msg = document.getElementById('pdMsg'), btn = document.getElementById('pdApply');
+    if (!curCustom){ msg.textContent = 'Save into a custom timeline before making changes.'; return; }   // pure seed = locked
     const edits = [];
     const newEvolvable = document.getElementById('pdEvolvable').checked;
     if (newEvolvable !== !!effVal('evolvableMutationRate')) edits.push(['evolvableMutationRate', newEvolvable]);
@@ -2570,12 +2625,10 @@ function startPlayback(){
     btn.disabled = true; msg.textContent = 'applying…'; playing = false;   // pause while we truncate + resume
     let r;
     for (const [field, value] of edits){
-      r = await window.pool.scrub.commit({ seed: curSeed, field, value, tick: T });
-      if (!r || !r.ok){ msg.textContent = 'failed: ' + ((r && r.error) || '?'); btn.disabled = false; return; }
+      r = await window.pool.scrub.commit({ field, value, tick: T });
+      if (!r || !r.ok){ msg.textContent = (r && r.error === 'PURE_SEED') ? 'Save into a custom timeline before making changes.' : 'failed: ' + ((r && r.error) || '?'); btn.disabled = false; return; }
     }
-    cfg = r.runConfig.config; frontier = r.frontier; camTorus = cfg?.topology === 'torus';                  // rebind cfg + ASSIGN frontier (not max) after the rewind
-    head = Math.min(head, Math.max(0, frontier)); _lastReportedHead = head;
-    updateBar(); await snapTo(head); refreshMarks();
+    await applyRunResult(r, { keepHead: true });   // rebind cfg + land at the same tick after the rewind
     btn.disabled = false; _dlg.hidden = true;
   };
   // 4 fast-forward buttons: each plays at 2^N x real-time (1x, 2x, 4x, 8x); clicking the ACTIVE speed pauses.
@@ -2592,39 +2645,42 @@ function startPlayback(){
   $slider.oninput = () => { dragging = true; head = +$slider.value; const u = timeUnits(frontier); $time.textContent = `${fmtTime(head, u)} / ${fmtTime(frontier, u)}`; snapTo(head); };
   $slider.onchange = () => { dragging = false; snapTo(+$slider.value); };
 
-  // FILE MENU actions (Karl): the SEED/FILE toggle is gone -- file ops live in the app's native File menu, which sends
-  // menu:* events here (the renderer owns the live world/selection/playhead, so it gathers the data and drives the write).
-  //   Export Swimmer -> the selected swimmer's genome+state (.swimmer)   [menu item enabled only when one is selected]
-  //   Export Pool    -> the current frame (config + World.serialize()) (.pool)
-  //   Save As        -> handled entirely in main (copies the run's seed-N.db to a .timeline file); no renderer data needed
-  //   Import         -> pick a .pool file, then BRANCH the run at the playhead (commitImport: invalidate the future, the
-  //                     imported frame becomes keyframe-T, the generator resumes forward) -- same shape as a parameter edit.
+  // FILE MENU actions (Karl): the native File menu sends menu:* events here (the renderer owns the live world/playhead).
+  //   Open Timeline  -> load a custom .timeline (editable) -> openTimelineFlow
+  //   Save As        -> copy the current run to a .timeline + switch into it (custom) -> saveAsFlow
+  //   Import         -> pick a .pool, then BRANCH the timeline at the playhead. ONLY on a custom timeline (pure seed = locked).
+  //   Export Pool / Export Swimmer -> the renderer hands over the data; main writes the file.
+  const srcSeedTag = () => (curSeed >= 0 ? curSeed : (cfg && cfg.seed) || 0);   // metadata seed for exports (0 for a custom timeline)
   function selSwimmerExport(){
     if (!selectedSb || !selectedSb.getAlive()) return null;
     const p = selectedSb.getPosition();
-    return { v: 1, kind: 'gpswimmer', seed: curSeed >>> 0, tick: head, config: cfg || curConfig,
+    return { v: 1, kind: 'gpswimmer', seed: srcSeedTag(), tick: head, config: cfg || curConfig,
       swimbot: { genes: Array.from(selectedSb.getGenotype().getGenes()), age: selectedSb.getAge(), energy: selectedSb.getEnergy(),
         numOffspring: selectedSb.getNumOffspring(), x: p.x, y: p.y, angle: selectedSb.getAngle() } };
   }
+  const guardMsg = () => { document.getElementById('err').textContent = 'Save into a custom timeline before making changes.'; };
   window.pool.onMenu?.(async (action) => {
-    if (action === 'exportSwimmer'){
+    if (action === 'openTimeline'){
+      await openTimelineFlow();
+    } else if (action === 'saveAs'){
+      await saveAsFlow();
+    } else if (action === 'exportSwimmer'){
       const obj = selSwimmerExport(); if (!obj) return;
       await window.pool.exportSwimmer(obj);
     } else if (action === 'exportPool'){
       if (!world) return;
-      await window.pool.exportPool({ v: 1, kind: 'gpool', seed: curSeed >>> 0, tick: head, config: cfg || curConfig, data: world.serialize() });
+      await window.pool.exportPool({ v: 1, kind: 'gpool', seed: srcSeedTag(), tick: head, config: cfg || curConfig, data: world.serialize() });
     } else if (action === 'import'){
-      if (curSeed < 0) return;
+      if (!curKey) return;
+      if (!curCustom){ guardMsg(); return; }                          // pure seed timelines are locked
       const picked = await window.pool.importPick();                 // main: open dialog + read + validate -> {ok, config, data}
       if (!picked || !picked.ok) { if (picked && picked.error) document.getElementById('err').textContent = 'import: ' + picked.error; return; }
       playing = false;                                                // pause while we truncate + resume the generator
-      const r = await window.pool.scrub.commitImport({ seed: curSeed, tick: head, config: picked.config, data: picked.data });
-      if (!r || !r.ok){ document.getElementById('err').textContent = 'import failed: ' + ((r && r.error) || '?'); return; }
+      const r = await window.pool.scrub.commitImport({ tick: head, config: picked.config, data: picked.data });
+      if (!r || !r.ok){ if (r && r.error === 'PURE_SEED') guardMsg(); else document.getElementById('err').textContent = 'import failed: ' + ((r && r.error) || '?'); return; }
       document.getElementById('err').textContent = '';
       deselect();                                                     // the imported pool is a different population -> drop the stale selection
-      cfg = r.runConfig.config; frontier = r.frontier; camTorus = cfg?.topology === 'torus';   // rebind + ASSIGN frontier after the rewind (mirrors the param-commit path)
-      head = Math.min(head, Math.max(0, frontier)); _lastReportedHead = head;
-      updateBar(); await snapTo(head); refreshMarks();
+      await applyRunResult(r, { keepHead: true });                    // rebind + land at the same tick after the rewind
     }
   });
 
