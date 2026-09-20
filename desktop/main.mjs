@@ -13,6 +13,19 @@ import { createJsonlSink } from '../tools/events/jsonl-sink.mjs';
 import { openRunReader, commitParamEdit, commitImport } from '../tools/events/run-db.mjs';
 import { withKeyframe, resolveWorldConfig } from '../engine/config.js';
 import { World } from '../engine/world.js';
+import { DatabaseSync } from 'node:sqlite';
+
+// Fold a run's WAL back into its single .db and drop the -wal/-shm sidecars, so a run AT REST is one file. Only safe when
+// no connection is open (child exited + our reader closed); the generator re-enables WAL (sqlite-sink) on the next open,
+// so live-scrub keeps working. Best-effort: a busy/locked db (still generating) is skipped and cleaned on its next idle.
+function checkpointClose(dbPath){
+  if (!existsSync(dbPath)) return;
+  try {
+    const db = new DatabaseSync(dbPath);
+    db.exec('PRAGMA busy_timeout = 2000; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;');
+    db.close();
+  } catch { /* locked (still open elsewhere) -> leave sidecars; next idle collapses it */ }
+}
 
 // App identity: "GenePool" (dock, About, menus, and the userData folder ~/Library/Application Support/GenePool).
 // Set before any app.getPath('userData') call so runs/params/heads land under the GenePool folder. Packaging
@@ -71,12 +84,16 @@ let scrub = null;   // { seed, child, reader, dbPath, ready }
 // Changing these invalidates existing run caches (they keep their OWN stored config on resume/restore), so after editing
 // this, wipe runs/ so seeds regenerate. (A pool-settings UI is the eventual home for these.)
 const POOL_SETTINGS = { fixBranchCategoryGene: true, evolvableMutationRate: true };
-function runsDir(){ const d = join(app.getPath('userData'), 'runs'); mkdirSync(d, { recursive: true }); return d; }
+function runsDir(){ const d = join(app.getPath('userData'), 'timelines'); mkdirSync(d, { recursive: true }); return d; }   // seed timelines (seed-N.db)
 function stopGenerator(){
   if (!scrub) return;
+  const dbPath = scrub.dbPath, child = scrub.child;
   try { scrub.reader?.close(); } catch { /* already closed */ }
-  try { scrub.child?.kill(); } catch { /* already gone */ }
   scrub = null;
+  // once the writer child is gone (and no run has re-claimed this db), collapse it to a single file (drop -wal/-shm)
+  const clean = () => { if (!scrub || scrub.dbPath !== dbPath) checkpointClose(dbPath); };
+  try { if (child){ child.once('exit', clean); child.kill(); } else clean(); }
+  catch { clean(); }
 }
 // Like stopGenerator, but AWAIT the child's actual exit before resolving (I6): the commit path must not open a second
 // writer on the .db while the generator still holds the WAL writer. Dedicated (not stopGenerator, which quit/select
@@ -218,10 +235,13 @@ ipcMain.handle('timeline:saveAs', async () => {
   const r = await dialog.showSaveDialog(win, { title: 'Save timeline as', defaultPath: join(docsDir(), base + '.timeline'),
     filters: [{ name: 'GenePool timeline', extensions: ['timeline'] }] });
   if (r.canceled || !r.filePath) return { ok: false };
+  const srcMeta = { seed: scrub?.seed ?? null, custom: scrub?.custom ?? false, name: scrub?.name ?? null };
   await stopGeneratorAndWait();                       // release the writer so the copy is consistent
   try { await copyDb(src, r.filePath); }
-  catch (e){ await startRun(src, { seed: scrub?.seed ?? null, custom: scrub?.custom ?? false, name: scrub?.name ?? null }); return { ok: false, error: `save failed: ${e.message}` }; }
-  return await openTimeline(r.filePath);              // switch into the new custom timeline
+  catch (e){ await startRun(src, srcMeta); return { ok: false, error: `save failed: ${e.message}` }; }
+  const res = await openTimeline(r.filePath);         // switch into the new custom timeline
+  checkpointClose(src);                               // the source run is now idle -> collapse it to a single file
+  return res;
 });
 // Open Timeline -> load a .timeline file (custom mode). Validate it's a readable run before forking.
 ipcMain.handle('timeline:open', async () => {
