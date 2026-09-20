@@ -2594,10 +2594,10 @@ function startPlayback(){
 
   // FILE MENU actions (Karl): the SEED/FILE toggle is gone -- file ops live in the app's native File menu, which sends
   // menu:* events here (the renderer owns the live world/selection/playhead, so it gathers the data and drives the write).
-  //   Export Swimmer -> the selected swimmer's genome+state (.gpswimmer.json)   [menu item enabled only when one is selected]
-  //   Export Pool    -> the current frame (config + World.serialize()) (.gpool.json)
-  //   Save As        -> handled entirely in main (copies the run's seed-N.db); no renderer data needed
-  //   Import         -> pick a .gpool.json, then BRANCH the run at the playhead (commitImport: invalidate the future, the
+  //   Export Swimmer -> the selected swimmer's genome+state (.swimmer)   [menu item enabled only when one is selected]
+  //   Export Pool    -> the current frame (config + World.serialize()) (.pool)
+  //   Save As        -> handled entirely in main (copies the run's seed-N.db to a .timeline file); no renderer data needed
+  //   Import         -> pick a .pool file, then BRANCH the run at the playhead (commitImport: invalidate the future, the
   //                     imported frame becomes keyframe-T, the generator resumes forward) -- same shape as a parameter edit.
   function selSwimmerExport(){
     if (!selectedSb || !selectedSb.getAlive()) return null;

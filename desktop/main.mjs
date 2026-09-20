@@ -195,8 +195,8 @@ ipcMain.on('menu:selection', (_e, on) => { if (exportSwimmerItem) exportSwimmerI
 async function saveRunAs(){
   if (!scrub || !scrub.ready){ dialog.showMessageBox(win, { message: 'No active run to save yet.' }); return; }
   const seed = scrub.seed, srcPath = scrub.dbPath;
-  const r = await dialog.showSaveDialog(win, { title: 'Save run as', defaultPath: `seed-${seed}.db`,
-    filters: [{ name: 'GenePool run (SQLite)', extensions: ['db'] }] });
+  const r = await dialog.showSaveDialog(win, { title: 'Save run as', defaultPath: `seed-${seed}.timeline`,
+    filters: [{ name: 'GenePool timeline', extensions: ['timeline'] }] });
   if (r.canceled || !r.filePath) return;
   await stopGeneratorAndWait();                       // checkpoint + release the writer so the copy is a clean single file
   try { await copyFile(srcPath, r.filePath); }
@@ -207,23 +207,23 @@ async function saveRunAs(){
 
 // Export Swimmer / Export Pool: the renderer hands over the data (it owns the live world); main just picks a path + writes.
 ipcMain.handle('pool:exportSwimmer', async (_e, obj) => {
-  const r = await dialog.showSaveDialog(win, { title: 'Export swimmer', defaultPath: 'swimmer.gpswimmer.json',
-    filters: [{ name: 'GenePool swimmer', extensions: ['gpswimmer.json', 'json'] }] });
+  const r = await dialog.showSaveDialog(win, { title: 'Export swimmer', defaultPath: 'untitled.swimmer',
+    filters: [{ name: 'GenePool swimmer', extensions: ['swimmer'] }] });
   if (r.canceled || !r.filePath) return { ok: false };
   await writeFile(r.filePath, JSON.stringify(obj, null, 2));
   return { ok: true, path: r.filePath };
 });
 ipcMain.handle('pool:exportPool', async (_e, obj) => {
-  const r = await dialog.showSaveDialog(win, { title: 'Export pool (one frame)', defaultPath: 'pool.gpool.json',
-    filters: [{ name: 'GenePool pool', extensions: ['gpool.json', 'json'] }] });
+  const r = await dialog.showSaveDialog(win, { title: 'Export pool (one frame)', defaultPath: 'untitled.pool',
+    filters: [{ name: 'GenePool pool', extensions: ['pool'] }] });
   if (r.canceled || !r.filePath) return { ok: false };
   await writeFile(r.filePath, JSON.stringify(obj));
   return { ok: true, path: r.filePath };
 });
-// Import: pick a .gpool.json, then read + VALIDATE it (config resolves AND the snapshot restores) before handing it back.
+// Import: pick a .pool file, then read + VALIDATE it (config resolves AND the snapshot restores) before handing it back.
 ipcMain.handle('pool:importPick', async () => {
   const r = await dialog.showOpenDialog(win, { title: 'Import pool', properties: ['openFile'],
-    filters: [{ name: 'GenePool pool', extensions: ['gpool.json', 'json'] }] });
+    filters: [{ name: 'GenePool pool', extensions: ['pool'] }] });
   if (r.canceled || !r.filePaths?.[0]) return { ok: false };
   try {
     const obj = JSON.parse(await readFile(r.filePaths[0], 'utf8'));
