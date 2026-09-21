@@ -130,8 +130,8 @@
   #jobsPanel .jpRow .jpDot { width: 7px; height: 7px; border-radius: 50%; background: #3a4a5a; flex: none; }
   #jobsPanel .jpRow.run .jpDot { background: #35c46a; box-shadow: 0 0 4px #35c46a; }
   #jobsPanel .jpRow.missing .jpName { color: #d98b6b; text-decoration: line-through; }
-  #jobsPanel .jpRow .jpBg { min-width: 60px; background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 4px 7px; cursor: pointer; font-size: 11px; }
-  #jobsPanel .jpRow .jpBg.on { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
+  #jobsPanel .jpRow .jpChk { flex: none; width: 15px; height: 15px; accent-color: #2e7d5b; cursor: pointer; }
+  #jobsPanel .jpRow .jpChk:disabled { cursor: default; opacity: .5; }
   #jobsPanel #jpEmpty { color: #667; font-size: 11px; }
   #scrubbar #sbSpeeds { display: inline-flex; align-items: center; gap: 4px; }
   /* record + play + all FF buttons: ONE identical size, glyphs flex-centred (line-height:1 removes the line-box slack that
@@ -2679,24 +2679,25 @@ function startPlayback(){
     try { const free = await window.pool.jobs.diskFree(); if (free != null){ _jpDisk.textContent = free.toFixed(0) + ' GB free'; _jpDisk.classList.toggle('low', free < 10); } } catch { /* ignore */ }
     _jpList.replaceChildren();
     if (!rows.length){ const e = document.createElement('div'); e.id = 'jpEmpty'; e.textContent = 'Open a seed or timeline, then background it here.'; _jpList.appendChild(e); return; }
-    rows.sort((a, b) => (b.running - a.running) || (b.background - a.background) || String(a.name).localeCompare(String(b.name)));
+    // STABLE order: whatever bgList returns (runs in the order you opened them, then adopted jobs) -- no re-sorting.
     for (const row of rows){
       const el = document.createElement('div'); el.className = 'jpRow' + (row.running ? ' run' : '') + (row.missing ? ' missing' : '');
-      const dot = document.createElement('span'); dot.className = 'jpDot'; el.appendChild(dot);
-      const nm = document.createElement('span'); nm.className = 'jpName'; nm.textContent = row.name + (row.missing ? ' (file missing)' : ''); el.appendChild(nm);
-      const day = document.createElement('span'); day.className = 'jpDay'; day.textContent = row.day != null ? ('to ' + row.day.toFixed(2) + 'd') : ''; el.appendChild(day);
-      const bg = document.createElement('button'); bg.className = 'jpBg' + (row.background ? ' on' : ''); bg.textContent = row.background ? 'Background ✓' : 'Background'; bg.disabled = !!row.missing;
-      bg.onclick = async () => {
-        bg.disabled = true;
-        const res = await window.pool.jobs.setBackground({ dbPath: row.dbPath, on: !row.background, seed: row.seed, kind: row.kind, name: row.name });
-        if (!res || !res.ok){ bg.disabled = false; renderJobs(); return; }
+      const chk = document.createElement('input'); chk.type = 'checkbox'; chk.className = 'jpChk'; chk.checked = !!row.background; chk.disabled = !!row.missing; chk.title = 'generate in the background';
+      chk.onchange = async () => {
+        chk.disabled = true;
+        const on = chk.checked;
+        const res = await window.pool.jobs.setBackground({ dbPath: row.dbPath, on, seed: row.seed, kind: row.kind, name: row.name });
+        if (!res || !res.ok){ chk.checked = !on; chk.disabled = false; renderJobs(); return; }
         if (row.dbPath === curDbPath){   // toggled the CURRENTLY-VIEWED run -> refresh the view's lock state (bg = read-only, fg = editable)
           const rr = await window.pool.scrub.reopen({ dbPath: row.dbPath, seed: row.seed, custom: row.kind === 'timeline', name: row.name });
           if (rr && rr.ok){ deselect(); await applyRunResult(rr, { keepHead: true }); }
         }
         renderJobs();
       };
-      el.appendChild(bg);
+      el.appendChild(chk);
+      const dot = document.createElement('span'); dot.className = 'jpDot'; el.appendChild(dot);
+      const nm = document.createElement('span'); nm.className = 'jpName'; nm.textContent = row.name + (row.missing ? ' (file missing)' : ''); el.appendChild(nm);
+      const day = document.createElement('span'); day.className = 'jpDay'; day.textContent = row.day != null ? ('to ' + row.day.toFixed(2) + 'd') : ''; el.appendChild(day);
       _jpList.appendChild(el);
     }
   }
