@@ -4,7 +4,7 @@
 // (the loopback below is internal to the app, only so the renderer's ES modules + font load exactly as in dev).
 import { app, BrowserWindow, Menu, ipcMain, dialog, utilityProcess } from 'electron';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { readFile, writeFile, copyFile, rename } from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statfsSync } from 'node:fs';
 import { extname, join, dirname, resolve, basename } from 'node:path';
@@ -195,10 +195,43 @@ function bgSpawn(dbPath, { seed }){
   }, 500));
   return child.pid;
 }
+// Registry bookkeeping is driven by the ACTUAL running generator processes (a ps scan), NOT by -wal freshness -- a
+// just-spawned generator's -wal isn't warm yet, so pruning on freshness would orphan it. The scan also RECOVERS orphans
+// (a job whose spawn survived a crash, or an external CLI generator) so they show up + are stoppable. (-wal freshness
+// remains the writer-agnostic GUARD for "may I open a writer on this db" -- a different question.)
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const baseName = (p) => basename(p).replace(/\.(db|timeline)$/i, '');
+function scanGenerators(){   // { dbPath -> pid } for every live run-gen.mjs process (ours + external)
+  const out = {};
+  try {
+    for (const line of execSync('ps -Awwo pid=,command=', { encoding: 'utf8' }).split('\n')){
+      const m = line.match(/run-gen\.mjs.*?--out\s+(.+?)(?:\s+--|\s*$)/);   // path may contain spaces ("Application Support") -> capture up to the next --flag
+      if (m){ const pid = parseInt(line.trim(), 10); if (pid) out[m[1]] = pid; }
+    }
+  } catch { /* ps unavailable */ }
+  return out;
+}
+function reconcileJobs(){   // sync the registry to reality: adopt live generators, drop+collapse ended ones
+  const scan = scanGenerators();
+  for (const [p, pid] of Object.entries(scan)) if (!bgJobs[p]) {   // adopt an untracked live generator (orphan recovery / external CLI)
+    const kind = p.endsWith('.timeline') ? 'timeline' : 'seed';
+    const seed = kind === 'seed' ? parseInt((p.match(/seed-(\d+)\.db$/) || [])[1] || '0', 10) : null;
+    bgJobs[p] = { pid, kind, name: baseName(p), seed, startedAt: Date.now() };
+  }
+  for (const p of Object.keys(bgJobs)){
+    if (scan[p]) { bgJobs[p].pid = scan[p]; continue; }             // still running -> refresh pid
+    if (bgJobs[p].pid && pidAlive(bgJobs[p].pid)) continue;         // just spawned, ps not caught it yet -> keep (grace)
+    if (existsSync(p)) checkpointClose(p);                          // truly ended -> collapse + drop
+    delete bgJobs[p];
+  }
+  persistJobs();
+  return scan;
+}
 async function bgStart(dbPath, meta){
   if (scrub && scrub.dbPath === dbPath && scrub.child) await stopGeneratorAndWait();   // hand off if WE are the active writer
-  if (isWriterLive(dbPath)){                                          // already owned (external/already background) -> adopt, no 2nd writer
-    if (!bgJobs[dbPath]) { bgJobs[dbPath] = { pid: null, ...meta, startedAt: Date.now() }; await persistJobs(); }
+  if (isWriterLive(dbPath) || scanGenerators()[dbPath]){            // already owned (external/already background) -> adopt, no 2nd writer
+    reconcileJobs();
+    if (!bgJobs[dbPath]) { bgJobs[dbPath] = { pid: scanGenerators()[dbPath] || null, ...meta, startedAt: Date.now() }; await persistJobs(); }
     return { ok: true };
   }
   const pid = bgSpawn(dbPath, meta);
@@ -207,11 +240,9 @@ async function bgStart(dbPath, meta){
   return { ok: true };
 }
 async function bgStop(dbPath){
-  const j = bgJobs[dbPath];
-  if (j && j.pid){
-    try { process.kill(j.pid); } catch { /* gone */ }                 // identity-safe: only kill a pid WE recorded for this db
-    for (let i = 0; i < 40 && isWriterLive(dbPath); i++){ if (i === 10) { try { process.kill(j.pid, 'SIGKILL'); } catch {} } await new Promise(r => setTimeout(r, 150)); }
-  }
+  const kill = (sig) => { const pids = new Set(); if (bgJobs[dbPath]?.pid) pids.add(bgJobs[dbPath].pid); const s = scanGenerators()[dbPath]; if (s) pids.add(s); for (const pid of pids) { try { process.kill(pid, sig); } catch { /* gone */ } } };
+  kill();                                                           // SIGTERM whatever's writing this db (recorded pid + any live scan pid)
+  for (let i = 0; i < 40 && (scanGenerators()[dbPath] || isWriterLive(dbPath)); i++){ if (i === 10) kill('SIGKILL'); await new Promise(r => setTimeout(r, 150)); }
   delete bgJobs[dbPath]; await persistJobs();
   for (let i = 0; i < 20 && isWriterLive(dbPath); i++) await new Promise(r => setTimeout(r, 150));   // let fds release before collapse
   checkpointClose(dbPath);
@@ -219,12 +250,12 @@ async function bgStop(dbPath){
   return { ok: true };
 }
 function bgList(){
-  for (const p of Object.keys(bgJobs)) if (!existsSync(p) || !isWriterLive(p)) { if (existsSync(p)) checkpointClose(p); delete bgJobs[p]; }   // prune dead/missing
-  persistJobs();
+  const scan = reconcileJobs();
   const rows = new Map();
-  const add = (p, m, bg) => rows.set(p, { dbPath: p, kind: m.kind, name: m.name, seed: m.seed, background: bg || !!bgJobs[p], running: isWriterLive(p), day: dayOf(p), missing: !existsSync(p) });
-  for (const [p, m] of sessionKnown) add(p, m, false);
-  for (const [p, m] of Object.entries(bgJobs)) add(p, m, true);
+  const running = (p) => !!scan[p] || isWriterLive(p);
+  const add = (p, m) => rows.set(p, { dbPath: p, kind: m.kind, name: m.name, seed: m.seed, background: !!bgJobs[p], running: running(p), day: dayOf(p), missing: !existsSync(p) });
+  for (const [p, m] of sessionKnown) add(p, m);
+  for (const [p, m] of Object.entries(bgJobs)) add(p, m);
   return [...rows.values()];
 }
 ipcMain.handle('jobs:list', () => bgList());
