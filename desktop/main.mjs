@@ -4,28 +4,22 @@
 // (the loopback below is internal to the app, only so the renderer's ES modules + font load exactly as in dev).
 import { app, BrowserWindow, Menu, ipcMain, dialog, utilityProcess } from 'electron';
 import { createServer } from 'node:http';
-import { readFile, writeFile, copyFile } from 'node:fs/promises';
-import { existsSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { readFile, writeFile, copyFile, rename } from 'node:fs/promises';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statfsSync } from 'node:fs';
 import { extname, join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSqliteSink } from '../tools/events/sqlite-sink.mjs';
 import { createJsonlSink } from '../tools/events/jsonl-sink.mjs';
-import { openRunReader, commitParamEdit, commitImport } from '../tools/events/run-db.mjs';
+import { openRunReader, commitParamEdit, commitImport, isWriterLive, collapseToSingleFile } from '../tools/events/run-db.mjs';
 import { withKeyframe, resolveWorldConfig } from '../engine/config.js';
 import { World } from '../engine/world.js';
-import { DatabaseSync } from 'node:sqlite';
 
-// Fold a run's WAL back into its single .db and drop the -wal/-shm sidecars, so a run AT REST is one file. Only safe when
-// no connection is open (child exited + our reader closed); the generator re-enables WAL (sqlite-sink) on the next open,
-// so live-scrub keeps working. Best-effort: a busy/locked db (still generating) is skipped and cleaned on its next idle.
-function checkpointClose(dbPath){
-  if (!existsSync(dbPath)) return;
-  try {
-    const db = new DatabaseSync(dbPath);
-    db.exec('PRAGMA busy_timeout = 2000; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;');
-    db.close();
-  } catch { /* locked (still open elsewhere) -> leave sidecars; next idle collapses it */ }
-}
+// Second instance would fork a 2nd writer on a run db + race the jobs registry -> refuse it (background makes
+// reopen-while-a-job-runs normal). Must be BEFORE anything opens a db.
+if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
+
+const checkpointClose = collapseToSingleFile;   // fold a run's WAL into a single file; declines silently on a held db
 
 // App identity: "GenePool" (dock, About, menus, and the userData folder ~/Library/Application Support/GenePool).
 // Set before any app.getPath('userData') call so runs/params/heads land under the GenePool folder. Packaging
@@ -87,12 +81,15 @@ const POOL_SETTINGS = { fixBranchCategoryGene: true, evolvableMutationRate: true
 function runsDir(){ const d = join(app.getPath('userData'), 'timelines'); mkdirSync(d, { recursive: true }); return d; }   // seed timelines (seed-N.db)
 function stopGenerator(){
   if (!scrub) return;
-  const dbPath = scrub.dbPath, child = scrub.child;
+  const dbPath = scrub.dbPath, child = scrub.child, bg = scrub.background;
+  if (scrub.poll){ clearInterval(scrub.poll); scrub.poll = null; }
   try { scrub.reader?.close(); } catch { /* already closed */ }
   scrub = null;
-  // once the writer child is gone (and no run has re-claimed this db), collapse it to a single file (drop -wal/-shm)
+  // Background/read-only view (no child of ours): a detached/external writer owns the db -> do NOT collapse it (its -wal
+  // is live; we'd only decline anyway). Only collapse a run WE were generating, once our writer child is gone.
+  if (bg || !child) return;
   const clean = () => { if (!scrub || scrub.dbPath !== dbPath) checkpointClose(dbPath); };
-  try { if (child){ child.once('exit', clean); child.kill(); } else clean(); }
+  try { child.once('exit', clean); child.kill(); }
   catch { clean(); }
 }
 // Like stopGenerator, but AWAIT the child's actual exit before resolving (I6): the commit path must not open a second
@@ -117,13 +114,29 @@ function docsDir(){ const d = join(app.getPath('documents'), 'GenePool'); mkdirS
 const sourceKey = (s) => s.custom ? ('tl:' + s.dbPath) : ('seed:' + s.seed);
 
 // Open (or start generating) a run at dbPath. meta = { seed, custom, name }. Resolves once the .db is readable (S3).
+// If a BACKGROUND/external writer already owns the run (its -wal is fresh), we do NOT fork a second writer -- we open a
+// read-only reader and live-scrub it, polling the frontier so the main view keeps advancing (a detached writer sends no IPC).
 function startRun(dbPath, meta){
   const { seed = null, custom = false, name = null } = meta;
   const key = custom ? ('tl:' + dbPath) : ('seed:' + seed);
-  const payload = (s) => ({ ok: true, seed, custom, name, key, frontier: s.reader.frontier(), runConfig: s.reader.runConfig(), lastHead: headOf(key) });
+  const payload = (s) => ({ ok: true, seed, custom, name, key, dbPath, background: !!s.background, frontier: s.reader.frontier(), runConfig: s.reader.runConfig(), lastHead: headOf(key) });
   return new Promise((resolve) => {
     if (scrub && scrub.dbPath === dbPath && scrub.ready){ resolve(payload(scrub)); return; }
     stopGenerator();                                            // kill+respawn on source change (S5)
+    // A background/external generator owns this run -> READ-ONLY view (never a second writer).
+    if (existsSync(dbPath) && isWriterLive(dbPath)){
+      try {
+        const reader = openRunReader(dbPath);
+        const s = { seed, custom, name, key, child: null, reader, dbPath, ready: true, background: true, poll: null };
+        scrub = s;
+        s.poll = setInterval(() => {                            // feed the main view's play-ceiling from the detached writer
+          if (s !== scrub) return;
+          try { const t = s.reader.frontier(); if (win && !win.isDestroyed()) win.webContents.send('scrub:frontier', { key: s.key, tick: t }); } catch { /* reader gone */ }
+        }, 1500);
+        resolve(payload(s));
+      } catch (e){ resolve({ ok: false, error: String(e) }); }
+      return;
+    }
     const resume = existsSync(dbPath);                          // continue a partial run (S4); a custom timeline always exists (opened/saved) -> resume
     const child = utilityProcess.fork(join(HERE, 'generator.mjs'));
     const s = { seed, custom, name, key, child, reader: null, dbPath, ready: false };
@@ -145,13 +158,83 @@ function startRun(dbPath, meta){
     child.postMessage({ seed: seed ?? 0, out: dbPath, opts: { resume, ticks: Infinity, settings: POOL_SETTINGS } });
   });
 }
-function selectSeed(seed){ return startRun(join(runsDir(), `seed-${seed}.db`), { seed, custom: false, name: null }); }
-function openTimeline(path){ return startRun(path, { seed: null, custom: true, name: basename(path) }); }
+function selectSeed(seed){ const p = join(runsDir(), `seed-${seed}.db`); noteKnown(p, { kind: 'seed', name: `seed-${seed}`, seed }); return startRun(p, { seed, custom: false, name: null }); }
+function openTimeline(path){ noteKnown(path, { kind: 'timeline', name: basename(path), seed: null }); return startRun(path, { seed: null, custom: true, name: basename(path) }); }
 ipcMain.handle('scrub:select',    async (_e, seed) => { await loadHeads(); return selectSeed(seed >>> 0); });
+// Re-open a run by its path (used after stopping a background job on the currently-viewed run -> resume it foreground).
+ipcMain.handle('scrub:reopen',    async (_e, { dbPath, seed, custom, name }) => { await loadHeads(); noteKnown(dbPath, { kind: custom ? 'timeline' : 'seed', name, seed }); return startRun(dbPath, { seed: custom ? null : (seed >>> 0), custom: !!custom, name }); });
 ipcMain.handle('scrub:frontier',  ()          => scrub?.reader ? scrub.reader.frontier() : -1);
 ipcMain.handle('scrub:keyframe',  (_e, t)     => scrub?.reader ? scrub.reader.getKeyframe(t) : null);
 ipcMain.handle('scrub:stats',     (_e, t)     => scrub?.reader ? scrub.reader.getStats(t) : null);
 ipcMain.handle('scrub:popSeries', (_e, opts)  => scrub?.reader ? scrub.reader.getPopSeries(opts || {}) : []);
+
+// ===== BACKGROUND JOBS =============================================================================================
+// Opt-in per run: a DETACHED generator that survives app quit; the app monitors it read-only. The one-writer authority
+// is -wal freshness (isWriterLive) -- writer-agnostic + crash-safe. bg-jobs.json is only the UI list + the pid to kill.
+const RUNGEN = join(ROOT, 'tools', 'scrub', 'run-gen.mjs');
+const jobsPath = () => join(app.getPath('userData'), 'bg-jobs.json');
+let bgJobs = {};                         // dbPath -> { pid, kind, name, seed, startedAt }
+const sessionKnown = new Map();          // dbPath -> { kind, name, seed } : runs opened/known this session (UI list)
+function loadJobs(){ try { bgJobs = JSON.parse(readFileSync(jobsPath(), 'utf8')) || {}; } catch { bgJobs = {}; } }
+async function persistJobs(){ try { const t = jobsPath() + '.tmp'; writeFileSync(t, JSON.stringify(bgJobs)); await rename(t, jobsPath()); } catch { /* best effort */ } }
+function noteKnown(dbPath, meta){ if (dbPath) sessionKnown.set(dbPath, meta); }
+function notifyJobs(){ if (win && !win.isDestroyed()) win.webContents.send('jobs:changed'); }
+function dayOf(dbPath){ try { const r = openRunReader(dbPath); const f = r.frontier(); r.close(); return f / 5184000; } catch { return null; } }
+function diskFreeGi(){ try { const s = statfsSync(app.getPath('userData')); return (s.bavail * s.bsize) / 2 ** 30; } catch { return null; } }
+
+// Spawn a DETACHED generator that outlives the app (child_process.spawn, NOT utilityProcess -- Electron doesn't kill it
+// on quit). A co-spawned `caffeinate -w <pid>` holds a power assertion for the child's lifetime so it doesn't freeze on
+// idle-sleep. --seed is mandatory even for timelines (run-gen hard-exits without it); --resume ignores it on an existing db.
+function bgSpawn(dbPath, { seed }){
+  const args = [RUNGEN, '--seed', String(seed ?? 0), '--out', dbPath, '--resume', '--ticks', 'Infinity', '--settings', JSON.stringify(POOL_SETTINGS)];
+  const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+  child.unref();
+  try { spawn('caffeinate', ['-s', '-w', String(child.pid)], { detached: true, stdio: 'ignore' }).unref(); } catch { /* no caffeinate -> jobs pause on sleep */ }
+  child.on('exit', () => setTimeout(() => {   // in-session extinction/exit -> collapse + drop + tell the UI
+    if (!isWriterLive(dbPath)) { checkpointClose(dbPath); if (bgJobs[dbPath]) { delete bgJobs[dbPath]; persistJobs(); } notifyJobs(); }
+  }, 500));
+  return child.pid;
+}
+async function bgStart(dbPath, meta){
+  if (scrub && scrub.dbPath === dbPath && scrub.child) await stopGeneratorAndWait();   // hand off if WE are the active writer
+  if (isWriterLive(dbPath)){                                          // already owned (external/already background) -> adopt, no 2nd writer
+    if (!bgJobs[dbPath]) { bgJobs[dbPath] = { pid: null, ...meta, startedAt: Date.now() }; await persistJobs(); }
+    return { ok: true };
+  }
+  const pid = bgSpawn(dbPath, meta);
+  bgJobs[dbPath] = { pid, ...meta, startedAt: Date.now() };
+  await persistJobs();
+  return { ok: true };
+}
+async function bgStop(dbPath){
+  const j = bgJobs[dbPath];
+  if (j && j.pid){
+    try { process.kill(j.pid); } catch { /* gone */ }                 // identity-safe: only kill a pid WE recorded for this db
+    for (let i = 0; i < 40 && isWriterLive(dbPath); i++){ if (i === 10) { try { process.kill(j.pid, 'SIGKILL'); } catch {} } await new Promise(r => setTimeout(r, 150)); }
+  }
+  delete bgJobs[dbPath]; await persistJobs();
+  for (let i = 0; i < 20 && isWriterLive(dbPath); i++) await new Promise(r => setTimeout(r, 150));   // let fds release before collapse
+  checkpointClose(dbPath);
+  notifyJobs();
+  return { ok: true };
+}
+function bgList(){
+  for (const p of Object.keys(bgJobs)) if (!existsSync(p) || !isWriterLive(p)) { if (existsSync(p)) checkpointClose(p); delete bgJobs[p]; }   // prune dead/missing
+  persistJobs();
+  const rows = new Map();
+  const add = (p, m, bg) => rows.set(p, { dbPath: p, kind: m.kind, name: m.name, seed: m.seed, background: bg || !!bgJobs[p], running: isWriterLive(p), day: dayOf(p), missing: !existsSync(p) });
+  for (const [p, m] of sessionKnown) add(p, m, false);
+  for (const [p, m] of Object.entries(bgJobs)) add(p, m, true);
+  return [...rows.values()];
+}
+ipcMain.handle('jobs:list', () => bgList());
+ipcMain.handle('jobs:diskFree', () => diskFreeGi());
+ipcMain.handle('jobs:setBackground', async (_e, { dbPath, on, seed, kind, name }) => {
+  noteKnown(dbPath, { kind, name, seed });
+  const r = on ? await bgStart(dbPath, { seed, kind, name }) : await bgStop(dbPath);
+  notifyJobs();
+  return r;
+});
 
 // Parameter-timeline commit: edit one option at the playhead tick. Validate FIRST (I4), await the generator's exit
 // (I6), apply the atomic edit (commitParamEdit), then re-fork the generator to resume under the new schedule. Resolves
@@ -161,6 +244,7 @@ const EDITABLE_DEFAULTS = { evolvableMutationRate: false, mutationRateGeneScale:
 // "Save into a custom timeline before making changes"). Captures the source BEFORE stopGeneratorAndWait (which nulls scrub).
 function editTarget(){
   if (!scrub || !scrub.ready) return { err: 'no active run' };
+  if (scrub.background) return { err: 'BG_OWNED' };   // a background generator owns this run -> read-only (stop the job to edit)
   if (!scrub.custom) return { err: 'PURE_SEED' };
   const stored = scrub.reader.runConfig();
   if (!stored || !stored.config) return { err: 'run has no stored config' };
@@ -230,6 +314,7 @@ async function copyDb(src, dest){
 // driven (menu:'saveAs') so the renderer refreshes its bar from the returned source.
 ipcMain.handle('timeline:saveAs', async () => {
   if (!scrub || !scrub.ready) return { ok: false, error: 'no active run' };
+  if (scrub.background) return { ok: false, error: 'BG_OWNED' };   // a live background writer -> copying now would tear the file; stop the job first
   const src = scrub.dbPath;
   const base = (scrub.name || `seed-${scrub.seed}`).replace(/\.timeline$/i, '');
   const r = await dialog.showSaveDialog(win, { title: 'Save timeline as', defaultPath: join(docsDir(), base + '.timeline'),
@@ -354,6 +439,8 @@ ipcMain.handle('pool:recordStart', async (_e, { seed, config, snapshot }) => {
   const r = await dialog.showSaveDialog(win, { title: 'Record run to SQLite', defaultPath: 'run.db',
     filters: [{ name: 'SQLite', extensions: ['db'] }] });
   if (r.canceled || !r.filePath) return { ok: false };
+  const recDb = r.filePath.replace(/\.(db|jsonl|json)$/i, '') + '.db';
+  if (isWriterLive(recDb)) return { ok: false, error: 'BG_OWNED' };   // don't open a 2nd writer on a run a background job owns
   const path = recordStart({ base: r.filePath, seed, config, snapshot });
   return { ok: true, path };
 });
@@ -361,7 +448,13 @@ ipcMain.on('pool:record', (_e, events) => recordEvents(events));
 ipcMain.handle('pool:recordSnapshot', (_e, snapshot) => { recordSnapshot(snapshot); return { ok: true }; });
 ipcMain.handle('pool:recordStop', () => ({ ok: true, ...(recordStop() || {}) }));
 
-app.whenReady().then(() => { buildAppMenu(); createWindow(); });
+app.whenReady().then(() => {
+  loadJobs();                                    // restore the background-job registry; bgList() prunes dead entries + collapses their files
+  try { bgList(); } catch { /* best effort */ }
+  buildAppMenu();
+  createWindow();
+});
+app.on('second-instance', () => { if (win && !win.isDestroyed()){ if (win.isMinimized()) win.restore(); win.focus(); } });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 // Aggressive sidecar cleanup on a CLEAN quit: kill the generator, AWAIT its exit, then collapse the active run to a
 // single file (drop -wal/-shm) BEFORE the process dies. Without the await, quit would race the async collapse and leave
@@ -370,9 +463,11 @@ let _quitting = false;
 app.on('before-quit', (e) => {
   if (_quitting) return;                         // second pass -> let the quit proceed
   if (!scrub) return;                            // nothing active (idle runs already collapsed on stop)
-  const dbPath = scrub.dbPath;
+  const dbPath = scrub.dbPath, bg = scrub.background;
   e.preventDefault();
   _quitting = true;
-  stopGeneratorAndWait().then(() => { checkpointClose(dbPath); app.quit(); });
+  // Collapse ONLY a run we were generating ourselves. A background-owned run (detached writer) keeps running past quit
+  // and owns its -wal -> never touch it. Detached background jobs are intentionally left alive.
+  stopGeneratorAndWait().then(() => { if (!bg && !isWriterLive(dbPath)) checkpointClose(dbPath); app.quit(); });
 });
 app.on('window-all-closed', () => { recordStop(); app.quit(); });   // app.quit() fires before-quit, which collapses + quits

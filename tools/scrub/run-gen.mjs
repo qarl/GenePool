@@ -12,8 +12,9 @@
 // that, never re-derives founders. So the generator owns the seeding -- here the tested common.mjs founders
 // (junk-zeroed genomes, so speciation doesn't isolate every founder -> real births).
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { World } from '../../engine/world.js';
 import { openRunWriter } from '../events/run-db.mjs';
 import { makeStandardWorld, poolConfig, POOL_DEFAULTS } from '../../engine/pool-seed.mjs';
@@ -91,7 +92,11 @@ function parseArgs(argv) {
     for (let i = 0; i < argv.length; i++) { const k = argv[i]; if (k.startsWith('--')) { const key = k.slice(2); const v = argv[i + 1]; a[key] = (v === undefined || v.startsWith('--')) ? true : v; if (a[key] !== true) i++; } }
     return a;
 }
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+// Detect "run as a CLI script" robustly: compare REAL paths (handles spaces/non-ASCII in the path -- which the old
+// `file://`+argv compare percent-encoded into a mismatch -- and symlinks). Load-bearing for the detached background
+// generator spawned from the packaged .app (paths with spaces, iCloud dirs, symlinked bundles).
+let isMain = false;
+try { isMain = realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1] || ''); } catch { isMain = false; }
 if (isMain) {
     const a = parseArgs(process.argv.slice(2));
     if (a.seed === undefined) { console.error('usage: node tools/scrub/run-gen.mjs --seed S [--ticks T] [--out path] [--keyframe K] [--stats S] [--pool P] [--n N]'); process.exit(2); }

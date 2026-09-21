@@ -16,6 +16,13 @@ contextBridge.exposeInMainWorld('pool', {
     open:   () => ipcRenderer.invoke('timeline:open'),                          // -> {ok, seed:null, custom:true, name, key, frontier, runConfig, lastHead}
     saveAs: () => ipcRenderer.invoke('timeline:saveAs'),                        // copy current run -> .timeline + switch into it (custom) -> same shape
   },
+  // Background jobs: opt-in detached generators that survive app close (managed from the Jobs window).
+  jobs: {
+    list:          ()          => ipcRenderer.invoke('jobs:list'),               // -> [{dbPath, kind, name, seed, background, running, day, missing}]
+    diskFree:      ()          => ipcRenderer.invoke('jobs:diskFree'),           // -> free GiB on the runs volume
+    setBackground: (edit)      => ipcRenderer.invoke('jobs:setBackground', edit),// {dbPath, on, seed, kind, name} -> {ok, error?}
+    onChanged:     (cb)        => ipcRenderer.on('jobs:changed', () => cb()),    // a job started/stopped/exited -> refresh the list
+  },
   recordStart:    (opts)     => ipcRenderer.invoke('pool:recordStart', opts),  // {seed, config, snapshot} -> {ok, path}
   record:         (events)   => ipcRenderer.send('pool:record', events),       // fire-and-forget event batch
   recordSnapshot: (snapshot) => ipcRenderer.invoke('pool:recordSnapshot', snapshot),
@@ -28,6 +35,7 @@ contextBridge.exposeInMainWorld('pool', {
     select:    (seed)  => ipcRenderer.invoke('scrub:select', seed),            // -> {ok, seed, frontier, runConfig}
     commit:    (edit)  => ipcRenderer.invoke('scrub:commit', edit),            // {seed, field, value, tick} -> {ok, seed, frontier, runConfig, lastHead, error?}
     commitImport: (imp) => ipcRenderer.invoke('scrub:commitImport', imp),      // {seed, tick, config, data} -> branch the run at the playhead -> {ok, seed, frontier, runConfig, ...}
+    reopen:    (m)     => ipcRenderer.invoke('scrub:reopen', m),               // {dbPath, seed, custom, name} -> re-open a run by path (resume foreground after stopping its bg job)
     frontier:  ()      => ipcRenderer.invoke('scrub:frontier'),               // -> int (max consistent tick, grows)
     keyframe:  (t)     => ipcRenderer.invoke('scrub:keyframe', t),            // -> {tick, snapshot} nearest <= t
     stats:     (t)     => ipcRenderer.invoke('scrub:stats', t),              // -> {tick, stats} nearest <= t

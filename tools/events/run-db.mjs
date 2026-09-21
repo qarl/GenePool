@@ -16,7 +16,7 @@
 // (Phase 3/4). Both live here so the schema has exactly one definition.
 
 import { gzipSync, gunzipSync, createGunzip } from 'node:zlib';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { DatabaseSync } from 'node:sqlite';
 import { createSqliteSink } from './sqlite-sink.mjs';
@@ -320,4 +320,30 @@ export function commitImport(path, { newRunConfig, tick, snapshot }) {
             return { anchor: T };
         } catch (e) { db.exec('ROLLBACK'); throw e; }
     } finally { db.close(); }
+}
+
+// ---- one-writer authority + single-file collapse -----------------------------------------------------------------
+// A run is generated in WAL mode; a LIVE writer touches <db>-wal continuously. So "is someone writing this run right
+// now?" is answered WRITER-AGNOSTICALLY by the freshness of the -wal file's mtime -- this detects the app's own
+// utilityProcess, a detached background generator, AND an external CLI generator, and is crash-safe (a dead writer's
+// -wal goes stale). This is the authority the app consults before opening ANY writable connection on a run db.
+export function isWriterLive(dbPath, staleMs = 4000) {
+    try {
+        const wal = dbPath + '-wal';
+        if (!existsSync(wal)) return false;                 // no WAL -> no live writer (a run at rest is a single file)
+        return (Date.now() - statSync(wal).mtimeMs) < staleMs;
+    } catch { return false; }
+}
+
+// Fold a run's WAL back into its single .db and drop the -wal/-shm sidecars, so a run AT REST is one file. Only call
+// when NO writer is live (isWriterLive === false); a held db declines silently (journal_mode=DELETE can't switch with
+// another connection open) and is left as-is. wal_checkpoint(TRUNCATE) folds only COMMITTED frames -> lossless.
+export function collapseToSingleFile(dbPath) {
+    if (!existsSync(dbPath)) return false;
+    try {
+        const db = new DatabaseSync(dbPath);
+        db.exec('PRAGMA busy_timeout = 2000; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;');
+        db.close();
+        return true;
+    } catch { return false; }
 }

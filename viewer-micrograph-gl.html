@@ -109,6 +109,30 @@
   #scrubbar #sbSource { display: inline-flex; align-items: center; gap: 6px; }
   #scrubbar #sbSeedLabel { font-weight: 600; letter-spacing: 0.06em; color: #8fa2b8; }   /* plain SEED label (file ops moved to the File menu) */
   #scrubbar #sbTime { font-variant-numeric: tabular-nums; min-width: 172px; text-align: right; color: #c7d3e0; }
+  /* background-jobs button (⧗) + running-count badge */
+  #scrubbar #jobsBtn { position: relative; font-size: 15px; color: #8fa2b8; }
+  #scrubbar #jobsBtn.active { color: #6cc0a0; }
+  #jobsBadge { position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px;
+    background: #2e7d5b; color: #fff; font: 700 10px var(--ui-font); line-height: 15px; text-align: center; }
+  #jobsBadge[hidden] { display: none; }
+  /* Jobs window panel */
+  #jobsPanel { position: fixed; right: 12px; bottom: 56px; z-index: 72; width: 320px; max-height: 60vh; overflow: auto; display: flex; flex-direction: column; gap: 8px;
+    background: #0d1117f2; border: 1px solid #1e2733; border-radius: 10px; backdrop-filter: blur(4px); padding: 12px 14px;
+    font: 500 12px var(--ui-font); color: #9fb0c3; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
+  #jobsPanel[hidden] { display: none; }
+  #jobsPanel #jpTitle { font-weight: 600; color: #c7d3e0; letter-spacing: .02em; display: flex; justify-content: space-between; align-items: baseline; }
+  #jobsPanel #jpDisk { font-weight: 500; font-size: 11px; color: #7fa08f; }
+  #jobsPanel #jpDisk.low { color: #d98b6b; }
+  #jobsPanel #jpHint { font-size: 10.5px; color: #667; line-height: 1.4; }
+  #jobsPanel .jpRow { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid #182230; }
+  #jobsPanel .jpRow .jpName { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cfd6e0; }
+  #jobsPanel .jpRow .jpDay { font-variant-numeric: tabular-nums; color: #8fa2b8; font-size: 11px; }
+  #jobsPanel .jpRow .jpDot { width: 7px; height: 7px; border-radius: 50%; background: #3a4a5a; flex: none; }
+  #jobsPanel .jpRow.run .jpDot { background: #35c46a; box-shadow: 0 0 4px #35c46a; }
+  #jobsPanel .jpRow.missing .jpName { color: #d98b6b; text-decoration: line-through; }
+  #jobsPanel .jpRow .jpBg { min-width: 60px; background: #1c2836; color: #cfd6e0; border: 1px solid #2b3a4d; border-radius: 6px; padding: 4px 7px; cursor: pointer; font-size: 11px; }
+  #jobsPanel .jpRow .jpBg.on { background: #2e7d5b; border-color: #3aa06f; color: #fff; }
+  #jobsPanel #jpEmpty { color: #667; font-size: 11px; }
   #scrubbar #sbSpeeds { display: inline-flex; align-items: center; gap: 4px; }
   /* record + play + all FF buttons: ONE identical size, glyphs flex-centred (line-height:1 removes the line-box slack that
      was throwing the play triangle off vertically). */
@@ -250,6 +274,7 @@
     <div id="sbMarks" aria-hidden="true" style="position:absolute; left:0; right:0; top:0; bottom:0; pointer-events:none;"></div>
   </span>
   <button id="sbParams" title="change parameters from this frame onward (⚙ marks show existing keyframes on the scrubber)">⚙</button>
+  <button id="jobsBtn" title="background jobs (keep generating after the app closes)">⧗<span id="jobsBadge" hidden></span></button>
   <span id="sbTime">00:00 / 00:00</span>
 </footer>
 <!-- live visual-constants editor; toggle with the K key ("kConstants"). Rows are built from SPEC in JS. -->
@@ -278,6 +303,21 @@
     <div id="pwBtns"><button id="pwCancel">OK</button><button id="pwSave">Save As…</button></div>
   </div>
 </div>
+<!-- background-owned guard: pops up when you try to edit/import/save a run that's generating in the background -->
+<div id="bgWarn" hidden>
+  <div id="pwCard">
+    <div id="pwTitle">This run is generating in the background</div>
+    <div id="pwBody">You're viewing a live background job read-only. Stop the background job to edit, import, or save it.</div>
+    <div id="pwBtns"><button id="bgCancel">OK</button><button id="bgStop">Stop background job</button></div>
+  </div>
+</div>
+<!-- Jobs window: opt-in background generators. Lists runs known this session + running jobs; toggle keeps a run
+     generating after the app closes. -->
+<aside id="jobsPanel" hidden>
+  <div id="jpTitle">Background jobs <span id="jpDisk"></span></div>
+  <div id="jpList"></div>
+  <div id="jpHint">A job keeps generating after you close the app. It pauses while the Mac sleeps.</div>
+</aside>
 
 <script type="module">
 import { World } from './engine/world.js';
@@ -2488,7 +2528,7 @@ function startPlayback(){
   const speedBtns = [...document.querySelectorAll('#sbSpeeds .sbSpeed')];
   let cfg = null, head = 0, frontier = 0, playing = false, dragging = false, snapInFlight = false, snapPending = null, curSeed = -1;
   // run SOURCE: seed mode (pure, locked) vs custom timeline (editable). curKey (seed:N | tl:<path>) keys the head memory.
-  let curKey = null, curCustom = false, curName = null, lastSeedNum = 1;
+  let curKey = null, curCustom = false, curName = null, lastSeedNum = 1, curBackground = false, curDbPath = null;
   const srcHeads = new Map();   // per-source playhead memory (in-session): leaving a run saves its timecode, returning restores it (Karl)
   let _lastHeadReport = 0, _lastReportedHead = -1;   // throttle persisting the current head to main (survives quit/restart)
 
@@ -2519,7 +2559,7 @@ function startPlayback(){
   // Update source state from a run-open result. The SEED input stays in the bottom bar always (it's the seed browser +
   // the way back to seeds). The custom-timeline name goes in the WINDOW TITLE, Mac-doc style ("untitled" in seed mode).
   function setBarSource(r){
-    curKey = r.key; curCustom = !!r.custom; curName = r.name || null;
+    curKey = r.key; curCustom = !!r.custom; curName = r.name || null; curBackground = !!r.background; curDbPath = r.dbPath || null;
     if (!curCustom){ curSeed = r.seed >>> 0; lastSeedNum = curSeed; }
     else { curSeed = -1; }
     $seed.value = lastSeedNum;                                   // seed browser always shows the current/last seed
@@ -2568,7 +2608,7 @@ function startPlayback(){
     stashHead();
     const r = await window.pool.timeline.saveAs();
     if (!r) return;                                 // canceled
-    if (!r.ok){ document.getElementById('err').textContent = 'save failed: ' + (r.error || '?'); playing = wasPlaying; return; }
+    if (!r.ok){ playing = wasPlaying; if (r.error === 'BG_OWNED') showBgWarn(); else document.getElementById('err').textContent = 'save failed: ' + (r.error || '?'); return; }
     document.getElementById('err').textContent = ''; curKey = r.key;
     await applyRunResult(r, { keepHead: true });    // same run copied -> stay at the same tick, now editable
     playing = wasPlaying; updateBar();
@@ -2613,9 +2653,66 @@ function startPlayback(){
   _pw.onclick = (e) => { if (e.target === _pw) _pw.hidden = true; };   // click the backdrop to dismiss
   document.getElementById('pwSave').onclick = () => { _pw.hidden = true; saveAsFlow(); };   // offer the fix right here
 
+  // background-owned guard pop-up: shown when you try to edit/import/save a run that's generating in the background
+  const _bg = document.getElementById('bgWarn');
+  function showBgWarn(){ if (!_dlg.hidden) _dlg.hidden = true; _bg.hidden = false; }
+  document.getElementById('bgCancel').onclick = () => { _bg.hidden = true; };
+  _bg.onclick = (e) => { if (e.target === _bg) _bg.hidden = true; };
+  document.getElementById('bgStop').onclick = async () => {   // stop the job on the current run, then resume it foreground (live + editable)
+    _bg.hidden = true; if (!curDbPath) return;
+    await window.pool.jobs.setBackground({ dbPath: curDbPath, on: false, seed: curSeed >= 0 ? curSeed : null, kind: curCustom ? 'timeline' : 'seed', name: curName });
+    const r = await window.pool.scrub.reopen({ dbPath: curDbPath, seed: curSeed >= 0 ? curSeed : null, custom: curCustom, name: curName });
+    if (r && r.ok){ deselect(); await applyRunResult(r, { keepHead: true }); }
+  };
+
+  // --- Jobs window: opt-in background generators (survive app close) ---
+  const _jp = document.getElementById('jobsPanel'), _jpList = document.getElementById('jpList'), _jpDisk = document.getElementById('jpDisk');
+  const _jobsBtn = document.getElementById('jobsBtn'), _jobsBadge = document.getElementById('jobsBadge');
+  let _jpTimer = 0;
+  async function renderJobs(){
+    if (!window.pool.jobs) return;
+    let rows = []; try { rows = (await window.pool.jobs.list()) || []; } catch { rows = []; }
+    const running = rows.filter(r => r.running).length;                          // running-count badge (updates even when the panel is closed)
+    _jobsBadge.hidden = running === 0; _jobsBadge.textContent = String(running);
+    _jobsBtn.classList.toggle('active', running > 0);
+    if (_jp.hidden) return;
+    try { const free = await window.pool.jobs.diskFree(); if (free != null){ _jpDisk.textContent = free.toFixed(0) + ' GB free'; _jpDisk.classList.toggle('low', free < 10); } } catch { /* ignore */ }
+    _jpList.replaceChildren();
+    if (!rows.length){ const e = document.createElement('div'); e.id = 'jpEmpty'; e.textContent = 'Open a seed or timeline, then background it here.'; _jpList.appendChild(e); return; }
+    rows.sort((a, b) => (b.running - a.running) || (b.background - a.background) || String(a.name).localeCompare(String(b.name)));
+    for (const row of rows){
+      const el = document.createElement('div'); el.className = 'jpRow' + (row.running ? ' run' : '') + (row.missing ? ' missing' : '');
+      const dot = document.createElement('span'); dot.className = 'jpDot'; el.appendChild(dot);
+      const nm = document.createElement('span'); nm.className = 'jpName'; nm.textContent = row.name + (row.missing ? ' (file missing)' : ''); el.appendChild(nm);
+      const day = document.createElement('span'); day.className = 'jpDay'; day.textContent = row.day != null ? ('to ' + row.day.toFixed(2) + 'd') : ''; el.appendChild(day);
+      const bg = document.createElement('button'); bg.className = 'jpBg' + (row.background ? ' on' : ''); bg.textContent = row.background ? 'Background ✓' : 'Background'; bg.disabled = !!row.missing;
+      bg.onclick = async () => {
+        bg.disabled = true;
+        const res = await window.pool.jobs.setBackground({ dbPath: row.dbPath, on: !row.background, seed: row.seed, kind: row.kind, name: row.name });
+        if (!res || !res.ok){ bg.disabled = false; renderJobs(); return; }
+        if (row.dbPath === curDbPath){   // toggled the CURRENTLY-VIEWED run -> refresh the view's lock state (bg = read-only, fg = editable)
+          const rr = await window.pool.scrub.reopen({ dbPath: row.dbPath, seed: row.seed, custom: row.kind === 'timeline', name: row.name });
+          if (rr && rr.ok){ deselect(); await applyRunResult(rr, { keepHead: true }); }
+        }
+        renderJobs();
+      };
+      el.appendChild(bg);
+      _jpList.appendChild(el);
+    }
+  }
+  _jobsBtn.onclick = () => {
+    _jp.hidden = !_jp.hidden;
+    if (!_jp.hidden){ _dlg.hidden = true; renderJobs(); _jpTimer = setInterval(renderJobs, 1500); }
+    else if (_jpTimer){ clearInterval(_jpTimer); _jpTimer = 0; }
+  };
+  window.pool.jobs?.onChanged?.(() => renderJobs());
+  renderJobs();
+  setInterval(() => { if (_jp.hidden) renderJobs(); }, 6000);   // keep the badge fresh when closed (cheap)
+
   document.getElementById('sbParams').onclick = () => {
     if (!_dlg.hidden){ _dlg.hidden = true; return; }
     if (!curKey) return;
+    if (curBackground){ showBgWarn(); return; }  // read-only while a background job owns it
     if (!curCustom){ showPureWarn(); return; }   // pure seed = locked -> pop the warning instead of opening the editor
     document.getElementById('pdTick').textContent = fmtTime(head);
     document.getElementById('pdEvolvable').checked = !!effVal('evolvableMutationRate');
@@ -2642,7 +2739,7 @@ function startPlayback(){
     let r;
     for (const [field, value] of edits){
       r = await window.pool.scrub.commit({ field, value, tick: T });
-      if (!r || !r.ok){ msg.textContent = (r && r.error === 'PURE_SEED') ? 'Save into a custom timeline before making changes.' : 'failed: ' + ((r && r.error) || '?'); btn.disabled = false; return; }
+      if (!r || !r.ok){ btn.disabled = false; if (r && r.error === 'BG_OWNED'){ _dlg.hidden = true; showBgWarn(); return; } msg.textContent = (r && r.error === 'PURE_SEED') ? 'Save into a custom timeline before making changes.' : 'failed: ' + ((r && r.error) || '?'); return; }
     }
     await applyRunResult(r, { keepHead: true });   // rebind cfg + land at the same tick after the rewind
     btn.disabled = false; _dlg.hidden = true;
@@ -2687,12 +2784,13 @@ function startPlayback(){
       await window.pool.exportPool({ v: 1, kind: 'gpool', seed: srcSeedTag(), tick: head, config: cfg || curConfig, data: world.serialize() });
     } else if (action === 'import'){
       if (!curKey) return;
+      if (curBackground){ showBgWarn(); return; }                     // read-only while a background job owns it
       if (!curCustom){ showPureWarn(); return; }                      // pure seed timelines are locked -> pop the warning
       const picked = await window.pool.importPick();                 // main: open dialog + read + validate -> {ok, config, data}
       if (!picked || !picked.ok) { if (picked && picked.error) document.getElementById('err').textContent = 'import: ' + picked.error; return; }
       playing = false;                                                // pause while we truncate + resume the generator
       const r = await window.pool.scrub.commitImport({ tick: head, config: picked.config, data: picked.data });
-      if (!r || !r.ok){ if (r && r.error === 'PURE_SEED') showPureWarn(); else document.getElementById('err').textContent = 'import failed: ' + ((r && r.error) || '?'); return; }
+      if (!r || !r.ok){ if (r && r.error === 'PURE_SEED') showPureWarn(); else if (r && r.error === 'BG_OWNED') showBgWarn(); else document.getElementById('err').textContent = 'import failed: ' + ((r && r.error) || '?'); return; }
       document.getElementById('err').textContent = '';
       deselect();                                                     // the imported pool is a different population -> drop the stale selection
       await applyRunResult(r, { keepHead: true });                    // rebind + land at the same tick after the rewind
