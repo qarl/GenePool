@@ -363,5 +363,16 @@ ipcMain.handle('pool:recordStop', () => ({ ok: true, ...(recordStop() || {}) }))
 
 app.whenReady().then(() => { buildAppMenu(); createWindow(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on('before-quit', () => { stopGenerator(); });
-app.on('window-all-closed', () => { recordStop(); stopGenerator(); app.quit(); });
+// Aggressive sidecar cleanup on a CLEAN quit: kill the generator, AWAIT its exit, then collapse the active run to a
+// single file (drop -wal/-shm) BEFORE the process dies. Without the await, quit would race the async collapse and leave
+// the last seed's sidecars behind. (A crash still leaves sidecars -- that's fine per Karl; we only clean clean exits.)
+let _quitting = false;
+app.on('before-quit', (e) => {
+  if (_quitting) return;                         // second pass -> let the quit proceed
+  if (!scrub) return;                            // nothing active (idle runs already collapsed on stop)
+  const dbPath = scrub.dbPath;
+  e.preventDefault();
+  _quitting = true;
+  stopGeneratorAndWait().then(() => { checkpointClose(dbPath); app.quit(); });
+});
+app.on('window-all-closed', () => { recordStop(); app.quit(); });   // app.quit() fires before-quit, which collapses + quits
