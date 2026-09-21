@@ -335,11 +335,6 @@ function buildAppMenu(){
 }
 ipcMain.on('menu:selection', (_e, on) => { if (exportSwimmerItem) exportSwimmerItem.enabled = !!on; });
 
-// copy a run .db plus its live WAL sidecars, so the copy is complete even if the WAL hasn't checkpointed yet.
-async function copyDb(src, dest){
-  await copyFile(src, dest);
-  for (const ext of ['-wal', '-shm']) if (existsSync(src + ext)) await copyFile(src + ext, dest + ext);
-}
 // Save As -> write the CURRENT run to a .timeline in ~/Documents/GenePool and SWITCH INTO it (custom mode: now editable,
 // bar shows the filename). The original source (a seed run, or the previous timeline) is left untouched/frozen. Renderer-
 // driven (menu:'saveAs') so the renderer refreshes its bar from the returned source.
@@ -353,11 +348,11 @@ ipcMain.handle('timeline:saveAs', async () => {
   if (r.canceled || !r.filePath) return { ok: false };
   const srcMeta = { seed: scrub?.seed ?? null, custom: scrub?.custom ?? false, name: scrub?.name ?? null };
   await stopGeneratorAndWait();                       // release the writer so the copy is consistent
-  try { await copyDb(src, r.filePath); }
+  checkpointClose(src);                               // fold the source's WAL into a SINGLE file (recover-before-copy) so...
+  try { await copyFile(src, r.filePath); }            // ...the copy is a clean single .db -- NOT its -wal/-shm (a copied -wal
+                                                      //    would look "fresh" to isWriterLive and wrongly open the copy read-only)
   catch (e){ await startRun(src, srcMeta); return { ok: false, error: `save failed: ${e.message}` }; }
-  const res = await openTimeline(r.filePath);         // switch into the new custom timeline
-  checkpointClose(src);                               // the source run is now idle -> collapse it to a single file
-  return res;
+  return await openTimeline(r.filePath);              // switch into the new custom timeline (no sidecar -> editable)
 });
 // Open Timeline -> load a .timeline file (custom mode). Validate it's a readable run before forking.
 ipcMain.handle('timeline:open', async () => {
