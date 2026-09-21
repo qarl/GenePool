@@ -11,9 +11,10 @@ import { extname, join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSqliteSink } from '../tools/events/sqlite-sink.mjs';
 import { createJsonlSink } from '../tools/events/jsonl-sink.mjs';
-import { openRunReader, commitParamEdit, commitImport, isWriterLive, collapseToSingleFile } from '../tools/events/run-db.mjs';
+import { openRunReader, openRunWriter, commitParamEdit, commitImport, isWriterLive, collapseToSingleFile } from '../tools/events/run-db.mjs';
 import { withKeyframe, resolveWorldConfig } from '../engine/config.js';
 import { World } from '../engine/world.js';
+import { poolConfig, POOL_DEFAULTS } from '../engine/pool-seed.mjs';
 
 // Second instance would fork a 2nd writer on a run db + race the jobs registry -> refuse it (background makes
 // reopen-while-a-job-runs normal). Must be BEFORE anything opens a db.
@@ -315,6 +316,7 @@ function buildAppMenu(){
   const fileMenu = {
     label: 'File',
     submenu: [
+      { label: 'New Timeline…', accelerator: 'CmdOrCtrl+N', click: () => sendMenu('newTimeline') },
       { label: 'Open Timeline…', accelerator: 'CmdOrCtrl+O', click: () => sendMenu('openTimeline') },
       { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendMenu('saveAs') },
       { type: 'separator' },
@@ -353,6 +355,23 @@ ipcMain.handle('timeline:saveAs', async () => {
                                                       //    would look "fresh" to isWriterLive and wrongly open the copy read-only)
   catch (e){ await startRun(src, srcMeta); return { ok: false, error: `save failed: ${e.message}` }; }
   return await openTimeline(r.filePath);              // switch into the new custom timeline (no sidecar -> editable)
+});
+// New -> an EMPTY custom timeline (no founders, no food) in ~/Documents/GenePool, opened editable. Compose it by
+// Importing (merging) pools into it. keyframe-0 is a bare World(config) serialize -> 0 living (won't generate until
+// you merge creatures in), custom -> editable.
+ipcMain.handle('timeline:new', async () => {
+  const r = await dialog.showSaveDialog(win, { title: 'New timeline', defaultPath: join(docsDir(), 'untitled.timeline'),
+    filters: [{ name: 'GenePool timeline', extensions: ['timeline'] }] });
+  if (r.canceled || !r.filePath) return { ok: false };
+  try {
+    const cfg = poolConfig(POOL_DEFAULTS.pool, POOL_SETTINGS);
+    const w = new World(cfg, 0);                       // empty world (no seeding) -> keyframe-0 has 0 swimbots/food
+    const writer = openRunWriter(r.filePath, { seed: 0, config: cfg }, { resume: false });
+    writer.writeKeyframe(0, w.serialize());
+    writer.finish(); writer.close();
+  } catch (e){ return { ok: false, error: `new failed: ${e.message}` }; }
+  collapseToSingleFile(r.filePath);                    // fold the writer's WAL -> a clean single file (opens editable, not phantom-bg)
+  return await openTimeline(r.filePath);
 });
 // Open Timeline -> load a .timeline file (custom mode). Validate it's a readable run before forking.
 ipcMain.handle('timeline:open', async () => {

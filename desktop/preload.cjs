@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('pool', {
   timeline: {
     open:   () => ipcRenderer.invoke('timeline:open'),                          // -> {ok, seed:null, custom:true, name, key, frontier, runConfig, lastHead}
     saveAs: () => ipcRenderer.invoke('timeline:saveAs'),                        // copy current run -> .timeline + switch into it (custom) -> same shape
+    new:    () => ipcRenderer.invoke('timeline:new'),                           // create an EMPTY custom timeline (no init) + open it -> same shape
   },
   // Background jobs: opt-in detached generators that survive app close (managed from the Jobs window).
   jobs: {

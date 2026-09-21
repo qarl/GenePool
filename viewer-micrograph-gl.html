@@ -2772,8 +2772,19 @@ function startPlayback(){
       swimbot: { genes: Array.from(selectedSb.getGenotype().getGenes()), age: selectedSb.getAge(), energy: selectedSb.getEnergy(),
         numOffspring: selectedSb.getNumOffspring(), x: p.x, y: p.y, angle: selectedSb.getAngle() } };
   }
+  async function newTimelineFlow(){
+    const wasPlaying = playing; playing = false; stashHead();
+    const r = await window.pool.timeline.new();
+    if (!r) return;
+    if (!r.ok){ document.getElementById('err').textContent = 'new failed: ' + (r.error || '?'); playing = wasPlaying; return; }
+    document.getElementById('err').textContent = ''; curKey = r.key; deselect();
+    await applyRunResult(r);
+    playing = false; updateBar();   // empty timeline -> nothing to play until you merge creatures in
+  }
   window.pool.onMenu?.(async (action) => {
-    if (action === 'openTimeline'){
+    if (action === 'newTimeline'){
+      await newTimelineFlow();
+    } else if (action === 'openTimeline'){
       await openTimelineFlow();
     } else if (action === 'saveAs'){
       await saveAsFlow();
@@ -2787,13 +2798,26 @@ function startPlayback(){
       if (!curKey) return;
       if (curBackground){ showBgWarn(); return; }                     // read-only while a background job owns it
       if (!curCustom){ showPureWarn(); return; }                      // pure seed timelines are locked -> pop the warning
+      if (!world){ document.getElementById('err').textContent = 'import: no current pool'; return; }
       const picked = await window.pool.importPick();                 // main: open dialog + read + validate -> {ok, config, data}
       if (!picked || !picked.ok) { if (picked && picked.error) document.getElementById('err').textContent = 'import: ' + picked.error; return; }
       playing = false;                                                // pause while we truncate + resume the generator
-      const r = await window.pool.scrub.commitImport({ tick: head, config: picked.config, data: picked.data });
+      // MERGE: drop the imported pool's creatures + food INTO the current world (fresh ids), then branch at the playhead.
+      let merged;
+      try {
+        const other = World.restore(picked.config, picked.data);
+        const pb = (cfg && cfg.pool) || { left: 0, top: 0, right: 3000, bottom: 3000 };   // clamp incoming positions into our bounds
+        const cx = (x) => Math.min(pb.right - 1e-3, Math.max(pb.left, x)), cy = (y) => Math.min(pb.bottom - 1e-3, Math.max(pb.top, y));
+        for (const s of other.dumpSwimbots())
+          world.loadSwimbot(world.getNextSwimbotId(), { age: s.age, x: cx(s.x), y: cy(s.y), angle: s.angle, energy: s.energy, genes: s.genes, numOffspring: s.numOffspring, numFoodBitsEaten: s.numFoodBitsEaten });
+        for (const f of (picked.data.food || []))
+          world.loadFood(world.getNextFoodId(), { x: cx(f.x), y: cy(f.y), type: f.type, energy: f.energy });
+        merged = world.serialize();
+      } catch (e){ document.getElementById('err').textContent = 'import merge failed: ' + e.message; return; }
+      const r = await window.pool.scrub.commitImport({ tick: head, config: cfg, data: merged });   // CURRENT config; merged frame
       if (!r || !r.ok){ if (r && r.error === 'PURE_SEED') showPureWarn(); else if (r && r.error === 'BG_OWNED') showBgWarn(); else document.getElementById('err').textContent = 'import failed: ' + ((r && r.error) || '?'); return; }
       document.getElementById('err').textContent = '';
-      deselect();                                                     // the imported pool is a different population -> drop the stale selection
+      deselect();                                                     // populations merged -> drop the stale selection
       await applyRunResult(r, { keepHead: true });                    // rebind + land at the same tick after the rewind
     }
   });
