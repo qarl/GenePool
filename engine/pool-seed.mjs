@@ -14,6 +14,11 @@ const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000;
 // The viewer's tuned defaults (P, "Save Defaults" 2026-09-02). region 3000, 220 founders, 700 food.
 export const POOL_DEFAULTS = { pool: 3000, n: 220, food: 700 };
 
+// CURRENT per-pool experiment settings baked into every NEWLY generated run's config (and thus its bodies). Shared by the
+// desktop app (startRun) AND the background/CLI generators (gen-jobs.bgSpawn) so a run is app-identical no matter who
+// starts it. A run keeps its OWN stored config on resume/restore, so changing this only affects FRESH runs.
+export const POOL_SETTINGS = { fixBranchCategoryGene: true, evolvableMutationRate: true };
+
 export function mulberry32(seed){ let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 export function diskPoint(rng, cx, cy, r){ const rad = 2 * Math.PI * rng(); const mag = r * Math.sqrt(rng()); return { x: cx + pcos(rad) * mag, y: cy + psin(rad) * mag }; }
 
