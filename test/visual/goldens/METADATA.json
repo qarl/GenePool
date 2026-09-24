@@ -7,7 +7,7 @@
     "founders": {
       "w": 768,
       "h": 768,
-      "sha256": "f52bab97816fcdef493e73b3289e952b90a0bf2e0e55d486292697b86bf75ba8",
+      "sha256": "db2618fe89f387e2a3c0e9769e6745801116ad079b47580aaa78f003989f403c",
       "thickFmt": "RGBA16F",
       "fading": 5,
       "browserBuild": "1217",
@@ -16,7 +16,7 @@
     "adults": {
       "w": 768,
       "h": 768,
-      "sha256": "46dc3fa4748c986630a22f79014b50499d56fdfa74a22834631b67614164fe87",
+      "sha256": "016d4c90363b5b82802a04d082c558608e52c8424c31ae10a279db8fddaecbb5",
       "thickFmt": "RGBA16F",
       "fading": 1,
       "browserBuild": "1217",
@@ -25,7 +25,7 @@
     "branchy": {
       "w": 768,
       "h": 768,
-      "sha256": "e0d566f5e3b75c0b44326b91c5a4247b47179a2f56148afe3e5215baa7b1f6b9",
+      "sha256": "9ac31a353629fea53d8ad1467559586a989513b07f5dc1eea0c1968e18e05122",
       "thickFmt": "RGBA16F",
       "fading": 7,
       "browserBuild": "1217",
@@ -34,7 +34,7 @@
     "dying": {
       "w": 768,
       "h": 768,
-      "sha256": "033421be042aaf5dbfa115676db9900913ea0e5d2884e34d75cf988e88ef9c14",
+      "sha256": "88dad140fd9a760bdf065270da5cbd2047d167a0e12ebe56e7d93f983d7f3103",
       "thickFmt": "RGBA16F",
       "fading": 8,
       "browserBuild": "1217",
@@ -43,19 +43,19 @@
     "speciated": {
       "w": 768,
       "h": 768,
-      "sha256": "79aa6f7b7f01aad71e6152d8463e3e4997c74528a693588520fe734f503fb892",
+      "sha256": "f978b03643099bd7291f98a084ab53b9259bd56808a5418351aafd7556ceb5db",
       "thickFmt": "RGBA16F",
-      "fading": 2,
+      "fading": 0,
       "browserBuild": "1217",
       "chrome": "147.0.7727.15",
       "mini": {
         "w": 256,
         "h": 256,
-        "sha256": "ddd9bc5c458248ca3a7492c4f1095cafe748ce1047dab118faf03d7cd545f861"
+        "sha256": "834b908dd6e25ae2568461c6a109ae3dc38843c3ba8d45ef5862a3ad5083eb32"
       }
     }
   },
-  "recordedAt": "2026-09-08T22:00:25.527Z",
+  "recordedAt": "2026-09-24T23:05:50.081Z",
   "platform": "darwin",
   "arch": "arm64",
   "node": "v25.9.0"

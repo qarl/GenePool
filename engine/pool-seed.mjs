@@ -7,6 +7,7 @@ import { Genotype } from './genotype.js';
 import { SPECIES_ISO } from './analysis/species.mjs';
 import { MUTATION_RATE_GENE } from './constants.js';
 import { scheduleValue } from './config.js';
+import { psin, pcos } from './pmath.js';   // portable trig (epoch pmath-1)
 
 const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000;
 
@@ -14,7 +15,7 @@ const NUM_GENES = 256, USED = 112, YOUNG_AGE = 1000, MAX_LIFESPAN = 40000;
 export const POOL_DEFAULTS = { pool: 3000, n: 220, food: 700 };
 
 export function mulberry32(seed){ let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
-export function diskPoint(rng, cx, cy, r){ const rad = 2 * Math.PI * rng(); const mag = r * Math.sqrt(rng()); return { x: cx + Math.cos(rad) * mag, y: cy + Math.sin(rad) * mag }; }
+export function diskPoint(rng, cx, cy, r){ const rad = 2 * Math.PI * rng(); const mag = r * Math.sqrt(rng()); return { x: cx + pcos(rad) * mag, y: cy + psin(rad) * mag }; }
 
 // `settings` overrides tunable per-pool config over the standard defaults (opt-in experiments like
 // fixBranchCategoryGene). Default {} -> the standard micrograph pool (goldens/browser pass none -> byte-identical).

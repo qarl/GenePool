@@ -15,6 +15,7 @@ import { Vector2D } from './vector2d.js';
 import { Obstacle } from './obstacle.js';
 import { FLAT } from './topology.js';
 import { resolvePoolBounds } from './constants.js';
+import { phypot } from './pmath.js';   // portable hypot (epoch pmath-1) = sqrt(a*a+b*b)
 
 const GRID_THRESHOLD = 12; // linear is faster below this; the grid is a net win above it (result identical either way)
 
@@ -127,7 +128,7 @@ export class ObstacleField {
             // the per-obstacle thickness bound so the ring window is a provable superset for ANY radius (+1 for the
             // cell-boundary). For the engine's bodies (radius <= ~216) this is a small window; it grows with radius.
             const rEff = Math.max(radius, this._gridMaxThick);
-            const rings = Math.ceil(Math.hypot(this._gridMaxThick + rEff, rEff) / cell) + 1;
+            const rings = Math.ceil(phypot(this._gridMaxThick + rEff, rEff) / cell) + 1;
             const pcx = Math.floor((testPosition.x - this._pool.left) / cell), pcy = Math.floor((testPosition.y - this._pool.top) / cell);
             const cand = this._gather(pcx - rings, pcx + rings, pcy - rings, pcy + rings);
             for (let k = 0; k < cand.length; k++) this._applyCollision(obs[cand[k]]);

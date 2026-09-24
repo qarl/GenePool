@@ -34,3 +34,43 @@ jobs:
       # instrumented run (the heavy sim tests are much slower under coverage) can never hang the job to its 6h ceiling.
       - name: Coverage (report only)
         run: timeout 300 node --test --experimental-test-coverage 'test/**/*.test.js' || true
+
+  # ENGINE-INDEPENDENCE guard (epoch pmath-1). The sim must be byte-identical across V8 versions and CPUs. Run the fast
+  # cross-engine determinism tests on a MATRIX of Node majors AND a macOS/arm64 runner (the arch axis). This is the check
+  # that was missing when the V8 14.1-vs-15.2 divergence slipped through -- a single-engine job can't catch it.
+  determinism-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, node: '22' }
+          - { os: ubuntu-latest, node: '24' }
+          - { os: ubuntu-latest, node: 'latest' }
+          - { os: macos-latest,  node: '24' }   # arch axis: arm64 vs x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Portable-math determinism (must match the committed golden on every engine/arch)
+        run: node --test test/engine/portable-determinism.test.js test/engine/pmath.test.js
+
+  # REQUIRED cross-engine job: run the canonical hash under the app's ELECTRON V8 (the exact engine line that once
+  # diverged), as node. Must reproduce the same golden vector as the Node matrix -- this is the highest-value check.
+  electron-determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Electron
+        run: npm --prefix desktop ci
+      - name: Canonical run under Electron-as-node must match the pmath golden
+        run: |
+          out=$(ELECTRON_RUN_AS_NODE=1 desktop/node_modules/.bin/electron test/engine/canonical-run.mjs)
+          echo "$out"
+          echo "$out" | grep -q 'vector: a663a0feb101c127 4d0842eaba32661f 39536da707e5b132' \
+            || { echo "::error::Electron V8 ($(echo "$out" | grep v8)) diverged from the pmath golden -- engine-independence broke"; exit 1; }
+          echo "OK: Electron reproduces the pmath golden vector."

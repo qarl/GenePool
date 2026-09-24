@@ -27,6 +27,7 @@ import { Genotype } from './genotype.js';
 import { Brain } from './brain.js';
 import { FLAT } from './topology.js';
 import { assert } from './assert.js';
+import { psin, pcos } from './pmath.js';   // portable trig (epoch pmath-1): identical bytes on any engine/CPU
 import {
     ZERO, ONE, ONE_HALF, ONE_THIRD, PI_OVER_180, MAX_PARTS,
     NULL_INDEX, NULL_PART, ROOT_PART, MOUTH_INDEX, GENITAL_INDEX,
@@ -305,8 +306,8 @@ export class Swimbot {
         this._timer += this._timerDelta;
 
         const radian = this._angle * PI_OVER_180;
-        this._heading.x = Math.sin(radian);
-        this._heading.y = Math.cos(radian);
+        this._heading.x = psin(radian);
+        this._heading.y = pcos(radian);
 
         const perpX = this._heading.y;
         const perpY = -this._heading.x;
@@ -335,7 +336,7 @@ export class Swimbot {
                 const phaseModulator = part.turnPhase * directionDot;
 
                 const bendRadian = this._timer * frequency + (part.phase + phaseModulator);
-                part.bendingAngle = (part.amp + ampModulator) * Math.sin(bendRadian);
+                part.bendingAngle = (part.amp + ampModulator) * psin(bendRadian);
 
                 part.currentAngle += part.bendingAngle;
             }
@@ -347,8 +348,8 @@ export class Swimbot {
                 length *= this._growthScale;
             }
 
-            const x = length * Math.sin(partRadian);
-            const y = length * Math.cos(partRadian);
+            const x = length * psin(partRadian);
+            const y = length * pcos(partRadian);
             part.previousMid.setXY(part.midPosition.x, part.midPosition.y);
             part.midPosition.setXY(part.position.x, part.position.y);
             part.position.addXY(x, y);

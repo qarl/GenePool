@@ -16,6 +16,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+// Epoch pmath-1: point JJ's oracle trig at pmath (own test process, JJ source untouched). See swimbot-fidelity.test.js.
+const { psin, pcos, ppow2 } = require('../../engine/pmath.js');
+{ const _pow = Math.pow; Math.sin = psin; Math.cos = pcos; Math.pow = (b, e) => (b === 2 ? ppow2(e) : _pow(b, e)); }
 const { loadSim } = require('../helpers/load-sim');
 const { mulberry32 } = require('../helpers/prng');
 const { Swimbot } = require('../../engine/swimbot.js');

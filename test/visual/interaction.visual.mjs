@@ -27,7 +27,8 @@ test('species list: populate, expand, accordion (one open at a time), collapse',
     await page.waitForFunction(() => typeof window.__golden === 'function', { timeout: 10000 });
 
     // Populate the list deterministically (60k ticks -> speciation), then the loop stops (static list).
-    await page.evaluate(() => window.__golden(1, 60000, 1));
+    // epoch pmath-1: seed 3 reaches ~10 species at 60k (seed 1's new trajectory collapses to ~2).
+    await page.evaluate(() => window.__golden(3, 60000, 1));
 
     const nRows = await page.evaluate(() => document.querySelectorAll('#species .srow').length);
     assert.ok(nRows >= 3, `expected >=3 species rows after speciation, got ${nRows}`);

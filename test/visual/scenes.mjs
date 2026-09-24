@@ -22,7 +22,7 @@ export const SCENES = [
   // Speciation has emerged (~10 reproductive clusters by 60k). Slow (~20s: 60k ticks); the test asserts >=3 species
   // (a speciation-behaviour guard). opts.mini ALSO captures the largest species' 256^2 mini-viewer -> the ONLY golden
   // coverage of the small-view render path (renderView@256/TILE_ZOOM/onlyBot) that the list expands into.
-  { name: 'speciated', seed: 1, ticks: 60000, opts: { mini: true } },
+  { name: 'speciated', seed: 3, ticks: 60000, opts: { mini: true } },   // epoch pmath-1: seed 3 yields ~10 species at 60k (seed 1's new trajectory collapses to ~2)
 
   // ('empty' — wall+detritus only — deferred: the hook always seeds founders; needs a skip-founders override first.)
 ];

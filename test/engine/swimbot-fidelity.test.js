@@ -16,6 +16,12 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+// Epoch pmath-1: the engine now uses portable trig (psin/pcos/ppow2). JJ's vendored oracle still calls the
+// global Math.* -- so point those at pmath here (this test file runs in its own `node --test` process, so the
+// override is contained and JJ's source stays byte-identical). The A/B then certifies ALGORITHMIC faithfulness
+// under a shared portable trig basis (native-libm bit-agreement was never portable). See docs/PLAN-engine-portable-math.md.
+const { psin, pcos, ppow2 } = require('../../engine/pmath.js');
+{ const _pow = Math.pow; Math.sin = psin; Math.cos = pcos; Math.pow = (b, e) => (b === 2 ? ppow2(e) : _pow(b, e)); }
 const { loadSim } = require('../helpers/load-sim');
 const { mulberry32 } = require('../helpers/prng');
 const { Swimbot } = require('../../engine/swimbot.js');

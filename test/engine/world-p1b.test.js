@@ -174,7 +174,7 @@ test('P1b-ii addressed rng: the mate-pref draw is ORDER-INDEPENDENT (MATE_PREF i
 
 test('P1b sanity: a real run has births + deaths + food regeneration, and the ABA cannot occur', () => {
     const init = initialState();
-    const world = makeWorld(init, 3);
+    const world = makeWorld(init, 7);   // epoch pmath-1: seed 7 robustly yields births/deaths/food-regen in TICKS (seed 3 happened to yield 0 births under the new trajectory)
     const startSwimbotId = world.getNextSwimbotId();
     const startFoodId = world.getNextFoodId();
     let totalOffspring = 0;

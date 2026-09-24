@@ -30,6 +30,7 @@ import { bytesToBase64 } from './genome.js';
 import { Embryology } from './embryology.js';
 import { Vector2D } from './vector2d.js';
 import { draw, makeStream, DOMAIN } from './rng.js';
+import { ppow2 } from './pmath.js';   // portable 2^x (epoch pmath-1); exact at integer exponents
 import { SpatialGrid } from './spatialGrid.js';
 import { FrozenSwimbot } from './snapshotView.js';
 import { Perception } from './perception.js';
@@ -530,7 +531,7 @@ export class World {
         if (this._sched('evolvableMutationRate') === true) {
             const b0 = this._myGenotype.getGeneValue(MUTATION_RATE_GENE), b1 = mateGenotype.getGeneValue(MUTATION_RATE_GENE);
             const s0 = b0 < 128 ? b0 : b0 - 256, s1 = b1 < 128 ? b1 : b1 - 256;   // int8
-            mutationRate *= Math.pow(2, ((s0 + s1) / 2) / this._sched('mutationRateGeneScale'));
+            mutationRate *= ppow2(((s0 + s1) / 2) / this._sched('mutationRateGeneScale'));
             if (mutationRate > 1) mutationRate = 1;   // it's a per-gene probability
         }
         this._childGenotype.setAsOffspring(this._myGenotype, mateGenotype, genomeRng, {

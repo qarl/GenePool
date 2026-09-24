@@ -16,6 +16,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { loadSim } = require('./load-sim');
 const { mulberry32 } = require('./prng');
+// Epoch pmath-1: capture JJ's motion under the SAME portable trig the engine uses, so the frozen golden
+// certifies JJ's ALGORITHM (not native-libm values, which were never portable). See docs/PLAN-engine-portable-math.md.
+const { psin, pcos, ppow2 } = require('../../engine/pmath.js');
+{ const _pow = Math.pow; Math.sin = psin; Math.cos = pcos; Math.pow = (b, e) => (b === 2 ? ppow2(e) : _pow(b, e)); }
 const GP = loadSim();
 
 const oldEmb = new GP.Embryology();
