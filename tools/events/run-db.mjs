@@ -195,7 +195,9 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
     // the stride climbed far past what the frontier warranted (observed: stride 512 on a 7.6M-tick run that needs 8), which
     // deleted most keyframes and left multi-hour scrub gaps. Deriving from the span each time is self-correcting: it thins
     // ONLY when over budget, never over-coarsens, and a run that was previously over-thinned re-densifies going forward.
-    const KEYFRAME_BUDGET = meta.keyframeBudget || 500;
+    // Budget default is 250 (Karl 2026-09-25: smaller files, ~250 evenly-spread keyframes is enough scrub resolution).
+    // On resume, honor the run's OWN stored budget (like keyframeInterval) so a db keeps its resolution.
+    const KEYFRAME_BUDGET = meta.keyframeBudget || parseInt(getMeta('keyframeBudget') || '250', 10) || 250;
     const KEYFRAME_BASE = meta.keyframeInterval || parseInt(getMeta('keyframeInterval') || '2000', 10) || 2000;
     if (!resuming) setMeta('keyframeBudget', KEYFRAME_BUDGET);
     let keyframeStride = parseInt(getMeta('keyframeStride') || '1', 10) || 1;   // grid coarseness (re-derived on each thin)
