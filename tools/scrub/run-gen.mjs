@@ -72,16 +72,24 @@ export function generateRun(path, seed, opts = {}) {
     // stays dead. Stop generating rather than tick a frozen dead world forever (Karl). A resumed extinct run (restored
     // world already at 0 living) skips the loop outright. This is a natural end state, NOT a throttle of a live run.
     let living = world.getLivingSwimbotCount();
-    for (let t = startTick + 1; t <= o.ticks && living > 0; t++) {   // o.ticks may be Infinity -> run until killed or extinct
-        world.tick();
-        living = world.getLivingSwimbotCount();
-        if (t % o.keyframeInterval === 0 || living === 0) {          // keyframe on the interval, plus a FINAL one at extinction
-            analyzer.recompute(world._swimbots.values());            // refresh diversity for this keyframe (life is folded per death above)
-            writer.writeKeyframe(t, world.serialize(), statsRow()); keyframes++;
-            if (o.onProgress) o.onProgress(t, t);
+    try {
+        for (let t = startTick + 1; t <= o.ticks && living > 0; t++) {   // o.ticks may be Infinity -> run until killed or extinct
+            world.tick();
+            living = world.getLivingSwimbotCount();
+            writer.maybeBeat();                                     // inline wall-clock heartbeat (the loop is synchronous and blocks the event loop, so a timer never fires); also the token FENCE check
+            if (t % o.keyframeInterval === 0 || living === 0) {          // keyframe on the interval, plus a FINAL one at extinction
+                analyzer.recompute(world._swimbots.values());            // refresh diversity for this keyframe (life is folded per death above)
+                writer.writeKeyframe(t, world.serialize(), statsRow()); keyframes++;
+                if (o.onProgress) o.onProgress(t, t);
+            }
         }
+        writer.finish();   // reached on extinction / finite ticks (for Infinity+never-extinct, the process is killed instead; each keyframe commit is already durable)
+    } catch (e) {
+        // FENCED = another writer reclaimed this db (we were presumed dead). Stop WITHOUT finishing (we no longer own it);
+        // the reclaimer is authoritative. Any other error propagates.
+        if (e && e.code === 'FENCED') { try { writer.close(); } catch { /* */ } return { path, seed: seed >>> 0, ticks: o.ticks, keyframes, resumed, reclaimed: true, finalPop: world.getLivingSwimbotCount() }; }
+        throw e;
     }
-    writer.finish();   // reached on extinction / finite ticks (for Infinity+never-extinct, the process is killed instead; each keyframe commit is already durable)
     writer.close();
     return { path, seed: seed >>> 0, ticks: o.ticks, keyframes, resumed, resumedTick: resumed ? startTick : null, finalPop: world.getLivingSwimbotCount() };
 }
@@ -114,7 +122,13 @@ if (isMain) {
     if (a.settings) { try { opts.settings = { ...(opts.settings || {}), ...JSON.parse(a.settings) }; } catch { console.error('bad --settings JSON'); process.exit(2); } }
     mkdirSync(dirname(out), { recursive: true });
     const t0 = Date.now();
-    const r = generateRun(out, seed, opts);
+    let r;
+    try { r = generateRun(out, seed, opts); }
+    catch (e) {
+        if (e && e.code === 'WRITER_LIVE') { console.log(`already being generated (pid ${e.pid}) -- ${out}`); process.exit(0); }   // adopt, don't double-write
+        throw e;
+    }
     const dt = (Date.now() - t0) / 1000;
+    if (r.reclaimed) { console.log(`reclaimed by another writer -- stopped ${out} (keyframes=${r.keyframes})`); process.exit(0); }
     console.log(`generated ${r.path}: seed=${r.seed} ticks=${r.ticks} keyframes=${r.keyframes} finalPop=${r.finalPop} in ${dt.toFixed(1)}s (${(r.ticks / dt).toFixed(0)} t/s)`);
 }

@@ -18,6 +18,68 @@
 import { gzipSync, gunzipSync, createGunzip } from 'node:zlib';
 import { existsSync, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
+import { randomBytes } from 'node:crypto';
+
+// ---- cross-platform writer coordination (epoch: db-heartbeat claim + fence) --------------------------------------
+// The single-writer authority is a claim recorded IN the db's run_meta (writer_pid/writer_token/writer_heartbeat),
+// taken atomically via BEGIN IMMEDIATE and refreshed ~every REFRESH_MS while a writer lives. This works identically on
+// Windows/Linux/macOS (pure SQLite -- no `ps`), reboot- and pid-reuse-safe (liveness = heartbeat freshness, never a
+// bare pid), and closes the double-writer window (two claimers serialize on SQLite's write lock). See
+// docs/PLAN-generator-cli.md (v4.2). A wrongly-reclaimed live writer self-terminates via the token FENCE.
+export const WRITER_STALE_MS = 10000;    // a heartbeat older than this = the writer is gone -> reclaimable
+export const WRITER_REFRESH_MS = 1000;   // a live writer refreshes its heartbeat at least this often
+const nowMs = () => Date.now();
+const makeToken = () => `${process.pid}:${randomBytes(16).toString('hex')}`;   // wide -> no collision can defeat the fence
+
+// Atomic writer-claim inside one BEGIN IMMEDIATE txn. Returns { token } if we now own the db, or { owned:true, pid }
+// if a live writer already holds it (caller adopts/refuses). `force` reclaims regardless (explicit takeover).
+function claimWriter(db, { force = false } = {}) {
+    const token = makeToken();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+        const g = (k) => { const r = db.prepare('SELECT v FROM run_meta WHERE k = ?').get(k); return r ? r.v : null; };
+        const hb = Number(g('writer_heartbeat') || 0);
+        if (!force && hb > 0 && (nowMs() - hb) < WRITER_STALE_MS) {
+            const pid = Number(g('writer_pid') || 0);
+            db.exec('COMMIT');
+            return { owned: true, pid };
+        }
+        const set = db.prepare('INSERT OR REPLACE INTO run_meta (k, v) VALUES (?, ?)');
+        set.run('writer_pid', String(process.pid));
+        set.run('writer_token', token);
+        set.run('writer_heartbeat', String(nowMs()));
+        db.exec('COMMIT');
+        return { token };
+    } catch (e) { try { db.exec('ROLLBACK'); } catch { /* */ } throw e; }
+}
+
+// Mark a run unowned so a fresh writer can claim it immediately (called by a STOPPER after the writer is confirmed dead,
+// so a restart within WRITER_STALE_MS isn't wrongly refused). Best-effort; a held db just declines.
+export function clearWriterClaim(dbPath) {
+    if (!existsSync(dbPath)) return false;
+    try {
+        const db = new DatabaseSync(dbPath);
+        db.exec(`PRAGMA busy_timeout = ${WRITER_STALE_MS};`);
+        try {
+            db.exec('BEGIN IMMEDIATE');
+            const set = db.prepare('INSERT OR REPLACE INTO run_meta (k, v) VALUES (?, ?)');
+            set.run('writer_heartbeat', '0'); set.run('writer_token', '');
+            db.exec('COMMIT');
+        } finally { db.close(); }
+        return true;
+    } catch { return false; }
+}
+
+// Read a run's recorded writer info without holding a writer (for the STOP path: who to kill + is it advancing).
+export function readWriterInfo(dbPath) {
+    try {
+        const db = new DatabaseSync(dbPath, { readOnly: true });
+        try {
+            const g = (k) => { const r = db.prepare('SELECT v FROM run_meta WHERE k = ?').get(k); return r ? r.v : null; };
+            return { pid: Number(g('writer_pid') || 0), heartbeat: Number(g('writer_heartbeat') || 0), token: g('writer_token') || '' };
+        } finally { db.close(); }
+    } catch { return { pid: 0, heartbeat: 0, token: '' }; }
+}
 import { DatabaseSync } from 'node:sqlite';
 import { createSqliteSink } from './sqlite-sink.mjs';
 
@@ -76,6 +138,18 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
     const setMetaStmt = db.prepare('INSERT OR REPLACE INTO run_meta (k, v) VALUES (?, ?)');
     const setMeta = (k, v) => setMetaStmt.run(k, typeof v === 'string' ? v : JSON.stringify(v));
     const getMeta = (k) => { const r = db.prepare('SELECT v FROM run_meta WHERE k = ?').get(k); return r ? r.v : null; };
+
+    // Atomic writer-claim FIRST -- before the destructive resume-truncation below, so two resuming racers can't both
+    // truncate. If a live writer already owns this db we back off (close our just-opened connection) and throw
+    // WRITER_LIVE so the caller adopts (opens read-only) instead of becoming a second writer.
+    const claim = claimWriter(db, { force: meta.forceClaim });
+    if (claim.owned) { try { sink.close(); } catch { /* */ } const e = new Error(`run at ${path} is being written by pid ${claim.pid}`); e.code = 'WRITER_LIVE'; e.pid = claim.pid; throw e; }
+    const myToken = claim.token;
+    let lastBeat = nowMs();
+    // FENCE: re-read the ownership token under the write lock before every commit. If it changed, a reclaimer took over
+    // (we were wrongly presumed dead) -> throw FENCED so this writer stops before committing anything under the new
+    // owner. run-gen catches FENCED and exits cleanly. This is the real safety net (STALE_MS is only a latency knob).
+    const checkFence = () => { const r = db.prepare('SELECT v FROM run_meta WHERE k = ?').get('writer_token'); if (!r || r.v !== myToken) { const e = new Error('writer reclaimed (fenced)'); e.code = 'FENCED'; throw e; } };
 
     let resumedFrom = null;   // { tick, snapshot } the caller restores + resimes from, or null for a fresh run
     if (resuming) {
@@ -141,34 +215,54 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
         catch (err) { db.exec('ROLLBACK'); throw err; }
     }
 
-    // ONE-TRANSACTION keyframe write (D4): pending events -> snapshot -> stats -> frontier LAST.
+    // ONE-TRANSACTION keyframe write (D4): fence -> pending events -> snapshot -> stats -> heartbeat -> frontier LAST.
+    // BEGIN IMMEDIATE takes the write lock up front so the fence read sees any committed reclaim. A keyframe also counts
+    // as a heartbeat (so a long keyframe can't starve liveness).
     function writeKeyframe(tick, snapshot, stats = null) {
-        db.exec('BEGIN');
+        db.exec('BEGIN IMMEDIATE');
         try {
+            checkFence();
             sink.drainWithin();                              // fold buffered births/deaths/eats/ticks into this txn
             insSnap.run(tick, encode(snapshot));
             if (stats != null) insStat.run(tick, JSON.stringify(stats));
+            setMetaStmt.run('writer_heartbeat', String(nowMs()));
             setMetaStmt.run('frontier', String(tick));        // advanced LAST -> readers clamp to it
             db.exec('COMMIT');
-        } catch (err) { db.exec('ROLLBACK'); throw err; }
+            lastBeat = nowMs();
+        } catch (err) { try { db.exec('ROLLBACK'); } catch { /* */ } throw err; }
         thinIfNeeded();                                       // bound the keyframe count (own txn; safe for a concurrent WAL reader)
     }
 
-    // Dense stats-only write (no snapshot) -- same one-transaction discipline, advances frontier too.
+    // Dense stats-only write (no snapshot) -- same fenced one-transaction discipline, advances frontier too.
     function writeStats(tick, stats) {
-        db.exec('BEGIN');
+        db.exec('BEGIN IMMEDIATE');
         try {
+            checkFence();
             sink.drainWithin();
             insStat.run(tick, JSON.stringify(stats));
+            setMetaStmt.run('writer_heartbeat', String(nowMs()));
             setMetaStmt.run('frontier', String(tick));
             db.exec('COMMIT');
-        } catch (err) { db.exec('ROLLBACK'); throw err; }
+            lastBeat = nowMs();
+        } catch (err) { try { db.exec('ROLLBACK'); } catch { /* */ } throw err; }
     }
 
+    // Heartbeat-only refresh, fenced. Called inline from the generator loop on a wall-clock cadence (NOT setInterval --
+    // the loop is synchronous and blocks the event loop, so a timer would never fire).
+    function beat() {
+        db.exec('BEGIN IMMEDIATE');
+        try { checkFence(); setMetaStmt.run('writer_heartbeat', String(nowMs())); db.exec('COMMIT'); lastBeat = nowMs(); }
+        catch (err) { try { db.exec('ROLLBACK'); } catch { /* */ } throw err; }
+    }
+    function maybeBeat() { if (nowMs() - lastBeat >= WRITER_REFRESH_MS) beat(); }
+
     function finish() {
-        db.exec('BEGIN');
-        try { sink.drainWithin(); setMetaStmt.run('done', '1'); db.exec('COMMIT'); }
-        catch (err) { db.exec('ROLLBACK'); throw err; }
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            checkFence(); sink.drainWithin(); setMetaStmt.run('done', '1');
+            setMetaStmt.run('writer_heartbeat', '0'); setMetaStmt.run('writer_token', '');   // done writing -> immediately reclaimable/openable
+            db.exec('COMMIT');
+        } catch (err) { try { db.exec('ROLLBACK'); } catch { /* */ } throw err; }
     }
 
     // The run's stored {seed, config} (S2) -- callers restore() with THIS on resume, not recomputed defaults.
@@ -178,8 +272,18 @@ export function openRunWriter(path, meta = {}, { batchSize = 5000, resume = fals
         db, sink,
         resumedFrom,                    // { tick, snapshot } | null -- restore + resim from here to continue a partial run
         onEvent: sink.onEvent,          // the generator wires world's onEvent here
-        writeKeyframe, writeStats, setMeta, getMeta, runConfig, finish,
-        close() { sink.close(); },      // flushes remaining buffer (own txn) + closes
+        writeKeyframe, writeStats, beat, maybeBeat, setMeta, getMeta, runConfig, finish,
+        token: myToken,                 // this writer's fence token (tests / diagnostics)
+        close() {
+            // Releasing the handle means we're no longer writing -> clear the claim so a resume/restart isn't wrongly
+            // refused for up to WRITER_STALE_MS. But ONLY if we still own it (after a FENCE a reclaimer owns it -> leave
+            // its claim intact). A SIGKILL'd generator never reaches here; its heartbeat just goes stale.
+            try {
+                const r = db.prepare('SELECT v FROM run_meta WHERE k = ?').get('writer_token');
+                if (r && r.v === myToken) { db.exec('BEGIN IMMEDIATE'); setMetaStmt.run('writer_heartbeat', '0'); setMetaStmt.run('writer_token', ''); db.exec('COMMIT'); }
+            } catch { /* db may already be mid-teardown */ }
+            sink.close();                // flushes remaining buffer (own txn) + closes
+        },
     };
 }
 
@@ -263,8 +367,13 @@ export function commitParamEdit(path, { newRunConfig, tick }) {
     try {
         const setMeta = (k, v) => db.prepare('INSERT OR REPLACE INTO run_meta (k,v) VALUES (?,?)')
             .run(k, typeof v === 'string' ? v : JSON.stringify(v));
-        db.exec('BEGIN');
+        db.exec('BEGIN IMMEDIATE');
         try {
+            // Refuse if a live writer (a detached bg/CLI generator -- stopGeneratorAndWait only stops the app's OWN child)
+            // still owns this run: editing under it would fork the timeline. Heartbeat freshness = liveness (v4.2).
+            const hbRow = db.prepare('SELECT v FROM run_meta WHERE k = ?').get('writer_heartbeat');
+            const hb = Number((hbRow && hbRow.v) || 0);
+            if (hb > 0 && (Date.now() - hb) < WRITER_STALE_MS) { const e = new Error('run is being written; stop the generator before editing'); e.code = 'WRITER_LIVE'; throw e; }   // inner catch rolls back + finally closes
             // Uniform (no tick-0 special case): delete everything AT or AFTER T. Keyframes < T survive (computed under
             // the OLD value; the change lands AT T). At T=0 this deletes keyframe-0 too -> nothing survives -> the
             // generator re-seeds keyframe-0 from the (edited) stored config on resume (run-gen's fresh path). So a
@@ -278,6 +387,7 @@ export function commitParamEdit(path, { newRunConfig, tick }) {
             setMeta('config', newRunConfig.config);      // ... keep the plain `config` key in sync too
             setMeta('frontier', String(anchor));         // rewind frontier to the resume anchor (-1 = pre-seed)
             setMeta('done', '0');                        // a previously-extinct/finished run is live again
+            setMeta('writer_heartbeat', '0'); setMeta('writer_token', '');   // leave unowned -> the resuming generator claims cleanly
             db.exec('COMMIT');
             return { anchor };
         } catch (e) { db.exec('ROLLBACK'); throw e; }
@@ -306,8 +416,11 @@ export function commitImport(path, { newRunConfig, tick, snapshot }) {
     try {
         const setMeta = (k, v) => db.prepare('INSERT OR REPLACE INTO run_meta (k,v) VALUES (?,?)')
             .run(k, typeof v === 'string' ? v : JSON.stringify(v));
-        db.exec('BEGIN');
+        db.exec('BEGIN IMMEDIATE');
         try {
+            const hbRow = db.prepare('SELECT v FROM run_meta WHERE k = ?').get('writer_heartbeat');
+            const hb = Number((hbRow && hbRow.v) || 0);
+            if (hb > 0 && (Date.now() - hb) < WRITER_STALE_MS) { const e = new Error('run is being written; stop the generator before importing'); e.code = 'WRITER_LIVE'; throw e; }
             for (const tbl of ['snapshots', 'stats', 'births', 'deaths', 'eats', 'ticks']) {
                 db.prepare(`DELETE FROM ${tbl} WHERE tick >= ?`).run(T);   // invalidate the future (keyframes < T survive)
             }
@@ -316,6 +429,7 @@ export function commitImport(path, { newRunConfig, tick, snapshot }) {
             setMeta('config', newRunConfig.config);
             setMeta('frontier', String(T));              // T is the newest keyframe = resume anchor
             setMeta('done', '0');
+            setMeta('writer_heartbeat', '0'); setMeta('writer_token', '');   // leave unowned -> the resuming generator claims cleanly
             db.exec('COMMIT');
             return { anchor: T };
         } catch (e) { db.exec('ROLLBACK'); throw e; }
@@ -327,10 +441,13 @@ export function commitImport(path, { newRunConfig, tick, snapshot }) {
 // now?" is answered WRITER-AGNOSTICALLY by the freshness of the -wal file's mtime -- this detects the app's own
 // utilityProcess, a detached background generator, AND an external CLI generator, and is crash-safe (a dead writer's
 // -wal goes stale). This is the authority the app consults before opening ANY writable connection on a run db.
-export function isWriterLive(dbPath, staleMs = 4000) {
+export function isWriterLive(dbPath, staleMs = WRITER_STALE_MS) {
     try {
         const wal = dbPath + '-wal';
         if (!existsSync(wal)) return false;                 // no WAL -> no live writer (a run at rest is a single file)
+        // A live writer beats every WRITER_REFRESH_MS (~1s), and every beat commits to the WAL -> -wal mtime tracks the
+        // heartbeat to within a second, so this cheap probe stays accurate up to WRITER_STALE_MS (closes the old
+        // keyframe-cadence staleness hole). The authoritative claim/kill paths read run_meta directly.
         return (Date.now() - statSync(wal).mtimeMs) < staleMs;
     } catch { return false; }
 }

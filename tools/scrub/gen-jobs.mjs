@@ -17,7 +17,7 @@ import { rename } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, platform } from 'node:os';
-import { openRunReader, isWriterLive, collapseToSingleFile } from '../events/run-db.mjs';
+import { openRunReader, isWriterLive, collapseToSingleFile, clearWriterClaim } from '../events/run-db.mjs';
 import { POOL_SETTINGS } from '../../engine/pool-seed.mjs';
 
 // Shared so the app's app.setName(APP_NAME) and this module's userData resolution CANNOT drift into two registries.
@@ -116,6 +116,7 @@ export function createBgJobs({ onChanged = () => {}, yieldForeground = async () 
     for (let i = 0; i < 40 && (scanGenerators()[dbPath] || isWriterLive(dbPath)); i++) { if (i === 10) kill('SIGKILL'); await new Promise(r => setTimeout(r, 150)); }
     delete bgJobs[dbPath]; await persistJobs();
     for (let i = 0; i < 20 && isWriterLive(dbPath); i++) await new Promise(r => setTimeout(r, 150));   // let fds release before collapse
+    clearWriterClaim(dbPath);                                         // release the killed writer's claim so a restart isn't refused for WRITER_STALE_MS
     checkpointClose(dbPath);
     onChanged();
     return { ok: true };

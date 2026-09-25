@@ -10,7 +10,7 @@ import { extname, join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSqliteSink } from '../tools/events/sqlite-sink.mjs';
 import { createJsonlSink } from '../tools/events/jsonl-sink.mjs';
-import { openRunReader, openRunWriter, commitParamEdit, commitImport, isWriterLive, collapseToSingleFile } from '../tools/events/run-db.mjs';
+import { openRunReader, openRunWriter, commitParamEdit, commitImport, isWriterLive, collapseToSingleFile, clearWriterClaim } from '../tools/events/run-db.mjs';
 import { withKeyframe, resolveWorldConfig } from '../engine/config.js';
 import { World } from '../engine/world.js';
 import { poolConfig, POOL_DEFAULTS, POOL_SETTINGS } from '../engine/pool-seed.mjs';
@@ -87,7 +87,8 @@ function stopGenerator(){
   // Background/read-only view (no child of ours): a detached/external writer owns the db -> do NOT collapse it (its -wal
   // is live; we'd only decline anyway). Only collapse a run WE were generating, once our writer child is gone.
   if (bg || !child) return;
-  const clean = () => { if (!scrub || scrub.dbPath !== dbPath) checkpointClose(dbPath); };
+  // child gone -> release its writer claim (so a restart isn't refused for WRITER_STALE_MS) then collapse the WAL.
+  const clean = () => { clearWriterClaim(dbPath); if (!scrub || scrub.dbPath !== dbPath) checkpointClose(dbPath); };
   try { child.once('exit', clean); child.kill(); }
   catch { clean(); }
 }
@@ -99,7 +100,9 @@ function stopGeneratorAndWait(){
     if (!scrub) return resolve();
     const s = scrub;
     try { s.reader?.close(); } catch { /* already closed */ }
-    let done = false; const finish = () => { if (done) return; done = true; if (scrub === s) scrub = null; resolve(); };
+    // On the child's exit, release its writer claim so the imminent commit/re-fork (which opens a new writer) isn't
+    // refused by the just-killed child's still-fresh heartbeat.
+    let done = false; const finish = () => { if (done) return; done = true; try { clearWriterClaim(s.dbPath); } catch { /* */ } if (scrub === s) scrub = null; resolve(); };
     try { s.child?.once('exit', finish); s.child?.kill(); } catch { finish(); return; }
     setTimeout(() => { try { s.child?.kill(); } catch { /* gone */ } finish(); }, 3000);
   });

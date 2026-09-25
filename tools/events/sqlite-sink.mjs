@@ -19,10 +19,11 @@ import { bodyUuid } from './run-identity.mjs';
 // so the engine stays bit-identical. Omit runId and the uuid columns are simply NULL (back-compat).
 export function createSqliteSink(path = ':memory:', { batchSize = 5000, runId = null } = {}) {
     const db = new DatabaseSync(path);
-    // busy_timeout: defense-in-depth so a brief writer-vs-writer overlap during a background handoff degrades to a short
-    // wait instead of an instant SQLITE_BUSY that kills the generator. NOT the primary one-writer safety (that's the
-    // -wal-freshness guard in run-db); sustained contention should never happen. WAL still means the writer never blocks readers.
-    db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 4000;');
+    // busy_timeout: sized to the writer coordination window (WRITER_STALE_MS in run-db) so a claim/edit arriving during a
+    // long keyframe write WAITS it out and then reads a fresh heartbeat (backing off cleanly), instead of an instant
+    // SQLITE_BUSY that would crash a generator or spuriously fail an edit. NOT the primary one-writer safety (that's the
+    // atomic run_meta claim/fence in run-db). WAL still means the writer never blocks readers.
+    db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 10000;');
     db.exec(`
         -- parentMask/mutationMask: 64 hex chars = 256 bits (one per gene), LSB-first within each byte.
         -- parentMask bit g: 0 => gene g came from parentId, 1 => from mateId. mutationMask bit g: 1 => gene g mutated.
