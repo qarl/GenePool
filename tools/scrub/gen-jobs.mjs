@@ -17,7 +17,7 @@ import { rename } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, platform } from 'node:os';
-import { openRunReader, isWriterLive, collapseToSingleFile, clearWriterClaim } from '../events/run-db.mjs';
+import { openRunReader, isWriterLive, collapseToSingleFile, clearWriterClaim, readWriterInfo } from '../events/run-db.mjs';
 import { POOL_SETTINGS } from '../../engine/pool-seed.mjs';
 
 // Shared so the app's app.setName(APP_NAME) and this module's userData resolution CANNOT drift into two registries.
@@ -55,7 +55,11 @@ export function createBgJobs({ onChanged = () => {}, yieldForeground = async () 
   // hard-exits without it); --resume ignores it on an existing db.
   function bgSpawn(dbPath, { seed }) {
     const args = [RUNGEN, '--seed', String(seed ?? 0), '--out', dbPath, '--resume', '--ticks', 'Infinity', '--settings', JSON.stringify(POOL_SETTINGS)];
-    const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+    // A detached, app-outliving generator must NOT inherit a node:test worker context (NODE_TEST_*) -- it would make the
+    // child behave as a test worker and exit when the harness moves on. Strip it (harmless in production; load-bearing under `node --test`).
+    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+    delete env.NODE_TEST_CONTEXT; delete env.NODE_TEST_WORKER_ID;
+    const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore', windowsHide: true, env });
     child.on('error', () => { /* spawn failed -> don't crash the parent */ });
     child.unref();
     // Keep-awake is best-effort and OPTIONAL (jobs still run without it, they may just pause on sleep). macOS: caffeinate.
@@ -90,9 +94,10 @@ export function createBgJobs({ onChanged = () => {}, yieldForeground = async () 
       bgJobs[p] = { pid, kind, name: baseName(p), seed, startedAt: Date.now() };
     }
     for (const p of Object.keys(bgJobs)) {
-      if (scan[p]) { bgJobs[p].pid = scan[p]; continue; }             // still running -> refresh pid
-      if (bgJobs[p].pid && pidAlive(bgJobs[p].pid)) continue;         // just spawned, ps not caught it yet -> keep (grace)
-      if (existsSync(p)) checkpointClose(p);                          // truly ended -> collapse + drop
+      if (scan[p]) { bgJobs[p].pid = scan[p]; continue; }             // ps has it (Unix) -> refresh pid, still running
+      if (isWriterLive(p)) continue;                                  // heartbeat fresh = still running (the CROSS-PLATFORM authority; ps is empty on Windows)
+      if (bgJobs[p].pid && pidAlive(bgJobs[p].pid)) continue;         // just spawned, -wal not warm + ps hasn't caught it -> keep (grace)
+      if (existsSync(p)) checkpointClose(p);                          // truly ended -> collapse + drop (only over TRACKED entries, never a dir listing)
       delete bgJobs[p];
     }
     persistJobs();
@@ -111,7 +116,7 @@ export function createBgJobs({ onChanged = () => {}, yieldForeground = async () 
     return { ok: true };
   }
   async function bgStop(dbPath) {
-    const kill = (sig) => { const pids = new Set(); if (bgJobs[dbPath]?.pid) pids.add(bgJobs[dbPath].pid); const s = scanGenerators()[dbPath]; if (s) pids.add(s); for (const pid of pids) { try { process.kill(pid, sig); } catch { /* gone */ } } };
+    const kill = (sig) => { const pids = new Set(); if (bgJobs[dbPath]?.pid) pids.add(bgJobs[dbPath].pid); const s = scanGenerators()[dbPath]; if (s) pids.add(s); const wp = readWriterInfo(dbPath).pid; if (wp) pids.add(wp); for (const pid of pids) { try { process.kill(pid, sig); } catch { /* gone */ } } };   // registry pid + ps (Unix) + the run_meta writer_pid (cross-platform)
     kill();                                                           // SIGTERM whatever's writing this db (recorded pid + any live scan pid)
     for (let i = 0; i < 40 && (scanGenerators()[dbPath] || isWriterLive(dbPath)); i++) { if (i === 10) kill('SIGKILL'); await new Promise(r => setTimeout(r, 150)); }
     delete bgJobs[dbPath]; await persistJobs();
