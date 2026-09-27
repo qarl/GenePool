@@ -272,6 +272,19 @@ async function runBracket({ seeds, days = 1, settings = {}, cores = 4 }) {
 // a NEW candidate (no .pool) is generated ENTIRELY IN MEMORY (genChampionInMemory) -> no timeline db is ever written.
 // Only a killer's tiny champion .pool is persisted. The hunt runs probes in parallel across `cores` child processes.
 const huntPath = () => join(jobsDir(), 'hunt-results.json');
+// The COLLECTION of super-organisms: every seed that has ever defeated the litmus target, accumulated across hunt runs
+// (deduped by seed, sorted strongest-first). Distinct from hunt-results.json (which is only the current run's scoreboard),
+// so a fresh hunt never clobbers the growing collection. Each member's champion .pool is on disk (saved by --save-win).
+const collectionPath = (target) => join(jobsDir(), `superorganisms-vs-seed${target}.json`);
+function addToCollection(target, entry) {
+  let coll = { target: Number(target), members: [] };
+  try { const c = JSON.parse(readFileSync(collectionPath(target), 'utf8')); if (c && Array.isArray(c.members)) coll = c; } catch { /* fresh */ }
+  if (!coll.members.some((m) => m.seed === entry.seed)) coll.members.push(entry);
+  coll.members.sort((a, b) => b.margin - a.margin);
+  coll.target = Number(target); coll.count = coll.members.length; coll.updated = new Date().toISOString();
+  try { writeFileSync(collectionPath(target), JSON.stringify(coll, null, 2)); } catch { /* */ }
+  return coll.members.length;
+}
 
 // run one probe as a child (clean JSON on stdout). --save-win makes the child persist the candidate's .pool iff it wins.
 function probeChild(cand, target, { days, settings }) {
@@ -295,11 +308,12 @@ function verdictOf(res) {
   return { margin: a - b, kill, close, a, b, extinctTarget: b === 0 && a > 0, days: res.days, junkSim: res.junkSim };
 }
 
-async function runHunt({ target, cores = 5, days = 1, settings = {}, startNew = 51, maxNew = 1000, minutes = 0 }) {
+async function runHunt({ target, cores = 5, days = 1, settings = {}, startNew = 51, maxNew = 1000, minutes = 0, newOnly = false }) {
   // ensure the target champion exists (extract from its timeline if needed).
   if (!existsSync(championPath(target))) { try { const r = await extractChampion(target); console.log(`extracted target champion seed-${target} (${r.count})${r.note || ''}`); } catch (e) { process.exit(usage(`target seed-${target}: ${e.message}`)); } }
   // Phase 1 candidates: every EXISTING champion (on disk) except the target -- fast, no re-gen, a definitive head-to-head.
-  const existing = readdirSync(championsDir()).map((f) => (f.match(/^seed-(\d+)\.pool$/) || [])[1]).filter(Boolean).map(Number)
+  // --new-only skips Phase 1 (when the existing pool has already been swept and we only want fresh invented seeds).
+  const existing = newOnly ? [] : readdirSync(championsDir()).map((f) => (f.match(/^seed-(\d+)\.pool$/) || [])[1]).filter(Boolean).map(Number)
     .filter((s) => s !== Number(target)).sort((x, y) => x - y);
   const t0 = Date.now();
   const deadline = minutes > 0 ? t0 + minutes * 60000 : Infinity;
@@ -307,13 +321,13 @@ async function runHunt({ target, cores = 5, days = 1, settings = {}, startNew = 
   const record = (cand, v, phase) => {
     state.tested++;
     const row = { seed: cand, phase, margin: v.margin, a: v.a, b: v.b, kill: v.kill, extinctTarget: v.extinctTarget, days: v.days, junkSim: v.junkSim };
-    if (v.kill) { state.killers.push(row); console.log(`  🏆 KILLER: seed-${cand} DEFEATS seed-${target}  (${v.a}-${v.b}${v.extinctTarget ? ', target EXTINCT' : ''}, ${(v.days || 0).toFixed(2)}d)`); }
+    if (v.kill) { state.killers.push(row); const n = addToCollection(target, { seed: cand, a: v.a, b: v.b, margin: v.margin, extinctTarget: v.extinctTarget, days: v.days, junkSim: v.junkSim, foundAt: new Date().toISOString() }); console.log(`  🏆 KILLER #${n}: seed-${cand} DEFEATS seed-${target}  (${v.a}-${v.b}${v.extinctTarget ? ', target EXTINCT' : ''}, ${(v.days || 0).toFixed(2)}d) -> collection now ${n}`); }
     state.top.push(row); state.top.sort((p, q) => q.margin - p.margin); state.top = state.top.slice(0, 25);
     state.elapsedMin = Math.round((Date.now() - t0) / 60000);
     try { writeFileSync(huntPath(), JSON.stringify(state, null, 2)); } catch { /* */ }
   };
 
-  console.log(`HUNT: find a seed that defeats seed-${target}. ${cores} cores, ${days}-day probes. Phase 1 = ${existing.length} existing champions; Phase 2 = new seeds from ${startNew} (disk-free, in-memory). Live -> ${huntPath()}`);
+  console.log(`HUNT: find a seed that defeats seed-${target}. ${cores} cores, ${days}-day probes. Phase 1 = ${existing.length} existing champions; Phase 2 = new seeds from ${startNew} (disk-free, in-memory). Live -> ${huntPath()}. Collection -> ${collectionPath(target)}`);
 
   // shared candidate cursor: first drain Phase-1 existing seeds, then hand out fresh seed numbers for Phase 2.
   let p1 = 0, next = startNew, testedNew = 0, stop = false;
@@ -349,7 +363,7 @@ async function runHunt({ target, cores = 5, days = 1, settings = {}, startNew = 
 }
 
 // ---- CLI -----------------------------------------------------------------------------------------------------------
-function usage(msg) { if (msg) console.error('error: ' + msg); console.error('usage:\n  compete champion <seed|all>\n  compete match <A> <B> [--days 1] [--ticks N] [--natural] [--json] [--settings JSON]\n  compete probe <candidate> <target> [--days 1] [--json] [--save-win] [--settings JSON]\n  compete hunt <target> [--cores 5] [--days 1] [--start-new 51] [--max-new N] [--minutes N] [--settings JSON]\n  compete tournament [--cores 5] [--days 1] [--matches 5] [--seeds a,b,..] [--settings JSON]\n  compete bracket [--seeds s1,..,s8] [--days 1] [--cores 4] [--settings JSON]   (default seeds = tournament top 8)'); return 2; }
+function usage(msg) { if (msg) console.error('error: ' + msg); console.error('usage:\n  compete champion <seed|all>\n  compete match <A> <B> [--days 1] [--ticks N] [--natural] [--json] [--settings JSON]\n  compete probe <candidate> <target> [--days 1] [--json] [--save-win] [--settings JSON]\n  compete hunt <target> [--cores 5] [--days 1] [--start-new 51] [--max-new N] [--minutes N] [--new-only] [--settings JSON]\n  compete tournament [--cores 5] [--days 1] [--matches 5] [--seeds a,b,..] [--settings JSON]\n  compete bracket [--seeds s1,..,s8] [--days 1] [--cores 4] [--settings JSON]   (default seeds = tournament top 8)'); return 2; }
 const args = process.argv.slice(2);
 const cmd = args[0];
 const flag = (k) => args.includes('--' + k);
@@ -402,7 +416,7 @@ if (cmd === 'champion') {
   const minutes = opt('minutes') != null ? Number(opt('minutes')) : 0;
   let settings = { foodReseedWhenEmpty: true };            // default: food reseeds -> real contests, not starvation races
   if (opt('settings')) { try { settings = JSON.parse(opt('settings')); } catch { process.exit(usage('--settings must be JSON')); } }
-  await runHunt({ target: Number(target), cores, days, settings, startNew, maxNew, minutes });
+  await runHunt({ target: Number(target), cores, days, settings, startNew, maxNew, minutes, newOnly: flag('new-only') });
 } else if (cmd === 'tournament') {
   const cores = opt('cores') != null ? Number(opt('cores')) : 5;
   const days = opt('days') != null ? Number(opt('days')) : 1;
