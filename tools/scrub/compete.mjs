@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { World } from '../../engine/world.js';
 import { openRunReader } from '../events/run-db.mjs';
-import { poolConfig, POOL_DEFAULTS, POOL_SETTINGS, mulberry32, diskPoint } from '../../engine/pool-seed.mjs';
+import { poolConfig, POOL_DEFAULTS, POOL_SETTINGS, mulberry32, diskPoint, makeStandardWorld } from '../../engine/pool-seed.mjs';
 import { USED } from '../../engine/analysis/species.mjs';
 import { jobsDir } from './gen-jobs.mjs';
 
@@ -66,9 +66,39 @@ function loadChampion(ref) {
   return { ref, path, config: p.config, seed: p.seed, swimbots };
 }
 
+// Generate a candidate seed's champion ENTIRELY IN MEMORY (no timeline db written) -> disk-free hunting. Simulate the
+// standard pool to day 1; use the day-1 population if still alive, else the peak-population snapshot (a boom-crash seed's
+// prime), sampled every 50k ticks. Returns { seed, config, swimbots } like loadChampion.
+function genChampionInMemory(seed) {
+  const cfg = poolConfig(POOL_DEFAULTS.pool, POOL_SETTINGS);
+  const { world } = makeStandardWorld(seed, { config: cfg });
+  let best = { pop: world.getLivingSwimbotCount(), snap: null };
+  for (let t = 1; t <= TICKS_PER_DAY; t++) {
+    world.tick();
+    if (t % 2000 === 0) { const pop = world.getLivingSwimbotCount(); if (pop === 0) break;
+      if (t % 50000 === 0 && pop > best.pop) best = { pop, snap: world.serialize() }; }
+  }
+  const finalPop = world.getLivingSwimbotCount();
+  const peaked = finalPop === 0;
+  const snap = peaked ? (best.snap || world.serialize()) : world.serialize();
+  const swimbots = (snap.swimbots || []).filter((s) => s && s.alive !== false);
+  return { seed, config: cfg, swimbots, peak: peaked, tick: snap.clock != null ? snap.clock : TICKS_PER_DAY };
+}
+// Resolve a champion for a seed: an existing .pool if present, else generate it in memory (disk-free).
+function resolveChampion(seed) { return existsSync(championPath(seed)) ? loadChampion(seed) : genChampionInMemory(seed); }
+// Persist a champion object (from genChampionInMemory) to its .pool -- used to KEEP a killer we found. Disk-frugal:
+// only ever called for a winner, so the hunt never litters candidate pools.
+function saveChampionObj(ch) {
+  if (!ch.swimbots || !ch.swimbots.length) return null;
+  const out = { v: 1, kind: 'gpool-pool', seed: ch.seed, tick: ch.tick || TICKS_PER_DAY, config: ch.config, data: { swimbots: ch.swimbots } };
+  writeFileSync(championPath(ch.seed), JSON.stringify(out));
+  return championPath(ch.seed);
+}
+
 // ---- the match -----------------------------------------------------------------------------------------------------
-function runMatch(A, B, { days = 1, ticks = null, natural = false, settings = {} } = {}) {
-  const chA = loadChampion(A), chB = loadChampion(B);
+const runMatch = (A, B, opts = {}) => runMatchCore(loadChampion(A), loadChampion(B), opts);
+// chA/chB are champion objects { seed, config, swimbots } -- from a .pool (loadChampion) OR generated in memory.
+function runMatchCore(chA, chB, { days = 1, ticks = null, natural = false, settings = {}, quiet = false } = {}) {
   const STATUS = () => join(jobsDir(), `compete-status-${chA.seed}v${chB.seed}.json`);   // per-matchup -> parallel matches don't clobber
   const total = ticks != null ? ticks : Math.round(days * TICKS_PER_DAY);
   const cfg = poolConfig(POOL_DEFAULTS.pool, { ...POOL_SETTINGS, ...settings });   // --settings can flip arena params (e.g. foodReseedWhenEmpty)
@@ -117,17 +147,17 @@ function runMatch(A, B, { days = 1, ticks = null, natural = false, settings = {}
       const c = count(); curve.push({ tick: t, ...c });
       // live progress: a tiny status file + a stdout ticker (disk-free; ~KB). Watch A vs B (and food) battle in real time.
       writeStatus(c, t);
-      process.stderr.write(`\r  day ${(t / TICKS_PER_DAY).toFixed(3)}  A ${String(c.a).padStart(4)}  B ${String(c.b).padStart(4)}  food ${String(c.food).padStart(4)}${c.h ? `  hybrid ${c.h}` : ''}   `);   // progress -> stderr so --json stdout stays pure
+      if (!quiet) process.stderr.write(`\r  day ${(t / TICKS_PER_DAY).toFixed(3)}  A ${String(c.a).padStart(4)}  B ${String(c.b).padStart(4)}  food ${String(c.food).padStart(4)}${c.h ? `  hybrid ${c.h}` : ''}   `);   // progress -> stderr so --json stdout stays pure
       if (c.a === 0 || c.b === 0) { extinctTick = t; break; }
     }
   }
-  process.stderr.write('\n');
+  if (!quiet) process.stderr.write('\n');
   const fin = count();
   const winner = fin.a === 0 && fin.b === 0 ? 'tie' : fin.a === 0 ? 'B' : fin.b === 0 ? 'A' : fin.a > fin.b ? 'A' : fin.b > fin.a ? 'B' : 'tie';
   // downsample the curve to ~120 points
   const step = Math.max(1, Math.ceil(curve.length / 120));
   const thin = curve.filter((_, i) => i % step === 0 || i === curve.length - 1);
-  return { a: { ref: String(A), seed: chA.seed, start: aList.length }, b: { ref: String(B), seed: chB.seed, start: bList.length },
+  return { a: { ref: String(chA.ref != null ? chA.ref : chA.seed), seed: chA.seed, start: aList.length }, b: { ref: String(chB.ref != null ? chB.ref : chB.seed), seed: chB.seed, start: bList.length },
     normalized: !natural, normN, junkSim: junk, interbreeds: junk > 0.9, crossTeamBirths,
     ticks: extinctTick != null ? extinctTick : total, extinctTick, days: (extinctTick != null ? extinctTick : total) / TICKS_PER_DAY,
     final: fin, winner, curve: thin };
@@ -237,8 +267,89 @@ async function runBracket({ seeds, days = 1, settings = {}, cores = 4 }) {
   }
 }
 
+// ---- hunt: find a challenger seed that DEFEATS a target seed, DISK-FREE ---------------------------------------------
+// A "probe" pits one candidate against the target: candidate = A, target = B. An existing candidate loads its .pool;
+// a NEW candidate (no .pool) is generated ENTIRELY IN MEMORY (genChampionInMemory) -> no timeline db is ever written.
+// Only a killer's tiny champion .pool is persisted. The hunt runs probes in parallel across `cores` child processes.
+const huntPath = () => join(jobsDir(), 'hunt-results.json');
+
+// run one probe as a child (clean JSON on stdout). --save-win makes the child persist the candidate's .pool iff it wins.
+function probeChild(cand, target, { days, settings }) {
+  return new Promise((resolve) => {
+    const a = [SELF, 'probe', String(cand), String(target), '--days', String(days), '--json', '--save-win'];
+    if (settings && Object.keys(settings).length) a.push('--settings', JSON.stringify(settings));
+    const child = spawn(process.execPath, a, { stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env } });
+    let out = ''; child.stdout.on('data', (d) => { out += d; });
+    child.on('close', () => { try { resolve(JSON.parse(out)); } catch { resolve(null); } });
+    child.on('error', () => resolve(null));
+  });
+}
+
+// A candidate DECISIVELY defeats the target when it is alive, the win isn't a <5% dead-heat, and it either drove the
+// target extinct or simply out-populated it. margin = candidate - target at the end (higher = stronger challenge).
+function verdictOf(res) {
+  if (!res) return { margin: -Infinity, kill: false, note: 'ERR' };
+  const a = res.final.a, b = res.final.b;
+  const close = Math.max(a, b) > 0 && Math.abs(a - b) / Math.max(a, b) < 0.05;
+  const kill = a > 0 && res.winner === 'A' && !close;      // candidate is A
+  return { margin: a - b, kill, close, a, b, extinctTarget: b === 0 && a > 0, days: res.days, junkSim: res.junkSim };
+}
+
+async function runHunt({ target, cores = 5, days = 1, settings = {}, startNew = 51, maxNew = 1000, minutes = 0 }) {
+  // ensure the target champion exists (extract from its timeline if needed).
+  if (!existsSync(championPath(target))) { try { const r = await extractChampion(target); console.log(`extracted target champion seed-${target} (${r.count})${r.note || ''}`); } catch (e) { process.exit(usage(`target seed-${target}: ${e.message}`)); } }
+  // Phase 1 candidates: every EXISTING champion (on disk) except the target -- fast, no re-gen, a definitive head-to-head.
+  const existing = readdirSync(championsDir()).map((f) => (f.match(/^seed-(\d+)\.pool$/) || [])[1]).filter(Boolean).map(Number)
+    .filter((s) => s !== Number(target)).sort((x, y) => x - y);
+  const t0 = Date.now();
+  const deadline = minutes > 0 ? t0 + minutes * 60000 : Infinity;
+  const state = { target: Number(target), days, cores, startedAt: new Date().toISOString(), tested: 0, killers: [], top: [], phase: 1 };
+  const record = (cand, v, phase) => {
+    state.tested++;
+    const row = { seed: cand, phase, margin: v.margin, a: v.a, b: v.b, kill: v.kill, extinctTarget: v.extinctTarget, days: v.days, junkSim: v.junkSim };
+    if (v.kill) { state.killers.push(row); console.log(`  🏆 KILLER: seed-${cand} DEFEATS seed-${target}  (${v.a}-${v.b}${v.extinctTarget ? ', target EXTINCT' : ''}, ${(v.days || 0).toFixed(2)}d)`); }
+    state.top.push(row); state.top.sort((p, q) => q.margin - p.margin); state.top = state.top.slice(0, 25);
+    state.elapsedMin = Math.round((Date.now() - t0) / 60000);
+    try { writeFileSync(huntPath(), JSON.stringify(state, null, 2)); } catch { /* */ }
+  };
+
+  console.log(`HUNT: find a seed that defeats seed-${target}. ${cores} cores, ${days}-day probes. Phase 1 = ${existing.length} existing champions; Phase 2 = new seeds from ${startNew} (disk-free, in-memory). Live -> ${huntPath()}`);
+
+  // shared candidate cursor: first drain Phase-1 existing seeds, then hand out fresh seed numbers for Phase 2.
+  let p1 = 0, next = startNew, testedNew = 0, stop = false;
+  const nextCand = () => {
+    if (Date.now() >= deadline) { stop = true; return null; }
+    if (p1 < existing.length) return { cand: existing[p1++], phase: 1 };
+    if (testedNew >= maxNew) { stop = true; return null; }
+    testedNew++; state.phase = 2; return { cand: next++, phase: 2 };
+  };
+
+  const worker = async () => {
+    while (!stop) {
+      const job = nextCand();
+      if (!job) break;
+      const res = await probeChild(job.cand, target, { days, settings });
+      const v = verdictOf(res);
+      console.log(`[${state.tested + 1}] (P${job.phase}) seed-${job.cand} vs seed-${target} -> ${v.kill ? 'WIN' : v.margin === -Infinity ? 'ERR' : v.margin >= 0 ? 'edge' : 'loss'} (${v.a}-${v.b}, ${(v.days || 0).toFixed(2)}d)`);
+      record(job.cand, v, job.phase);
+    }
+  };
+  await Promise.all(Array.from({ length: cores }, worker));
+
+  state.final = true; state.elapsedMin = Math.round((Date.now() - t0) / 60000);
+  try { writeFileSync(huntPath(), JSON.stringify(state, null, 2)); } catch { /* */ }
+  console.log(`\n=== HUNT DONE: tested ${state.tested} in ${state.elapsedMin} min ===`);
+  if (state.killers.length) {
+    console.log(`${state.killers.length} seed(s) DEFEAT seed-${target}:`);
+    state.killers.sort((p, q) => q.margin - p.margin).forEach((k) => console.log(`  seed-${k.seed} (${k.a}-${k.b}${k.extinctTarget ? ', target extinct' : ''}, margin +${k.margin}) -> champion saved`));
+  } else {
+    console.log(`NONE defeated seed-${target}. Closest challengers (candidate - target):`);
+    state.top.slice(0, 5).forEach((k) => console.log(`  seed-${k.seed}: ${k.a}-${k.b}  (margin ${k.margin >= 0 ? '+' : ''}${k.margin})`));
+  }
+}
+
 // ---- CLI -----------------------------------------------------------------------------------------------------------
-function usage(msg) { if (msg) console.error('error: ' + msg); console.error('usage:\n  compete champion <seed|all>\n  compete match <A> <B> [--days 1] [--ticks N] [--natural] [--json] [--settings JSON]\n  compete tournament [--cores 5] [--days 1] [--matches 5] [--seeds a,b,..] [--settings JSON]\n  compete bracket [--seeds s1,..,s8] [--days 1] [--cores 4] [--settings JSON]   (default seeds = tournament top 8)'); return 2; }
+function usage(msg) { if (msg) console.error('error: ' + msg); console.error('usage:\n  compete champion <seed|all>\n  compete match <A> <B> [--days 1] [--ticks N] [--natural] [--json] [--settings JSON]\n  compete probe <candidate> <target> [--days 1] [--json] [--save-win] [--settings JSON]\n  compete hunt <target> [--cores 5] [--days 1] [--start-new 51] [--max-new N] [--minutes N] [--settings JSON]\n  compete tournament [--cores 5] [--days 1] [--matches 5] [--seeds a,b,..] [--settings JSON]\n  compete bracket [--seeds s1,..,s8] [--days 1] [--cores 4] [--settings JSON]   (default seeds = tournament top 8)'); return 2; }
 const args = process.argv.slice(2);
 const cmd = args[0];
 const flag = (k) => args.includes('--' + k);
@@ -269,6 +380,29 @@ if (cmd === 'champion') {
     console.log(`final:  A ${res.final.a}   B ${res.final.b}${res.final.h ? `   hybrids ${res.final.h}` : ''}   cross-team births ${res.crossTeamBirths}`);
     console.log(`WINNER: ${res.winner === 'tie' ? 'TIE' : 'seed-' + (res.winner === 'A' ? res.a.seed : res.b.seed) + ' (' + res.winner + ')'}\n`);
   }
+} else if (cmd === 'probe') {
+  const cand = args[1], target = args[2];
+  if (!cand || !target) process.exit(usage('probe needs <candidate> <target>'));
+  const days = opt('days') != null ? Number(opt('days')) : 1;
+  let settings = {}; if (opt('settings')) { try { settings = JSON.parse(opt('settings')); } catch { process.exit(usage('--settings must be JSON')); } }
+  const chCand = resolveChampion(Number(cand));            // gen-in-memory if the candidate has no .pool (disk-free)
+  const chTarget = loadChampion(Number(target));
+  const res = runMatchCore(chCand, chTarget, { days, settings, quiet: true });
+  const v = verdictOf(res);
+  if (flag('save-win') && v.kill && !existsSync(championPath(chCand.seed))) { try { saveChampionObj(chCand); } catch { /* */ } }
+  if (flag('json')) console.log(JSON.stringify(res));
+  else console.log(`seed-${cand} vs seed-${target}: ${v.kill ? 'DEFEATS it' : 'loses'} (${v.a}-${v.b}, ${(v.days || 0).toFixed(2)}d)`);
+} else if (cmd === 'hunt') {
+  const target = args[1];
+  if (!target) process.exit(usage('hunt needs <target>'));
+  const cores = opt('cores') != null ? Number(opt('cores')) : 5;
+  const days = opt('days') != null ? Number(opt('days')) : 1;
+  const startNew = opt('start-new') != null ? Number(opt('start-new')) : 51;
+  const maxNew = opt('max-new') != null ? Number(opt('max-new')) : 1000;
+  const minutes = opt('minutes') != null ? Number(opt('minutes')) : 0;
+  let settings = { foodReseedWhenEmpty: true };            // default: food reseeds -> real contests, not starvation races
+  if (opt('settings')) { try { settings = JSON.parse(opt('settings')); } catch { process.exit(usage('--settings must be JSON')); } }
+  await runHunt({ target: Number(target), cores, days, settings, startNew, maxNew, minutes });
 } else if (cmd === 'tournament') {
   const cores = opt('cores') != null ? Number(opt('cores')) : 5;
   const days = opt('days') != null ? Number(opt('days')) : 1;
