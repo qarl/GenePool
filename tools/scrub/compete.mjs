@@ -7,7 +7,7 @@
 // A/B are seed numbers (use their saved champions) or explicit .pool paths. Teams are tracked ENTIRELY OUTSIDE the engine
 // (a child inherits its parent's team via birth events) -> zero engine change, determinism/goldens untouched. See
 // docs/PLAN-competition.md. Cross-platform: run via node (dev) or the app's electron-as-node (see compete.cmd on Windows).
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -274,7 +274,9 @@ async function runBracket({ seeds, days = 1, settings = {}, cores = 4 }) {
 const huntPath = () => join(jobsDir(), 'hunt-results.json');
 // The COLLECTION of super-organisms: every seed that has ever defeated the litmus target, accumulated across hunt runs
 // (deduped by seed, sorted strongest-first). Distinct from hunt-results.json (which is only the current run's scoreboard),
-// so a fresh hunt never clobbers the growing collection. Each member's champion .pool is on disk (saved by --save-win).
+// so a fresh hunt never clobbers the growing collection. Each member's champion .pool is on disk (the hunt saves EVERY candidate's pool via --save).
+// Durable, append-only log of EVERY probe (one JSON line each) -- survives hunt restarts, unlike hunt-results.json.
+const huntLogPath = (target) => join(jobsDir(), `hunt-log-vs-seed${target}.jsonl`);
 const collectionPath = (target) => join(jobsDir(), `superorganisms-vs-seed${target}.json`);
 function addToCollection(target, entry) {
   let coll = { target: Number(target), members: [] };
@@ -286,10 +288,11 @@ function addToCollection(target, entry) {
   return coll.members.length;
 }
 
-// run one probe as a child (clean JSON on stdout). --save-win makes the child persist the candidate's .pool iff it wins.
+// run one probe as a child (clean JSON on stdout). --save makes the child persist the candidate's .pool (win or lose) --
+// Karl keeps every champion the hunt produces, not just the killers.
 function probeChild(cand, target, { days, settings }) {
   return new Promise((resolve) => {
-    const a = [SELF, 'probe', String(cand), String(target), '--days', String(days), '--json', '--save-win'];
+    const a = [SELF, 'probe', String(cand), String(target), '--days', String(days), '--json', '--save'];
     if (settings && Object.keys(settings).length) a.push('--settings', JSON.stringify(settings));
     const child = spawn(process.execPath, a, { stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env } });
     let out = ''; child.stdout.on('data', (d) => { out += d; });
@@ -321,6 +324,7 @@ async function runHunt({ target, cores = 5, days = 1, settings = {}, startNew = 
   const record = (cand, v, phase) => {
     state.tested++;
     const row = { seed: cand, phase, margin: v.margin, a: v.a, b: v.b, kill: v.kill, extinctTarget: v.extinctTarget, days: v.days, junkSim: v.junkSim };
+    try { appendFileSync(huntLogPath(target), JSON.stringify({ ...row, target: Number(target), at: new Date().toISOString(), pool: existsSync(championPath(cand)) }) + '\n'); } catch { /* */ }
     if (v.kill) { state.killers.push(row); const n = addToCollection(target, { seed: cand, a: v.a, b: v.b, margin: v.margin, extinctTarget: v.extinctTarget, days: v.days, junkSim: v.junkSim, foundAt: new Date().toISOString() }); console.log(`  🏆 KILLER #${n}: seed-${cand} DEFEATS seed-${target}  (${v.a}-${v.b}${v.extinctTarget ? ', target EXTINCT' : ''}, ${(v.days || 0).toFixed(2)}d) -> collection now ${n}`); }
     state.top.push(row); state.top.sort((p, q) => q.margin - p.margin); state.top = state.top.slice(0, 25);
     state.elapsedMin = Math.round((Date.now() - t0) / 60000);
@@ -363,7 +367,7 @@ async function runHunt({ target, cores = 5, days = 1, settings = {}, startNew = 
 }
 
 // ---- CLI -----------------------------------------------------------------------------------------------------------
-function usage(msg) { if (msg) console.error('error: ' + msg); console.error('usage:\n  compete champion <seed|all>\n  compete match <A> <B> [--days 1] [--ticks N] [--natural] [--json] [--settings JSON]\n  compete probe <candidate> <target> [--days 1] [--json] [--save-win] [--settings JSON]\n  compete hunt <target> [--cores 5] [--days 1] [--start-new 51] [--max-new N] [--minutes N] [--new-only] [--settings JSON]\n  compete tournament [--cores 5] [--days 1] [--matches 5] [--seeds a,b,..] [--settings JSON]\n  compete bracket [--seeds s1,..,s8] [--days 1] [--cores 4] [--settings JSON]   (default seeds = tournament top 8)'); return 2; }
+function usage(msg) { if (msg) console.error('error: ' + msg); console.error('usage:\n  compete champion <seed|all>\n  compete match <A> <B> [--days 1] [--ticks N] [--natural] [--json] [--settings JSON]\n  compete probe <candidate> <target> [--days 1] [--json] [--save | --save-win] [--settings JSON]\n  compete hunt <target> [--cores 5] [--days 1] [--start-new 51] [--max-new N] [--minutes N] [--new-only] [--settings JSON]\n  compete tournament [--cores 5] [--days 1] [--matches 5] [--seeds a,b,..] [--settings JSON]\n  compete bracket [--seeds s1,..,s8] [--days 1] [--cores 4] [--settings JSON]   (default seeds = tournament top 8)'); return 2; }
 const args = process.argv.slice(2);
 const cmd = args[0];
 const flag = (k) => args.includes('--' + k);
@@ -403,7 +407,7 @@ if (cmd === 'champion') {
   const chTarget = loadChampion(Number(target));
   const res = runMatchCore(chCand, chTarget, { days, settings, quiet: true });
   const v = verdictOf(res);
-  if (flag('save-win') && v.kill && !existsSync(championPath(chCand.seed))) { try { saveChampionObj(chCand); } catch { /* */ } }
+  if ((flag('save') || (flag('save-win') && v.kill)) && !existsSync(championPath(chCand.seed))) { try { saveChampionObj(chCand); } catch { /* */ } }
   if (flag('json')) console.log(JSON.stringify(res));
   else console.log(`seed-${cand} vs seed-${target}: ${v.kill ? 'DEFEATS it' : 'loses'} (${v.a}-${v.b}, ${(v.days || 0).toFixed(2)}d)`);
 } else if (cmd === 'hunt') {
