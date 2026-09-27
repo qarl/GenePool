@@ -132,6 +132,7 @@
   #jobsPanel .jpRow.missing .jpName { color: #d98b6b; text-decoration: line-through; }
   #jobsPanel .jpRow .jpChk { flex: none; width: 15px; height: 15px; accent-color: #2e7d5b; cursor: pointer; }
   #jobsPanel .jpRow .jpChk:disabled { cursor: default; opacity: .5; }
+  #jobsPanel .jpRow .jpChk.jpCurrent { display: inline-flex; align-items: center; justify-content: center; color: #2e7d5b; font-size: 10px; cursor: default; }
   #jobsPanel #jpEmpty { color: #667; font-size: 11px; }
   #scrubbar #sbSpeeds { display: inline-flex; align-items: center; gap: 4px; }
   /* record + play + all FF buttons: ONE identical size, glyphs flex-centred (line-height:1 removes the line-box slack that
@@ -2672,26 +2673,31 @@ function startPlayback(){
   async function renderJobs(){
     if (!window.pool.jobs) return;
     let rows = []; try { rows = (await window.pool.jobs.list()) || []; } catch { rows = []; }
-    const running = rows.filter(r => r.running).length;                          // running-count badge (updates even when the panel is closed)
-    _jobsBadge.hidden = running === 0; _jobsBadge.textContent = String(running);
-    _jobsBtn.classList.toggle('active', running > 0);
+    // Badge counts ONLY opt-in BACKGROUND jobs. The current timeline's own generator is always-on (not a toggleable
+    // job) and never counts. (updates even when the panel is closed)
+    const bgCount = rows.filter(r => r.background && r.dbPath !== curDbPath).length;
+    _jobsBadge.hidden = bgCount === 0; _jobsBadge.textContent = String(bgCount);
+    _jobsBtn.classList.toggle('active', bgCount > 0);
     if (_jp.hidden) return;
     try { const free = await window.pool.jobs.diskFree(); if (free != null){ _jpDisk.textContent = free.toFixed(0) + ' GB free'; _jpDisk.classList.toggle('low', free < 10); } } catch { /* ignore */ }
     _jpList.replaceChildren();
     if (!rows.length){ const e = document.createElement('div'); e.id = 'jpEmpty'; e.textContent = 'Open a seed or timeline, then background it here.'; _jpList.appendChild(e); return; }
     // STABLE order: whatever bgList returns (runs in the order you opened them, then adopted jobs) -- no re-sorting.
     for (const row of rows){
-      const el = document.createElement('div'); el.className = 'jpRow' + (row.running ? ' run' : '') + (row.missing ? ' missing' : '');
-      const chk = document.createElement('input'); chk.type = 'checkbox'; chk.className = 'jpChk'; chk.checked = !!row.background; chk.disabled = !!row.missing; chk.title = 'generate in the background';
+      const isCurrent = row.dbPath && row.dbPath === curDbPath;
+      // The CURRENT timeline's own foreground generator is always-on (can't be start/stopped). Its checkbox instead means
+      // "hand this off to a background generator when the app closes" (bgOnClose) -- it keeps generating (editable) now.
+      const isForegroundCurrent = isCurrent && !curBackground;
+      const el = document.createElement('div'); el.className = 'jpRow' + (row.running ? ' run' : '') + (row.missing ? ' missing' : '') + (isForegroundCurrent ? ' current' : '');
+      const chk = document.createElement('input'); chk.type = 'checkbox'; chk.className = 'jpChk'; chk.disabled = !!row.missing;
+      chk.checked = isForegroundCurrent ? !!row.bgOnClose : !!row.background;
+      chk.title = isForegroundCurrent ? 'keep generating in the background after the app closes' : 'generate in the background';
       chk.onchange = async () => {
         chk.disabled = true;
         const on = chk.checked;
-        const res = await window.pool.jobs.setBackground({ dbPath: row.dbPath, on, seed: row.seed, kind: row.kind, name: row.name });
-        if (!res || !res.ok){ chk.checked = !on; chk.disabled = false; renderJobs(); return; }
-        if (row.dbPath === curDbPath){   // toggled the CURRENTLY-VIEWED run -> refresh the view's lock state (bg = read-only, fg = editable)
-          const rr = await window.pool.scrub.reopen({ dbPath: row.dbPath, seed: row.seed, custom: row.kind === 'timeline', name: row.name });
-          if (rr && rr.ok){ deselect(); await applyRunResult(rr, { keepHead: true }); }
-        }
+        const edit = { dbPath: row.dbPath, on, seed: row.seed, kind: row.kind, name: row.name };
+        const res = isForegroundCurrent ? await window.pool.jobs.setBgOnClose(edit) : await window.pool.jobs.setBackground(edit);
+        if (!res || !res.ok){ chk.checked = !on; chk.disabled = false; }
         renderJobs();
       };
       el.appendChild(chk);

@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('pool', {
     list:          ()          => ipcRenderer.invoke('jobs:list'),               // -> [{dbPath, kind, name, seed, background, running, day, missing}]
     diskFree:      ()          => ipcRenderer.invoke('jobs:diskFree'),           // -> free GiB on the runs volume
     setBackground: (edit)      => ipcRenderer.invoke('jobs:setBackground', edit),// {dbPath, on, seed, kind, name} -> {ok, error?}
+    setBgOnClose:  (edit)      => ipcRenderer.invoke('jobs:setBgOnClose', edit), // current timeline: {dbPath, on, ...} -> hand off to a bg generator on app close (no start/stop now)
+
     onChanged:     (cb)        => ipcRenderer.on('jobs:changed', () => cb()),    // a job started/stopped/exited -> refresh the list
   },
   recordStart:    (opts)     => ipcRenderer.invoke('pool:recordStart', opts),  // {seed, config, snapshot} -> {ok, path}

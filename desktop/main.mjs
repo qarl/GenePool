@@ -174,6 +174,10 @@ ipcMain.handle('scrub:popSeries', (_e, opts)  => scrub?.reader ? scrub.reader.ge
 // Opt-in per run: a DETACHED generator that survives app quit; the app monitors it read-only. The one-writer authority
 // is -wal freshness (isWriterLive) -- writer-agnostic + crash-safe. bg-jobs.json is only the UI list + the pid to kill.
 const sessionKnown = new Map();          // dbPath -> { kind, name, seed } : runs opened/known this session (UI list)
+// The CURRENT timeline's generator is always-on (foreground) while viewed -- not a start/stop-able job. Its Jobs
+// checkbox instead sets this intent: when the app closes, hand the run off to a detached background generator so it
+// keeps going. (Non-current runs still toggle a background generator immediately via setBackground.)
+const bgOnClose = new Set();             // dbPaths to hand off to a background generator on app close
 function noteKnown(dbPath, meta){ if (dbPath) sessionKnown.set(dbPath, meta); }
 function notifyJobs(){ if (win && !win.isDestroyed()) win.webContents.send('jobs:changed'); }
 // The detached-generator machinery (spawn/kill/ps-scan/registry) lives in the Electron-free tools/scrub/gen-jobs.mjs so a
@@ -188,7 +192,7 @@ function bgList(){
   const scan = jobs.reconcileJobs();
   const rows = new Map();
   const running = (p) => !!scan[p] || isWriterLive(p);
-  const add = (p, m) => rows.set(p, { dbPath: p, kind: m.kind, name: m.name, seed: m.seed, background: !!jobs.jobs[p], running: running(p), day: jobs.dayOf(p), missing: !existsSync(p) });
+  const add = (p, m) => rows.set(p, { dbPath: p, kind: m.kind, name: m.name, seed: m.seed, background: !!jobs.jobs[p], bgOnClose: bgOnClose.has(p), running: running(p), day: jobs.dayOf(p), missing: !existsSync(p) });
   for (const [p, m] of sessionKnown) add(p, m);
   for (const [p, m] of Object.entries(jobs.jobs)) add(p, m);
   return [...rows.values()];
@@ -200,6 +204,14 @@ ipcMain.handle('jobs:setBackground', async (_e, { dbPath, on, seed, kind, name }
   const r = on ? await jobs.bgStart(dbPath, { seed, kind, name }) : await jobs.bgStop(dbPath);
   notifyJobs();
   return r;
+});
+// The current timeline's checkbox: don't start/stop its (always-on) foreground generator -- just record whether to hand
+// it off to a background generator when the app closes. No spawn, no read-only switch now; it stays foreground/editable.
+ipcMain.handle('jobs:setBgOnClose', (_e, { dbPath, on, seed, kind, name }) => {
+  noteKnown(dbPath, { kind, name, seed });
+  if (on) bgOnClose.add(dbPath); else bgOnClose.delete(dbPath);
+  notifyJobs();
+  return { ok: true };
 });
 
 // Parameter-timeline commit: edit one option at the playhead tick. Validate FIRST (I4), await the generator's exit
@@ -443,10 +455,16 @@ app.on('before-quit', (e) => {
   if (_quitting) return;                         // second pass -> let the quit proceed
   if (!scrub) return;                            // nothing active (idle runs already collapsed on stop)
   const dbPath = scrub.dbPath, bg = scrub.background;
+  const meta = { seed: scrub.seed, kind: scrub.custom ? 'timeline' : 'seed', name: scrub.name };
   e.preventDefault();
   _quitting = true;
   // Collapse ONLY a run we were generating ourselves. A background-owned run (detached writer) keeps running past quit
-  // and owns its -wal -> never touch it. Detached background jobs are intentionally left alive.
-  stopGeneratorAndWait().then(() => { if (!bg && !isWriterLive(dbPath)) checkpointClose(dbPath); app.quit(); });
+  // and owns its -wal -> never touch it. Detached background jobs are intentionally left alive. EXCEPTION: if the current
+  // run was checked "background on close", HAND IT OFF -> spawn a detached generator (survives quit) instead of collapsing.
+  stopGeneratorAndWait().then(async () => {
+    if (!bg && bgOnClose.has(dbPath)) { try { await jobs.bgStart(dbPath, meta); } catch { /* fall through to collapse */ } }
+    else if (!bg && !isWriterLive(dbPath)) checkpointClose(dbPath);
+    app.quit();
+  });
 });
 app.on('window-all-closed', () => { recordStop(); app.quit(); });   // app.quit() fires before-quit, which collapses + quits
