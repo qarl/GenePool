@@ -375,6 +375,7 @@ async function createWindow(){
   win.webContents.on('render-process-gone', (_e, d) => console.error('[renderer gone]', d.reason));
   const params = new URLSearchParams();                   // dev knob: GP_BENCH=1 -> real-GPU zoom-sweep bench (forwarded [bench] log)
   if (process.env.GP_BENCH) params.set('zoombench', '1');
+  if (process.env.GP_SEED && /^\d+$/.test(process.env.GP_SEED)) params.set('seed', process.env.GP_SEED);   // GP_SEED=N -> open on seed N
   const q = params.toString() ? '?' + params.toString() : '';
   win.loadURL(`http://127.0.0.1:${port}/viewer-micrograph-gl.html${q}`);
 }

@@ -2840,6 +2840,7 @@ function startPlayback(){
     requestAnimationFrame(playbackLoop);
   }
   ticksPerFrame = 1;   // default 1x; playback starts paused until a speed button is pressed
+  try { const qs = new URLSearchParams(location.search).get('seed'); if (qs && /^\d+$/.test(qs)) $seed.value = qs; } catch {}   // ?seed=N (desktop GP_SEED) -> boot on that seed
   seedJunk(mulberry32((+$seed.value >>> 0) ^ 0x5eed1234));   // seed detritus BEFORE any render (loop + resizeMain both render)
   resizeMain();                                              // size the main view to FILL the window (safe: junk seeded, world may be null)
   window.addEventListener('resize', resizeMain);            // keep filling when the window is resized
