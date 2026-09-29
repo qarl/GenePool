@@ -2314,6 +2314,44 @@ window.__golden = function(s, ticks, frames, camOv, opts){
            mini, miniW: VIEW_SMALL, miniH: VIEW_SMALL };
 };
 
+// ---- specimen portrait hook (INERT unless called; used by tools/atlas/render-specimens.mjs) -------------------------
+// Renders ONE creature, given its genome, through the species-list mini-view path (renderView onlyBot @ VIEW_SMALL):
+// build the baked scene (GL state + detritus from `seed`), swap in a world holding only this specimen at the pool
+// centre, let it swim `ticks` so it takes a natural pose, then render + readPixels. Deterministic (sim clock only).
+//   spec = { genes, age?, angle?, energy? }   opts = { ticks=240, zoom=TILE_ZOOM, seed=1, fitPx? }
+//   fitPx: auto-zoom so the body's reach spans fitPx pixels from the tile centre (overrides zoom; clamped >= TILE_ZOOM).
+// Returns { w, h, b64, radius, zoom } (radius = the body's world-space reach from its centre).
+window.__specimen = function(spec, opts){
+  opts = opts || {};
+  loopStopped = true; running = false;
+  Object.assign(P, DEFAULTS);
+  if (typeof applyPlateStyles === 'function') applyPlateStyles();
+  seed = (opts.seed ?? 1) >>> 0; cam.zoom = 6; build();
+  gl.disable(gl.DITHER);
+  const w = new World(curConfig, seed, {});
+  const age = Math.min(Math.max(spec.age ?? 20000, 2000), 30000);   // adult (fully grown) but far from old-age death
+  w.loadSwimbot(1, { age, x: P.pool/2, y: P.pool/2, angle: spec.angle ?? 0, energy: Math.max(spec.energy ?? 50, 50), genes: spec.genes });
+  world = w;
+  known.clear(); fades.clear(); deathTick.clear(); deathFade0.clear(); lastJunkClock = 0;
+  frameCount = 0; speciesModel = createSpeciesAnalyzer(curConfig);
+  for (let i = 0; i < (opts.ticks ?? 240); i++) world.tick();
+  const bot = world._swimbots.get(1);
+  if (!bot || !bot.getAlive()) return null;
+  // frame on the BODY's bounding box (part joints padded by their widths), not the root point -> no clipping
+  const ph = bot._phenotype; let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let q = 0; q < ph.numParts; q++){ const pt = ph.parts[q], pw = (pt.width || 0) * (bot._growthScale ?? 1);
+    x0 = Math.min(x0, pt.position.x - pw); x1 = Math.max(x1, pt.position.x + pw); y0 = Math.min(y0, pt.position.y - pw); y1 = Math.max(y1, pt.position.y + pw); }
+  const c = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 }, radius = Math.max(x1 - x0, y1 - y0) / 2;
+  cam = { x: c.x, y: c.y, zoom: 6 }; camT = { x: c.x, y: c.y, zoom: 6 };
+  render();                                              // advance the per-frame render bookkeeping for this world
+  const zoom = opts.fitPx ? Math.min(Math.max(opts.fitPx / Math.max(1e-6, radius * VIEW_SMALL / P.pool), TILE_ZOOM), 160) : (opts.zoom ?? TILE_ZOOM);
+  renderView({ x: c.x, y: c.y, zoom }, VIEW_SMALL, VIEW_SMALL, smallSet, 0, 0, false, 0, bot);
+  const mp = new Uint8Array(VIEW_SMALL*VIEW_SMALL*4);
+  gl.readPixels(0, 0, VIEW_SMALL, VIEW_SMALL, gl.RGBA, gl.UNSIGNED_BYTE, mp);
+  let ms=''; for (let i=0;i<mp.length;i+=8192) ms += String.fromCharCode.apply(null, mp.subarray(i, i+8192));
+  return { w: VIEW_SMALL, h: VIEW_SMALL, b64: btoa(ms), radius, zoom };
+};
+
 // ---- perf benchmark hook (INERT unless called; performance.now is MEASUREMENT only -> never touches render output) ----
 // Builds a fixed scene, then renders it `frames` times (no ticks between -> constant frame) and returns per-frame ms.
 // junkFrac optionally overrides P.junk for an A/B of the detritus load. gl.finish() after each render so SwiftShader's
