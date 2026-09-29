@@ -229,7 +229,7 @@ NOT used as evidence. R1 is judged on measures **independent of the features**:
   eigen-stability), integration (`.tid` at 3 more sites; atlas `parts`; null default plate; diversity descoped),
   performance (no blockers; reuse `_phenotype` when fix on; scratch buffers), product (questions → §8).
 
-## 8. Product questions for Karl (must answer before build)
+## 8. Product questions — ANSWERED by Karl 2026-09-29
 1. Sister species (fresh junk-DNA splits) start with the same body → may share a plate. OK ("same body, same plate")?
 2. Monotonic axes are learnable (PC1 ≈ size → "first cell blue = big"). Apply a fixed random rotation of the 5-D subspace
    so no single cell maps to one trait (distances unchanged)?
@@ -239,3 +239,9 @@ NOT used as evidence. R1 is judged on measures **independent of the features**:
 5. Main-view population plate = average of all bodies (a creature that doesn't exist). Show the dominant species' plate
    instead?
 6. Make category 3 ON everywhere (browser viewer, goldens, CLI default), so "always enabled" is literally true?
+
+**Answers:** (1) same body, same plate — fine. (2) ROTATE: fixed random rotation of the 5-D subspace, frozen. (3) ONE
+shared letter scale (common thresholds pooled across the 5 rotated axes). (4) steady plates — fine. (5) main-view plate
+stays the POPULATION AVERAGE. (6) category 3 ON everywhere (browser viewer, goldens, run-gen default) — "we're going to
+use it so we might as well use it." Done first as a separate change; it also fixes the atlas face renders (the
+__specimen path built its world with the fix OFF, so category-3 limbs were missing from ~23% of faces).

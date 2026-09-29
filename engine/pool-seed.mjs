@@ -22,14 +22,17 @@ export const POOL_SETTINGS = { fixBranchCategoryGene: true, evolvableMutationRat
 export function mulberry32(seed){ let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 export function diskPoint(rng, cx, cy, r){ const rad = 2 * Math.PI * rng(); const mag = r * Math.sqrt(rng()); return { x: cx + pcos(rad) * mag, y: cy + psin(rad) * mag }; }
 
-// `settings` overrides tunable per-pool config over the standard defaults (opt-in experiments like
-// fixBranchCategoryGene). Default {} -> the standard micrograph pool (goldens/browser pass none -> byte-identical).
+// `settings` overrides tunable per-pool config over the standard defaults. The standard pool grows category-3 limbs
+// (fixBranchCategoryGene: true -- Karl 2026-09-29: "we're going to use it so we might as well use it"), so the browser
+// viewer, goldens, run-gen and the desktop app all decode bodies the same way. Still a plain option: pass
+// { fixBranchCategoryGene: false } for JJ's original decode (category 3 never selected).
 export function poolConfig(pool, settings = {}){
   return {
     maximumLifeSpan: MAX_LIFESPAN, numFoodTypes: 1, childEnergyRatio: 0.5, hungerThreshold: 50,
     crossoverRate: 0.2, mutationRate: 0.01, foodRegenerationPeriod: 20, foodSpread: pool / 2,
     foodBitEnergy: 50, attractionCriterion: 10, maxPopulation: 2000, maxFood: 2000,
     viewRadius: 300, reproductiveIsolation: SPECIES_ISO,   // junk-DNA gate -> reproductive species emerge over time
+    fixBranchCategoryGene: true,                          // standard: category 3 selectable (see above)
     pool: { left: 0, top: 0, right: pool, bottom: pool },
     ...settings,   // per-pool experiment overrides (last -> wins)
   };
