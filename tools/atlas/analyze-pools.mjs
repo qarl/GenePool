@@ -5,16 +5,17 @@
 //   * everything below lives in PLATE SPACE (engine/analysis/body-features.mjs + plate-basis.mjs): the 5 frozen body
 //     coordinates behind every plate, so map, families and plates all agree on "what looks alike";
 //   * each species' FACE = its most typical grown member (closest to the species' mean plate coordinates);
-//   * a MAP of all pools: PCA of the main species' plate coordinates -> 2-D layout (look-alikes land together);
+//   * a MAP of all pools: PCA over body plan + motion features (colour + hairiness EXCLUDED, Karl) -> 2-D layout;
 //     axis captions = the body features most correlated with each map axis;
-//   * FAMILIES: Ward clustering in plate space (K by silhouette); gallery order = dendrogram leaf order;
+//   * FAMILIES: Ward clustering on the same form+motion features (K by silhouette); gallery order = dendrogram leaf order;
+//   * FAVOURITES: <jobsDir>/favorites.json (Karl's list + all seed-3 killers) -> flagged for the page;
 //   * labels: population, species count, peak-vs-day-1, vs-seed-3 result (hunt log), tournament record.
 // Observer-only: reads files, writes <jobsDir>/atlas/atlas.json. No engine state touched.
 //   node tools/atlas/analyze-pools.mjs [--families K]
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createSpeciesAnalyzer } from '../../engine/analysis/species.mjs';
-import { FEATURE_NAMES, NF, featuresOfGenes, rawFeatures, plateBodyOfGenes, coordsOf } from '../../engine/analysis/body-features.mjs';
+import { FEATURES, FEATURE_NAMES, NF, FEAT_ONE, featuresOfGenes, rawFeatures, plateBodyOfGenes, coordsOf } from '../../engine/analysis/body-features.mjs';
 import { PLATE_W, PLATE_B } from '../../engine/analysis/plate-basis.mjs';
 import { poolConfig, POOL_DEFAULTS, POOL_SETTINGS } from '../../engine/pool-seed.mjs';
 import { jobsDir } from '../scrub/gen-jobs.mjs';
@@ -33,6 +34,8 @@ const readJSON = (p, d = null) => { try { return JSON.parse(readFileSync(p, 'utf
 const huntLog = new Map();    // seed -> last probe vs seed-3
 try { for (const l of readFileSync(join(jobsDir(), 'hunt-log-vs-seed3.jsonl'), 'utf8').split('\n')) if (l.trim()) { const r = JSON.parse(l); huntLog.set(r.seed, r); } } catch { /* none */ }
 const killers = new Set(((readJSON(join(jobsDir(), 'superorganisms-vs-seed3.json')) || {}).members || []).map((m) => m.seed));
+const favDoc = readJSON(join(jobsDir(), 'favorites.json')) || {};
+const favorites = new Set([...(favDoc.seeds || []), ...(favDoc.includeSeed3Killers ? killers : [])]);   // Karl's list + all seed-3 killers
 const league = new Map((((readJSON(join(jobsDir(), 'tournament-standings.json')) || {}).table) || []).map((r, i) => [r.seed, { rank: i + 1, ...r }]));
 
 // Named raw body features of one genome (the shared plate features) + its raw segment count, for labels + family names.
@@ -66,7 +69,7 @@ for (const f of files) {
     let face = null, bd = Infinity;
     const pool = members.map((m, i) => [m, feats[i]]), grown = pool.filter(([m]) => (m.growthScale ?? 1) >= 0.9);
     for (const [m, f] of (grown.length ? grown : pool)) { const c = coordsOf(f, PLATE_W, PLATE_B); let d = 0; for (let k = 0; k < c.length; k++) d += (c[k] - mc[k]) ** 2; if (d < bd) { bd = d; face = m; } }
-    species.push({ count: r.count, share: r.count / Math.max(1, grownTotal), sig: r.t.sig, coords: Array.from(mc, (v) => +v.toFixed(4)),
+    species.push({ count: r.count, share: r.count / Math.max(1, grownTotal), sig: r.t.sig, coords: Array.from(mc, (v) => +v.toFixed(4)), featMean: Array.from(mean, (v) => +(v / FEAT_ONE).toFixed(5)),
       face: { genes: face.genes, age: face.age, angle: face.angle, energy: face.energy, parts: (face.parts || []).length, body: bodyOf(face.genes) } });
   }
   const seed = p.seed;
@@ -74,12 +77,20 @@ for (const f of files) {
   pools.push({ seed, tick: p.tick, day: +(p.tick / TICKS_PER_DAY).toFixed(3), peak: p.tick < TICKS_PER_DAY - 2000,
     living: bots.length, nSpecies: species.length, species,
     vs3: seed === 3 ? { self: true } : hl ? { a: hl.a, b: hl.b, kill: !!hl.kill, days: hl.days } : null,
-    killer: killers.has(seed), league: league.get(seed) || null });
+    killer: killers.has(seed), favorite: favorites.has(seed), league: league.get(seed) || null });
 }
 
-// ---- map + families in PLATE SPACE (the main species' 5 frozen plate coordinates) ----
+// ---- map + families on BODY PLAN + MOTION only (Karl 2026-09-29: no colour / hairiness in the clustering) ----
+// z-scored main-species mean features, colour + texture groups dropped, each remaining group weighted equally.
+// (Plates still include colour + hair; the atlas grouping is deliberately about form and movement.)
+const CLUSTER_EXCLUDE = new Set(['colour', 'texture']);
+const keep = FEATURES.map(([, g], k) => (CLUSTER_EXCLUDE.has(g) ? -1 : k)).filter((k) => k >= 0);
+const gN = {}; for (const k of keep) gN[FEATURES[k][1]] = (gN[FEATURES[k][1]] || 0) + 1;
 const P = pools.filter((p) => p.species.length);
-const X = P.map((p) => p.species[0].coords);
+const Fm = P.map((p) => keep.map((k) => p.species[0].featMean[k]));
+const fMu = keep.map((_, j) => Fm.reduce((s, f) => s + f[j], 0) / Fm.length);
+const fSd = keep.map((_, j) => Math.sqrt(Fm.reduce((s, f) => s + (f[j] - fMu[j]) ** 2, 0) / Math.max(1, Fm.length - 1)) || 1);
+const X = Fm.map((f) => f.map((v, j) => ((v - fMu[j]) / fSd[j]) / Math.sqrt(gN[FEATURES[keep[j]][1]])));
 const D = X[0].length, N = X.length;
 const mu = new Float64Array(D); for (const x of X) for (let k = 0; k < D; k++) mu[k] += x[k] / N;
 const Xc = X.map((x) => Float64Array.from(x, (v, k) => v - mu[k]));
@@ -102,7 +113,7 @@ const corr = (a, b) => { const n = a.length, ma = a.reduce((s, x) => s + x, 0) /
 const mapAxes = [0, 1].map((ax) => FEATURE_NAMES.map((k) => [k, +corr(P.map((p) => p.map[ax]), P.map((p) => p.species[0].face.body[k])).toFixed(2)])
   .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 4));
 
-// WARD agglomerative clustering in plate space -> merge tree (+ leaf order for the gallery).
+// WARD agglomerative clustering on body plan + motion -> merge tree (+ leaf order for the gallery).
 // Ward merges the pair that least increases within-cluster variance -> compact, balanced families (average linkage
 // just peeled off outliers). K = the family count with the best mean silhouette in [4,10] (or --families K).
 const dist = (a, b) => { let s = 0; for (let k = 0; k < D; k++) { const x = a[k] - b[k]; s += x * x; } return Math.sqrt(s); };

@@ -43,7 +43,7 @@ const fams = A.familySummary.map((f) => ({ ...f, name: famName(f.family) }));
 
 // slim per-pool data for the page (no genomes)
 const slim = A.data.filter((p) => p.species.length).map((p) => ({ seed: p.seed, family: p.family, order: p.order, map: p.map, day: p.day, peak: p.peak,
-  living: p.living, killer: p.killer, vs3: p.vs3, league: p.league ? { rank: p.league.rank, pts: p.league.pts, w: p.league.w, d: p.league.d, l: p.league.l } : null,
+  living: p.living, killer: p.killer, fav: !!p.favorite, vs3: p.vs3, league: p.league ? { rank: p.league.rank, pts: p.league.pts, w: p.league.w, d: p.league.d, l: p.league.l } : null,
   anim: existsSync(join(dir, 'anim', `seed-${p.seed}.mp4`)),
   sp: p.species.map((s, i) => ({ n: s.count, share: +s.share.toFixed(3), sig: s.sig, parts: s.face.body.parts, r: (radii[`${p.seed}-${i}`] || {}).radius || null })) }));
 const nKill = slim.filter((p) => p.killer).length;
@@ -51,8 +51,8 @@ const nKill = slim.filter((p) => p.killer).length;
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pool Atlas</title>
 <style>
-:root{--bg:#f4f3ef;--ink:#1f2328;--mute:#6b6f76;--line:#dcdad3;--card:#fff;--kill:#c2410c;--self:#1d4ed8;--starve:#7c3aed}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15171a;--ink:#e8e6e1;--mute:#9a9ea5;--line:#2c2f34;--card:#1d2024;--kill:#fb923c;--self:#93c5fd;--starve:#c4b5fd}}
+:root{--bg:#f4f3ef;--ink:#1f2328;--mute:#6b6f76;--line:#dcdad3;--card:#fff;--kill:#c2410c;--self:#1d4ed8;--starve:#7c3aed;--fav:#b8860b}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15171a;--ink:#e8e6e1;--mute:#9a9ea5;--line:#2c2f34;--card:#1d2024;--kill:#fb923c;--self:#93c5fd;--starve:#c4b5fd;--fav:#facc15}}
 @font-face{font-family:'OCR A';src:url('fonts/OCRA.ttf') format('truetype');font-display:swap}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 "OCR A",ui-monospace,"SF Mono",Menlo,monospace}
 header{padding:28px 24px 8px;max-width:1400px;margin:auto}h1{margin:0 0 4px;font-size:26px;letter-spacing:-.01em}
@@ -68,7 +68,7 @@ section{margin:30px 0 0}section h2{font-size:17px;margin:0 0 2px}section .meta{c
 .info{padding:7px 9px 9px}.row{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
 .seed{font-weight:650;font-size:15px}.plate{display:inline-flex;border-radius:3px;overflow:hidden}.plate i{display:inline-block;width:13px;height:17px;font:11px/17px "OCR A",ui-monospace,Menlo,monospace;text-align:center;font-style:normal;color:#111}.plate.mini{display:flex;margin:2px 0 1px}.plate.mini i{flex:1;width:auto;height:6px;font-size:0}.sig{font-size:11px;color:var(--mute)}
 .badges{display:flex;flex-wrap:wrap;gap:4px;margin:5px 0}.b{font-size:9.5px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--mute);white-space:nowrap}
-.b.kill{background:var(--kill);border-color:var(--kill);color:#fff;font-weight:600}.b.self{border-color:var(--self);color:var(--self);font-weight:600}.b.starve{border-color:var(--starve);color:var(--starve)}
+.b.fav{border-color:var(--fav);color:var(--fav);font-weight:600}.b.kill{background:var(--kill);border-color:var(--kill);color:#fff;font-weight:600}.b.self{border-color:var(--self);color:var(--self);font-weight:600}.b.starve{border-color:var(--starve);color:var(--starve)}
 .stats{font-size:10.5px;line-height:1.45;color:var(--mute)}.minor{display:flex;gap:3px;margin-top:6px}.minor figure{margin:0;flex:0 0 calc((100% - 12px) / 5);min-width:0}
 .minor img{width:100%;aspect-ratio:1;display:block;border-radius:4px;background:#cfccc4}.minor figcaption{font-size:9.5px;color:var(--mute);text-align:center}
 
@@ -81,7 +81,7 @@ section{margin:30px 0 0}section h2{font-size:17px;margin:0 0 2px}section .meta{c
 <div class="wrap">
 <div id="map"></div>
 <div class="legend" id="legend"></div>
-<div class="sub" style="font-size:12.5px">The map lives in <b>plate space</b> — the same five frozen body coordinates that every species' plate is made from — so look-alikes land together and carry similar plates.
+<div class="sub" style="font-size:12.5px">Map and families group pools by <b>body plan and movement only</b> (segments, size, shape, limbs, branching, stroke) — colour and hairiness are deliberately left out. Plates still include them.
 Horizontal tracks ${A.mapAxes[0].map((a) => a[0]).join(' / ')} (${Math.round(A.mapVariance[0] * 100)}%), vertical tracks ${A.mapAxes[1].map((a) => a[0]).join(' / ')} (${Math.round(A.mapVariance[1] * 100)}%).
 Families are compact clusters in that body space (silhouette ≈ ${Math.max(...Object.values(A.silhouette || { x: 0 })).toFixed(2)}: real neighbourhoods, soft edges — body plans form a continuum). Click a dot to jump to its tile.</div>
 <div id="fams"></div></div><div id="tip"></div>
@@ -99,6 +99,7 @@ s+='<text class="axis" x="'+(W/2)+'" y="'+(H-8)+'" text-anchor="middle">'+AX[0][
 s+='<text class="axis" transform="translate(12,'+(H/2)+') rotate(-90)" text-anchor="middle">'+AX[1][0]+'  ←        →  '+AX[1][1]+'</text>';
 const sorted=[...D].sort((a,b)=>(a.killer||a.vs3&&a.vs3.self)-(b.killer||b.vs3&&b.vs3.self));
 for(const p of sorted){const cx=X(p.map[0]),cy=Y(p.map[1]),self=p.vs3&&p.vs3.self;
+ if(p.fav)s+='<circle cx="'+cx+'" cy="'+cy+'" r="'+(p.killer?14:9)+'" fill="none" stroke="var(--fav)" stroke-width="2"/>';
  if(p.killer)s+='<circle cx="'+cx+'" cy="'+cy+'" r="10" fill="none" stroke="var(--kill)" stroke-width="2.5"/>';
  if(self)s+='<rect x="'+(cx-9)+'" y="'+(cy-9)+'" width="18" height="18" fill="none" stroke="var(--self)" stroke-width="2.5"/>';
  s+='<circle data-seed="'+p.seed+'" cx="'+cx+'" cy="'+cy+'" r="'+(p.killer||self?6:4.5)+'" fill="'+col(p.family)+'" fill-opacity=".85" stroke="var(--card)" stroke-width="1" style="cursor:pointer"/>';
@@ -112,26 +113,31 @@ document.getElementById('map').addEventListener('mouseleave',()=>tip.style.displ
 document.getElementById('map').addEventListener('click',e=>{const t=e.target.closest('circle[data-seed]');if(!t)return;const el=document.getElementById('seed-'+t.dataset.seed);
  el.scrollIntoView({behavior:'smooth',block:'center'});el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),1600);});
 document.getElementById('legend').innerHTML=FAMS.map(f=>'<span onclick="document.getElementById(\\'fam-'+f.family+'\\').scrollIntoView({behavior:\\'smooth\\'})"><i class="sw" style="background:'+col(f.family)+'"></i>'+(f.family+1)+'. '+f.name+' ('+f.size+')</span>').join('')
- +'<span><i class="sw" style="border:2.5px solid var(--kill)"></i>seed-3 killer</span><span><i class="sw" style="border:2.5px solid var(--self);border-radius:2px"></i>seed-3</span>';})();
+ +'<span onclick="document.getElementById(\\'favs\\').scrollIntoView({behavior:\\'smooth\\'})"><i class="sw" style="border:2px solid var(--fav)"></i>★ favourite</span><span><i class="sw" style="border:2.5px solid var(--kill)"></i>seed-3 killer</span><span><i class="sw" style="border:2.5px solid var(--self);border-radius:2px"></i>seed-3</span>';})();
 // ---- families ----
 const pct=v=>Math.round(v*100)+'%';
 const ALPHA='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';   // same monotonic hue ramp as the app's plateHue (red 29 -> blue 264)
 const plate=(sig,title,mini)=>!sig?'':'<span class="plate'+(mini?' mini':'')+'" title="'+(title||sig)+'">'+[...sig].map(c=>'<i style="background:oklch(0.78 0.13 '+(29+Math.max(0,ALPHA.indexOf(c))/35*235).toFixed(1)+')">'+(mini?'':c)+'</i>').join('')+'</span>';
-document.getElementById('fams').innerHTML=FAMS.map(f=>{const ps=D.filter(p=>p.family===f.family).sort((a,b)=>a.order-b.order);
- return '<section id="fam-'+f.family+'"><h2><i class="sw" style="background:'+col(f.family)+'"></i> '+(f.family+1)+'. '+f.name+'</h2>'
- +'<div class="meta">'+ps.length+' pools'+(f.killers.length?' · killers: '+f.killers.map(s=>'seed-'+s).join(', '):'')+(ps.some(p=>p.vs3&&p.vs3.self)?' · includes seed-3':'')+'</div><div class="grid">'
- +ps.map(p=>{const m=p.sp[0],b=[];
+function tile(p,pre){const m=p.sp[0],b=[];
+  if(p.fav)b.push('<span class="b fav">★ favourite</span>');
   if(p.killer)b.push('<span class="b kill">beats seed-3 '+p.vs3.a+'–'+p.vs3.b+'</span>');
   else if(p.vs3&&p.vs3.self)b.push('<span class="b self">seed-3 (the litmus)</span>');
   else if(p.vs3)b.push('<span class="b">lost to seed-3 '+p.vs3.a+'–'+p.vs3.b+'</span>');
   if(p.peak)b.push('<span class="b starve">starves itself @'+p.day.toFixed(2)+'d</span>');
   if(p.league)b.push('<span class="b">league #'+p.league.rank+' · '+p.league.pts+'pts</span>');
-  return '<div class="tile" id="seed-'+p.seed+'">'+(p.anim?'<video class="main" muted loop playsinline preload="none" poster="anim/seed-'+p.seed+'.jpg" data-src="anim/seed-'+p.seed+'.mp4" aria-label="seed-'+p.seed+' main species swimming"></video>':'<img class="main" loading="lazy" src="'+face(p.seed,0)+'" alt="seed-'+p.seed+' main species">')
+  return '<div class="tile" id="'+pre+'seed-'+p.seed+'">'+(p.anim?'<video class="main" muted loop playsinline preload="none" poster="anim/seed-'+p.seed+'.jpg" data-src="anim/seed-'+p.seed+'.mp4" aria-label="seed-'+p.seed+' main species swimming"></video>':'<img class="main" loading="lazy" src="'+face(p.seed,0)+'" alt="seed-'+p.seed+' main species">')
   +'<div class="info"><div class="row"><span class="seed">seed-'+p.seed+'</span>'+plate(m.sig,'plate (same as the app species list)')+'</div>'
   +'<div class="badges">'+b.join('')+'</div>'
   +'<div class="stats">'+p.living+' alive · '+p.sp.length+(p.sp.length>=6?'+':'')+' species · main '+pct(m.share)+' · '+m.parts+' segments</div>'
   +(p.sp.length>1?'<div class="minor">'+p.sp.slice(1).map((s,i)=>'<figure><img loading="lazy" src="'+face(p.seed,i+1)+'" alt="" title="'+s.sig+' · '+s.n+' ('+pct(s.share)+')"><figcaption>'+plate(s.sig,'',true)+pct(s.share)+'</figcaption></figure>').join('')+'</div>':'')
-  +'</div></div>';}).join('')+'</div></section>';}).join('');
+  +'</div></div>';}
+// favourites first (Karl's list + every seed-3 killer), in family order so look-alikes still sit together
+const favs=D.filter(p=>p.fav).sort((a,b)=>a.family-b.family||a.order-b.order);
+document.getElementById('fams').innerHTML=(favs.length?'<section id="favs"><h2>★ Favourites</h2><div class="meta">'+favs.length+' pools · your picks + every seed-3 killer</div><div class="grid">'+favs.map(p=>tile(p,'fav-')).join('')+'</div></section>':'')
+ +FAMS.map(f=>{const ps=D.filter(p=>p.family===f.family).sort((a,b)=>a.order-b.order);
+ return '<section id="fam-'+f.family+'"><h2><i class="sw" style="background:'+col(f.family)+'"></i> '+(f.family+1)+'. '+f.name+'</h2>'
+ +'<div class="meta">'+ps.length+' pools'+(f.killers.length?' · killers: '+f.killers.map(s=>'seed-'+s).join(', '):'')+(ps.some(p=>p.vs3&&p.vs3.self)?' · includes seed-3':'')+'</div><div class="grid">'
+ +ps.map(p=>tile(p,'')).join('')+'</div></section>';}).join('');
 // ---- animation: only tiles on screen load + play; off-screen ones pause (keeps decode load to ~a screenful) ----
 const io=new IntersectionObserver(es=>{for(const e of es){const v=e.target;
  if(e.isIntersecting){if(!v.src)v.src=v.dataset.src;v.play().catch(()=>{});}else if(!v.paused)v.pause();}},{rootMargin:'120px 0px'});
