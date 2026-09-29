@@ -71,7 +71,7 @@ section{margin:30px 0 0}section h2{font-size:17px;margin:0 0 2px}section .meta{c
 .b.kill{background:var(--kill);border-color:var(--kill);color:#fff;font-weight:600}.b.self{border-color:var(--self);color:var(--self);font-weight:600}.b.starve{border-color:var(--starve);color:var(--starve)}
 .stats{font-size:10.5px;line-height:1.45;color:var(--mute)}.minor{display:flex;gap:3px;margin-top:6px}.minor figure{margin:0;flex:0 0 calc((100% - 12px) / 5);min-width:0}
 .minor img{width:100%;aspect-ratio:1;display:block;border-radius:4px;background:#cfccc4}.minor figcaption{font-size:9.5px;color:var(--mute);text-align:center}
-.cmd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:var(--mute);margin-top:5px;user-select:all}
+
 #tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;font-size:12px;z-index:9;box-shadow:0 6px 18px #0003}
 #tip img{width:120px;height:120px;display:block;border-radius:5px}
 @media (max-width:600px){header,.wrap{padding-left:16px;padding-right:16px}.grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}}
@@ -131,7 +131,7 @@ document.getElementById('fams').innerHTML=FAMS.map(f=>{const ps=D.filter(p=>p.fa
   +'<div class="badges">'+b.join('')+'</div>'
   +'<div class="stats">'+p.living+' alive · '+p.sp.length+(p.sp.length>=6?'+':'')+' species · main '+pct(m.share)+' · '+m.parts+' segments</div>'
   +(p.sp.length>1?'<div class="minor">'+p.sp.slice(1).map((s,i)=>'<figure><img loading="lazy" src="'+face(p.seed,i+1)+'" alt="" title="'+s.sig+' · '+s.n+' ('+pct(s.share)+')"><figcaption>'+plate(s.sig,'',true)+pct(s.share)+'</figcaption></figure>').join('')+'</div>':'')
-  +'<div class="cmd" title="open this seed in the app">GP_SEED='+p.seed+'</div></div></div>';}).join('')+'</div></section>';}).join('');
+  +'</div></div>';}).join('')+'</div></section>';}).join('');
 // ---- animation: only tiles on screen load + play; off-screen ones pause (keeps decode load to ~a screenful) ----
 const io=new IntersectionObserver(es=>{for(const e of es){const v=e.target;
  if(e.isIntersecting){if(!v.src)v.src=v.dataset.src;v.play().catch(()=>{});}else if(!v.paused)v.pause();}},{rootMargin:'120px 0px'});
