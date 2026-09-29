@@ -7,11 +7,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 test('species analyzer: deterministic, coherent panel, event-driven lifespan, serializable stats row', async () => {
-    const { createSpeciesAnalyzer, signatureOf, PCA_MEAN } = await import('../../engine/analysis/species.mjs');
+    const { createSpeciesAnalyzer } = await import('../../engine/analysis/species.mjs');
     const { buildWorld } = await import('../../tools/scrub/run-gen.mjs');
-
-    // sanity: the mean evolved genome projects to the neutral signature (basis coherent / spliced correctly)
-    assert.equal(signatureOf(PCA_MEAN), '00000', 'mean genome -> 00000');
+    // (body-plate correctness -- goldens, monotonic scale, exact sums -- lives in test/analysis/plate.test.js)
 
     const A = createSpeciesAnalyzer(), B = createSpeciesAnalyzer();
     const { world } = buildWorld(7, { n: 600, pool: 8000 });

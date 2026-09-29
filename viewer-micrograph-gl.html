@@ -1380,7 +1380,7 @@ let miniCursor = 0; const MINI_BUDGET = 6;   // <=6 live minis rendered per fram
 let speciesAllOpen = false;        // false = accordion (one open at a time); true = ALL species minis open (press A). Render cost stays bounded by MINI_BUDGET.
 const DIV_MAX = 60;                              // reference mean-per-gene std that reads 100 (founding ~73 pins at 100; punchy)
 const divPct = std => Math.round(Math.min(100, Math.max(0, 100 * std / DIV_MAX)));   // mean per-gene std -> 0..100
-// Species clustering, junkOf/junkSim, the PCA signature + the lifespan fold now live in engine/analysis/species.mjs;
+// Species clustering, junkOf/junkSim, the body plate + the lifespan fold live in engine/analysis/species.mjs;
 // the viewer drives `speciesModel` (created above) and keeps only the DOM rendering below.
 // whole-population label (HTML overlay, top-right of the main view). Per-species right column = DOM #species list (P1).
 const labMain = document.getElementById('labMain');
@@ -1561,15 +1561,16 @@ applyPlateStyles();
 // render the signature as a colour barcode. Colour is a LINEAR (non-wrapping) ramp red(-1) -> green(0=mean) -> blue(+1)
 // in OKLCh -- NOT the hue WHEEL (a ring: red would wrap back through magenta). We sweep hue monotonically red(29)->
 // green(146)->blue(264) and stop, dropping the magenta arc. Value comes from the symbol's signed step ('0'=mean).
+// Plate cell hue: the symbol's index on the plate's MONOTONIC scale (0 lowest .. Z highest -- body-plate v2) mapped
+// linearly red(29) -> green(146) -> blue(264), no wrap, no magenta -> similar plates look similar. Shared by the DOM
+// barcode and the recorded-video overlay so the two can never disagree.
+const plateHue = ch => (29 + (Math.max(0, SIG_ALPHA.indexOf(ch)) / 35) * 235).toFixed(1);
 function plateHTML(sig){
+  if (!sig) return `<span class="plate">${'<span class="cell"></span>'.repeat(5)}</span>`;   // no plate yet -> blank cells
   let cells = '';
   for (const ch of sig){
-    const idx = SIG_ALPHA.indexOf(ch);
-    const signed = idx <= 17 ? idx : idx - 36;                // recover signed step [-17,17] (0 = mean)
-    const v = signed / 17;                                    // [-1,1]
-    const hue = (29 + (v + 1) * 117.5).toFixed(1);            // red(29) -> green(146) -> blue(264), linear, no magenta
     const g = SIG_GLYPHS_READY ? `<span class="g" data-c="${ch}"></span>` : ch;   // centred bitmap once ready, else text
-    cells += `<span class="cell" style="background:oklch(var(--plate-l,0.74) 0.15 ${hue})">${g}</span>`;   // --plate-l = P.plateBg (live)
+    cells += `<span class="cell" style="background:oklch(var(--plate-l,0.74) 0.15 ${plateHue(ch)})">${g}</span>`;   // --plate-l = P.plateBg (live)
   }
   return `<span class="plate">${cells}</span>`;
 }
@@ -1965,8 +1966,8 @@ function drawInfoOverlay(ctx){   // mirrors #labMain: population plate + diversi
   const L = 12, CW = 18, CH = 20, y = 12;
   const sig = speciesModel.popSig || '';
   for (let i = 0; i < sig.length; i++){
-    const ch = sig[i], idx = SIG_ALPHA.indexOf(ch), signed = idx <= 17 ? idx : idx - 36, v = signed / 17;
-    ctx.fillStyle = `oklch(${P.plateBg} 0.15 ${(29 + (v + 1) * 117.5).toFixed(1)})`;
+    const ch = sig[i];
+    ctx.fillStyle = `oklch(${P.plateBg} 0.15 ${plateHue(ch)})`;
     ctx.fillRect(L + i * CW, y, CW, CH);
     const img = SIG_GLYPH_IMG[ch];
     if (img && img.complete && img.naturalWidth) ctx.drawImage(img, L + i * CW, y, CW, CH);
