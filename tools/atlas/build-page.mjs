@@ -3,11 +3,15 @@
 // (body-shape axes), coloured by family, killers + seed-3 marked. Below: one section per family (dendrogram order),
 // named from what makes its bodies distinctive, each pool a tile: its main species' micrograph + minor species strip.
 //   node tools/atlas/build-page.mjs && open "<jobsDir>/atlas/index.html"
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { jobsDir } from '../scrub/gen-jobs.mjs';
 
 const dir = join(jobsDir(), 'atlas');
+// the app's self-hosted OCR A (fonts/OCRA.ttf) travels with the page -> the atlas reads like the app (Karl)
+mkdirSync(join(dir, 'fonts'), { recursive: true });
+copyFileSync(fileURLToPath(new URL('../../fonts/OCRA.ttf', import.meta.url)), join(dir, 'fonts', 'OCRA.ttf'));
 const A = JSON.parse(readFileSync(join(dir, 'atlas.json'), 'utf8'));
 let radii = {}; try { radii = JSON.parse(readFileSync(join(dir, 'radii.json'), 'utf8')); } catch { /* */ }
 const F = A.features;
@@ -49,7 +53,8 @@ const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
 <style>
 :root{--bg:#f4f3ef;--ink:#1f2328;--mute:#6b6f76;--line:#dcdad3;--card:#fff;--kill:#c2410c;--self:#1d4ed8;--starve:#7c3aed}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15171a;--ink:#e8e6e1;--mute:#9a9ea5;--line:#2c2f34;--card:#1d2024;--kill:#fb923c;--self:#93c5fd;--starve:#c4b5fd}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+@font-face{font-family:'OCR A';src:url('fonts/OCRA.ttf') format('truetype');font-display:swap}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 "OCR A",ui-monospace,"SF Mono",Menlo,monospace}
 header{padding:28px 24px 8px;max-width:1400px;margin:auto}h1{margin:0 0 4px;font-size:26px;letter-spacing:-.01em}
 .sub{color:var(--mute)}.wrap{max-width:1400px;margin:auto;padding:0 24px 60px}
 #map{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:16px 0 8px;position:relative}
@@ -57,14 +62,14 @@ header{padding:28px 24px 8px;max-width:1400px;margin:auto}h1{margin:0 0 4px;font
 .legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin:8px 0 22px;color:var(--mute);font-size:12px}.legend span{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
 .sw{width:11px;height:11px;border-radius:50%;display:inline-block}
 section{margin:30px 0 0}section h2{font-size:17px;margin:0 0 2px}section .meta{color:var(--mute);font-size:12.5px;margin-bottom:12px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:12px}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;scroll-margin-top:20px}
 .tile.flash{outline:3px solid var(--kill)}.tile .main{width:100%;aspect-ratio:1;display:block;background:#cfccc4;object-fit:cover}
 .info{padding:7px 9px 9px}.row{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
-.seed{font-weight:650;font-size:15px}.plate{display:inline-flex;border-radius:3px;overflow:hidden}.plate i{display:inline-block;width:13px;height:17px;font:600 10.5px/17px ui-monospace,Menlo,monospace;text-align:center;font-style:normal;color:#111}.plate.mini{display:flex;margin:2px 0 1px}.plate.mini i{flex:1;width:auto;height:6px;font-size:0}.sig{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--mute)}
-.badges{display:flex;flex-wrap:wrap;gap:4px;margin:5px 0}.b{font-size:10.5px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--mute)}
+.seed{font-weight:650;font-size:15px}.plate{display:inline-flex;border-radius:3px;overflow:hidden}.plate i{display:inline-block;width:13px;height:17px;font:11px/17px "OCR A",ui-monospace,Menlo,monospace;text-align:center;font-style:normal;color:#111}.plate.mini{display:flex;margin:2px 0 1px}.plate.mini i{flex:1;width:auto;height:6px;font-size:0}.sig{font-size:11px;color:var(--mute)}
+.badges{display:flex;flex-wrap:wrap;gap:4px;margin:5px 0}.b{font-size:9.5px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--mute);white-space:nowrap}
 .b.kill{background:var(--kill);border-color:var(--kill);color:#fff;font-weight:600}.b.self{border-color:var(--self);color:var(--self);font-weight:600}.b.starve{border-color:var(--starve);color:var(--starve)}
-.stats{font-size:11.5px;color:var(--mute)}.minor{display:flex;gap:3px;margin-top:6px}.minor figure{margin:0;flex:0 0 calc((100% - 12px) / 5);min-width:0}
+.stats{font-size:10.5px;line-height:1.45;color:var(--mute)}.minor{display:flex;gap:3px;margin-top:6px}.minor figure{margin:0;flex:0 0 calc((100% - 12px) / 5);min-width:0}
 .minor img{width:100%;aspect-ratio:1;display:block;border-radius:4px;background:#cfccc4}.minor figcaption{font-size:9.5px;color:var(--mute);text-align:center}
 .cmd{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:var(--mute);margin-top:5px;user-select:all}
 #tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;font-size:12px;z-index:9;box-shadow:0 6px 18px #0003}
