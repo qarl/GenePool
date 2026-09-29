@@ -3,7 +3,7 @@
 // (body-shape axes), coloured by family, killers + seed-3 marked. Below: one section per family (dendrogram order),
 // named from what makes its bodies distinctive, each pool a tile: its main species' micrograph + minor species strip.
 //   node tools/atlas/build-page.mjs && open "<jobsDir>/atlas/index.html"
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { jobsDir } from '../scrub/gen-jobs.mjs';
 
@@ -32,6 +32,7 @@ const fams = A.familySummary.map((f) => ({ ...f, name: famName(f.family) }));
 // slim per-pool data for the page (no genomes)
 const slim = A.data.filter((p) => p.species.length).map((p) => ({ seed: p.seed, family: p.family, order: p.order, map: p.map, day: p.day, peak: p.peak,
   living: p.living, killer: p.killer, vs3: p.vs3, league: p.league ? { rank: p.league.rank, pts: p.league.pts, w: p.league.w, d: p.league.d, l: p.league.l } : null,
+  anim: existsSync(join(dir, 'anim', `seed-${p.seed}.mp4`)),
   sp: p.species.map((s, i) => ({ n: s.count, share: +s.share.toFixed(3), sig: s.sig, parts: s.face.body.parts, r: (radii[`${p.seed}-${i}`] || {}).radius || null })) }));
 const nKill = slim.filter((p) => p.killer).length;
 
@@ -50,7 +51,7 @@ header{padding:28px 24px 8px;max-width:1400px;margin:auto}h1{margin:0 0 4px;font
 section{margin:30px 0 0}section h2{font-size:17px;margin:0 0 2px}section .meta{color:var(--mute);font-size:12.5px;margin-bottom:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:12px}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;scroll-margin-top:20px}
-.tile.flash{outline:3px solid var(--kill)}.tile img.main{width:100%;aspect-ratio:1;display:block;background:#cfccc4}
+.tile.flash{outline:3px solid var(--kill)}.tile .main{width:100%;aspect-ratio:1;display:block;background:#cfccc4;object-fit:cover}
 .info{padding:7px 9px 9px}.row{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
 .seed{font-weight:650;font-size:15px}.sig{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--mute)}
 .badges{display:flex;flex-wrap:wrap;gap:4px;margin:5px 0}.b{font-size:10.5px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--mute)}
@@ -110,12 +111,16 @@ document.getElementById('fams').innerHTML=FAMS.map(f=>{const ps=D.filter(p=>p.fa
   else if(p.vs3)b.push('<span class="b">lost to seed-3 '+p.vs3.a+'–'+p.vs3.b+'</span>');
   if(p.peak)b.push('<span class="b starve">starves itself @'+p.day.toFixed(2)+'d</span>');
   if(p.league)b.push('<span class="b">league #'+p.league.rank+' · '+p.league.pts+'pts</span>');
-  return '<div class="tile" id="seed-'+p.seed+'"><img class="main" loading="lazy" src="'+face(p.seed,0)+'" alt="seed-'+p.seed+' main species">'
+  return '<div class="tile" id="seed-'+p.seed+'">'+(p.anim?'<video class="main" muted loop playsinline preload="none" poster="anim/seed-'+p.seed+'.jpg" data-src="anim/seed-'+p.seed+'.mp4" aria-label="seed-'+p.seed+' main species swimming"></video>':'<img class="main" loading="lazy" src="'+face(p.seed,0)+'" alt="seed-'+p.seed+' main species">')
   +'<div class="info"><div class="row"><span class="seed">seed-'+p.seed+'</span><span class="sig" title="plate signature (same ID as the app species list)">'+m.sig+'</span></div>'
   +'<div class="badges">'+b.join('')+'</div>'
   +'<div class="stats">'+p.living+' alive · '+p.sp.length+(p.sp.length>=6?'+':'')+' species · main '+pct(m.share)+' · '+m.parts+' segments</div>'
   +(p.sp.length>1?'<div class="minor">'+p.sp.slice(1).map((s,i)=>'<figure><img loading="lazy" src="'+face(p.seed,i+1)+'" alt="" title="'+s.sig+' · '+s.n+' ('+pct(s.share)+')"><figcaption>'+pct(s.share)+'</figcaption></figure>').join('')+'</div>':'')
   +'<div class="cmd" title="open this seed in the app">GP_SEED='+p.seed+'</div></div></div>';}).join('')+'</div></section>';}).join('');
+// ---- animation: only tiles on screen load + play; off-screen ones pause (keeps decode load to ~a screenful) ----
+const io=new IntersectionObserver(es=>{for(const e of es){const v=e.target;
+ if(e.isIntersecting){if(!v.src)v.src=v.dataset.src;v.play().catch(()=>{});}else if(!v.paused)v.pause();}},{rootMargin:'120px 0px'});
+document.querySelectorAll('video.main').forEach(v=>io.observe(v));
 </script></body></html>`;
 writeFileSync(join(dir, 'index.html'), html);
 console.log(`atlas page -> ${join(dir, 'index.html')}  (${fams.length} families)`);

@@ -2337,19 +2337,38 @@ window.__specimen = function(spec, opts){
   for (let i = 0; i < (opts.ticks ?? 240); i++) world.tick();
   const bot = world._swimbots.get(1);
   if (!bot || !bot.getAlive()) return null;
-  // frame on the BODY's bounding box (part joints padded by their widths), not the root point -> no clipping
-  const ph = bot._phenotype; let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (let q = 0; q < ph.numParts; q++){ const pt = ph.parts[q], pw = (pt.width || 0) * (bot._growthScale ?? 1);
-    x0 = Math.min(x0, pt.position.x - pw); x1 = Math.max(x1, pt.position.x + pw); y0 = Math.min(y0, pt.position.y - pw); y1 = Math.max(y1, pt.position.y + pw); }
-  const c = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 }, radius = Math.max(x1 - x0, y1 - y0) / 2;
+  const { c, radius } = specimenFrame(bot);
   cam = { x: c.x, y: c.y, zoom: 6 }; camT = { x: c.x, y: c.y, zoom: 6 };
   render();                                              // advance the per-frame render bookkeeping for this world
   const zoom = opts.fitPx ? Math.min(Math.max(opts.fitPx / Math.max(1e-6, radius * VIEW_SMALL / P.pool), TILE_ZOOM), 160) : (opts.zoom ?? TILE_ZOOM);
   renderView({ x: c.x, y: c.y, zoom }, VIEW_SMALL, VIEW_SMALL, smallSet, 0, 0, false, 0, bot);
+  specState = { bot, zoom, cx: c.x, cy: c.y };
+  return { w: VIEW_SMALL, h: VIEW_SMALL, b64: readSmallB64(), radius, zoom };
+};
+// Frame on the BODY's bounding box (part joints padded by their widths), not the root point -> no clipping.
+function specimenFrame(bot){
+  const ph = bot._phenotype; let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let q = 0; q < ph.numParts; q++){ const pt = ph.parts[q], pw = (pt.width || 0) * (bot._growthScale ?? 1);
+    x0 = Math.min(x0, pt.position.x - pw); x1 = Math.max(x1, pt.position.x + pw); y0 = Math.min(y0, pt.position.y - pw); y1 = Math.max(y1, pt.position.y + pw); }
+  return { c: { x: (x0 + x1) / 2, y: (y0 + y1) / 2 }, radius: Math.max(x1 - x0, y1 - y0) / 2 };
+}
+function readSmallB64(){
   const mp = new Uint8Array(VIEW_SMALL*VIEW_SMALL*4);
   gl.readPixels(0, 0, VIEW_SMALL, VIEW_SMALL, gl.RGBA, gl.UNSIGNED_BYTE, mp);
   let ms=''; for (let i=0;i<mp.length;i+=8192) ms += String.fromCharCode.apply(null, mp.subarray(i, i+8192));
-  return { w: VIEW_SMALL, h: VIEW_SMALL, b64: btoa(ms), radius, zoom };
+  return btoa(ms);
+}
+// Animation step for the specimen set up by __specimen: advance `ticks`, then render the next frame at the SAME zoom
+// with a smoothed follow-camera (the body undulates in place while the detritus drifts past -> you see it swim).
+let specState = null;
+window.__specimenNext = function(ticks, follow){
+  if (!specState || !world) return null;
+  for (let i = 0; i < (ticks ?? 2); i++) world.tick();
+  const bot = specState.bot; if (!bot.getAlive()) return null;
+  const { c } = specimenFrame(bot), k = follow ?? 0.12;
+  specState.cx += (c.x - specState.cx) * k; specState.cy += (c.y - specState.cy) * k;
+  renderView({ x: specState.cx, y: specState.cy, zoom: specState.zoom }, VIEW_SMALL, VIEW_SMALL, smallSet, 0, 0, false, 0, bot);
+  return readSmallB64();
 };
 
 // ---- perf benchmark hook (INERT unless called; performance.now is MEASUREMENT only -> never touches render output) ----
